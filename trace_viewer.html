@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Trace Viewer</title>
+  <style>
+    :root {
+      --bg: #f3efe6;
+      --panel: #fffaf0;
+      --panel-2: #f7f0df;
+      --line: #d6c8a8;
+      --text: #2a2419;
+      --muted: #6b614d;
+      --accent: #8c5a2b;
+      --accent-2: #2f6f6a;
+      --danger: #9c3f2c;
+      --shadow: 0 10px 30px rgba(70, 52, 24, 0.08);
+      --mono: "Cascadia Code", "Fira Code", Consolas, monospace;
+      --sans: "Segoe UI", "Aptos", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background:
+        linear-gradient(180deg, rgba(140, 90, 43, 0.06), rgba(140, 90, 43, 0) 260px),
+        radial-gradient(circle at top left, rgba(47, 111, 106, 0.08), transparent 35%),
+        var(--bg);
+      color: var(--text);
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+    }
+    .topbar {
+      display: grid;
+      gap: 14px;
+      margin-bottom: 20px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      border-radius: 18px;
+    }
+    .title { margin: 0; font-size: 28px; line-height: 1.1; letter-spacing: -0.02em; }
+    .subtitle { margin: 0; color: var(--muted); }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      align-items: center;
+    }
+    .controls input[type="text"] {
+      min-width: 320px;
+      max-width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font: inherit;
+      color: inherit;
+    }
+    button {
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fffdf8;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.secondary { background: transparent; color: var(--accent); }
+    .toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); user-select: none; }
+    .status { min-height: 1.2em; color: var(--muted); }
+    .error { color: var(--danger); white-space: pre-wrap; }
+    .tree { display: grid; gap: 14px; }
+    .node {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .node.depth-1 { margin-left: 28px; background: #fff9ef; }
+    .node.depth-2 { margin-left: 56px; background: #fff7ea; }
+    .node.depth-3 { margin-left: 84px; background: #fff4e4; }
+    .node-header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      width: 100%;
+      text-align: left;
+      border: 0;
+      background: linear-gradient(180deg, rgba(140, 90, 43, 0.10), rgba(140, 90, 43, 0.03));
+      color: inherit;
+      padding: 14px 16px;
+      cursor: pointer;
+      font: inherit;
+    }
+    .caret, .section-caret {
+      width: 18px;
+      text-align: center;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .header-main {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: baseline;
+      flex: 1;
+    }
+    .agent-name { font-weight: 700; font-size: 16px; }
+    .badge {
+      border-radius: 999px;
+      padding: 2px 10px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .badge.kind { color: var(--accent-2); }
+    .badge.intent { color: var(--danger); }
+    .node-body { display: grid; gap: 12px; padding: 14px 16px 16px; }
+    .collapsed > .node-body, .collapsed > .children { display: none; }
+    .section {
+      border: 1px solid rgba(214, 200, 168, 0.8);
+      border-radius: 14px;
+      background: var(--panel-2);
+      overflow: hidden;
+    }
+    .section-toggle {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      margin: 0;
+      padding: 10px 12px;
+      border: 0;
+      border-bottom: 1px solid rgba(214, 200, 168, 0.8);
+      font: inherit;
+      text-align: left;
+      background: rgba(255, 255, 255, 0.35);
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .section-title { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .section-body { padding: 12px; display: grid; gap: 10px; }
+    .section.collapsed .section-body { display: none; }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .kv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .kv-table th, .kv-table td {
+      text-align: left;
+      padding: 8px 10px;
+      border-top: 1px solid rgba(214, 200, 168, 0.65);
+      vertical-align: top;
+    }
+    .kv-table th { width: 180px; color: var(--muted); font-weight: 600; }
+    .children { display: grid; gap: 12px; padding: 0 12px 14px; }
+    .event-node {
+      border: 1px dashed rgba(140, 90, 43, 0.45);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.45);
+    }
+    .event-header {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .event-title { font-weight: 700; color: var(--accent); }
+    .markdown-rendered { line-height: 1.55; }
+    .markdown-rendered p, .markdown-rendered ul, .markdown-rendered ol, .markdown-rendered pre, .markdown-rendered blockquote { margin: 0 0 10px; }
+    .markdown-rendered code {
+      font-family: var(--mono);
+      background: rgba(255,255,255,0.55);
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+    .markdown-rendered pre {
+      background: rgba(255,255,255,0.55);
+      padding: 12px;
+      border-radius: 10px;
+      overflow: auto;
+    }
+    .empty { color: var(--muted); font-style: italic; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="topbar">
+      <div>
+        <h1 class="title">Agent Trace Viewer</h1>
+        <p class="subtitle">Loads `trace-*.jsonl` from local disk and renders agent calls as a collapsible tree.</p>
+      </div>
+      <div class="controls">
+        <input id="filename" type="text" placeholder="Optional: trace-260329_105117.jsonl">
+        <button id="pick-file" type="button">Open Trace File</button>
+        <label class="toggle">
+          <input id="render-markdown" type="checkbox">
+          Render markdown
+        </label>
+        <button id="collapse-all" class="secondary" type="button">Collapse All</button>
+        <button id="expand-all" class="secondary" type="button">Expand All</button>
+      </div>
+      <div id="status" class="status">Open a local JSONL trace file. `file://` is supported via file picker.</div>
+    </section>
+    <section id="tree" class="tree"></section>
+  </main>
+  <script>
+    const statusEl = document.getElementById("status");
+    const treeEl = document.getElementById("tree");
+    const filenameEl = document.getElementById("filename");
+    const renderMarkdownEl = document.getElementById("render-markdown");
+    const pickFileButton = document.getElementById("pick-file");
+    const collapseAllButton = document.getElementById("collapse-all");
+    const expandAllButton = document.getElementById("expand-all");
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.className = isError ? "status error" : "status";
+    }
+
+    function prettyJson(value) {
+      return JSON.stringify(value, null, 2);
+    }
+
+    function escapeHtml(text) {
+      return String(text).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    function looksLikeJson(text) {
+      if (typeof text !== "string") return false;
+      const trimmed = text.trim();
+      return (trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"));
+    }
+
+    function tryParseJson(text) {
+      if (!looksLikeJson(text)) return null;
+      try { return JSON.parse(text); } catch { return null; }
+    }
+
+    function renderMarkdown(source) {
+      let html = escapeHtml(source);
+      html = html.replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${escapeHtml(code.trim())}</code></pre>`);
+      html = html.replace(/^### (.*)$/gm, "<h3>$1</h3>");
+      html = html.replace(/^## (.*)$/gm, "<h2>$1</h2>");
+      html = html.replace(/^# (.*)$/gm, "<h1>$1</h1>");
+      html = html.replace(/^\> (.*)$/gm, "<blockquote>$1</blockquote>");
+      html = html.replace(/^- (.*)$/gm, "<li>$1</li>");
+      html = html.replace(/(<li>.*<\/li>)/gs, "<ul>$1</ul>");
+      html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+      html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
+      html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+      const paragraphs = html
+        .split(/\n{2,}/)
+        .map(block => {
+          const trimmed = block.trim();
+          if (!trimmed) return "";
+          if (trimmed.startsWith("<h") || trimmed.startsWith("<ul>") || trimmed.startsWith("<pre>") || trimmed.startsWith("<blockquote>")) return trimmed;
+          return `<p>${trimmed.replace(/\n/g, "<br>")}</p>`;
+        })
+        .filter(Boolean)
+        .join("");
+      return `<div class="markdown-rendered">${paragraphs}</div>`;
+    }
+
+    function makeContentNode(value) {
+      const wrap = document.createElement("div");
+      if (value === null || value === undefined || value === "") {
+        wrap.innerHTML = `<div class="empty">No content</div>`;
+        return wrap;
+      }
+      if (typeof value === "object") {
+        const pre = document.createElement("pre");
+        pre.textContent = prettyJson(value);
+        wrap.appendChild(pre);
+        return wrap;
+      }
+      if (typeof value === "string") {
+        const parsed = tryParseJson(value);
+        if (parsed !== null) {
+          const pre = document.createElement("pre");
+          pre.textContent = prettyJson(parsed);
+          wrap.appendChild(pre);
+          return wrap;
+        }
+        if (renderMarkdownEl.checked) {
+          wrap.innerHTML = renderMarkdown(value);
+          return wrap;
+        }
+        const pre = document.createElement("pre");
+        pre.textContent = value;
+        wrap.appendChild(pre);
+        return wrap;
+      }
+      const pre = document.createElement("pre");
+      pre.textContent = String(value);
+      wrap.appendChild(pre);
+      return wrap;
+    }
+
+    function makeSection(title, value) {
+      const section = document.createElement("section");
+      section.className = "section";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "section-toggle";
+      toggle.innerHTML = `<span class="section-caret">▾</span><span class="section-title">${escapeHtml(title)}</span>`;
+      toggle.addEventListener("click", () => {
+        section.classList.toggle("collapsed");
+        toggle.querySelector(".section-caret").textContent = section.classList.contains("collapsed") ? "▸" : "▾";
+      });
+      section.appendChild(toggle);
+      const body = document.createElement("div");
+      body.className = "section-body";
+      body.appendChild(makeContentNode(value));
+      section.appendChild(body);
+      return section;
+    }
+
+    function makeTableSection(title, obj, preferredKeys = []) {
+      const section = document.createElement("section");
+      section.className = "section";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "section-toggle";
+      toggle.innerHTML = `<span class="section-caret">▾</span><span class="section-title">${escapeHtml(title)}</span>`;
+      toggle.addEventListener("click", () => {
+        section.classList.toggle("collapsed");
+        toggle.querySelector(".section-caret").textContent = section.classList.contains("collapsed") ? "▸" : "▾";
+      });
+      section.appendChild(toggle);
+      const body = document.createElement("div");
+      body.className = "section-body";
+      const table = document.createElement("table");
+      table.className = "kv-table";
+      const keys = [
+        ...preferredKeys.filter(key => Object.prototype.hasOwnProperty.call(obj, key)),
+        ...Object.keys(obj).filter(key => !preferredKeys.includes(key)),
+      ];
+      if (!keys.length) {
+        body.innerHTML = `<div class="empty">No metadata</div>`;
+      } else {
+        keys.forEach(key => {
+          const row = document.createElement("tr");
+          const th = document.createElement("th");
+          th.textContent = key;
+          const td = document.createElement("td");
+          td.appendChild(makeContentNode(obj[key]));
+          row.appendChild(th);
+          row.appendChild(td);
+          table.appendChild(row);
+        });
+        body.appendChild(table);
+      }
+      section.appendChild(body);
+      return section;
+    }
+
+    function labelForNode(record) {
+      const parts = [record.agent_name || "unknown-agent", "input/output"];
+      const kind = record.agent_decision?.kind || record.model_response?.kind;
+      const intent = record.agent_decision?.callback_intent || record.model_response?.intent;
+      return { kind, intent, title: parts.join(" · ") };
+    }
+
+    function buildTree(records) {
+      const nodes = records.map((record, index) => ({ record, index, children: [] }));
+      const roots = [];
+      nodes.forEach((node, idx) => {
+        if (node.record.caller_id && node.record.caller_id !== "host") {
+          let parent = null;
+          for (let scan = idx - 1; scan >= 0; scan -= 1) {
+            if (nodes[scan].record.agent_name === node.record.caller_id) {
+              parent = nodes[scan];
+              break;
+            }
+          }
+          if (parent) {
+            parent.children.push(node);
+            return;
+          }
+        }
+        roots.push(node);
+      });
+      return roots;
+    }
+
+    function makeEventNode(event) {
+      const wrap = document.createElement("div");
+      wrap.className = "event-node";
+      const header = document.createElement("div");
+      header.className = "event-header";
+      header.innerHTML = `
+        <span class="event-title">${escapeHtml(event.type || "event")}</span>
+        ${event.subagent_id ? `<span class="badge">subagent: ${escapeHtml(event.subagent_id)}</span>` : ""}
+        ${event.tool_name ? `<span class="badge">tool: ${escapeHtml(event.tool_name)}</span>` : ""}
+        ${event.intent ? `<span class="badge intent">${escapeHtml(event.intent)}</span>` : ""}
+        ${event.target ? `<span class="badge">${escapeHtml(event.target)}</span>` : ""}
+      `;
+      wrap.appendChild(header);
+      const content = document.createElement("div");
+      content.appendChild(makeContentNode(event));
+      wrap.appendChild(content);
+      return wrap;
+    }
+
+    function renderNode(node, depth = 0) {
+      const wrapper = document.createElement("article");
+      wrapper.className = `node depth-${Math.min(depth, 3)}`;
+      const info = labelForNode(node.record);
+      const header = document.createElement("button");
+      header.type = "button";
+      header.className = "node-header";
+      header.innerHTML = `
+        <span class="caret">▾</span>
+        <span class="header-main">
+          <span class="agent-name">${escapeHtml(info.title)}</span>
+          ${info.kind ? `<span class="badge kind">${escapeHtml(info.kind)}</span>` : ""}
+          ${info.intent ? `<span class="badge intent">${escapeHtml(info.intent)}</span>` : ""}
+          ${node.record.caller_id ? `<span class="badge">caller: ${escapeHtml(node.record.caller_id)}</span>` : ""}
+        </span>
+      `;
+      header.addEventListener("click", () => {
+        wrapper.classList.toggle("collapsed");
+        header.querySelector(".caret").textContent = wrapper.classList.contains("collapsed") ? "▸" : "▾";
+      });
+      wrapper.appendChild(header);
+
+      const body = document.createElement("div");
+      body.className = "node-body";
+      body.appendChild(makeTableSection("Call Metadata", {
+        timestamp: node.record.timestamp,
+        run_id: node.record.run_id,
+        caller_id: node.record.caller_id,
+        agent_name: node.record.agent_name,
+      }, ["timestamp", "run_id", "caller_id", "agent_name"]));
+      body.appendChild(makeTableSection("Prompt Sources", {
+        system_prompt_sources: node.record.system_prompt_sources,
+        user_prompt_sources: node.record.user_prompt_sources,
+      }, ["system_prompt_sources", "user_prompt_sources"]));
+      body.appendChild(makeSection("System Prompt", node.record.system_prompt));
+      body.appendChild(makeSection("User Prompt", node.record.user_prompt));
+      body.appendChild(makeSection("LLM Message Sent", node.record.llm_message_sent));
+      body.appendChild(makeSection("LLM Message Received", node.record.llm_message_received));
+      body.appendChild(makeSection("Model Response", node.record.model_response));
+      body.appendChild(makeSection("Agent Decision", node.record.agent_decision));
+      body.appendChild(makeSection("Callbacks", node.record.callbacks));
+      if (Array.isArray(node.record.events) && node.record.events.length) {
+        const eventSection = document.createElement("section");
+        eventSection.className = "section";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "section-toggle";
+        toggle.innerHTML = `<span class="section-caret">▾</span><span class="section-title">Thread Events</span>`;
+        toggle.addEventListener("click", () => {
+          eventSection.classList.toggle("collapsed");
+          toggle.querySelector(".section-caret").textContent = eventSection.classList.contains("collapsed") ? "▸" : "▾";
+        });
+        eventSection.appendChild(toggle);
+        const eventBody = document.createElement("div");
+        eventBody.className = "section-body";
+        node.record.events.forEach(event => eventBody.appendChild(makeEventNode(event)));
+        eventSection.appendChild(eventBody);
+        body.appendChild(eventSection);
+      }
+      wrapper.appendChild(body);
+
+      const childrenEl = document.createElement("div");
+      childrenEl.className = "children";
+      node.children.forEach(child => childrenEl.appendChild(renderNode(child, depth + 1)));
+      wrapper.appendChild(childrenEl);
+
+      return wrapper;
+    }
+
+    function renderTrace(records) {
+      treeEl.innerHTML = "";
+      if (!records.length) {
+        treeEl.innerHTML = `<div class="empty">No trace entries found.</div>`;
+        return;
+      }
+      const roots = buildTree(records);
+      roots.forEach(root => treeEl.appendChild(renderNode(root)));
+    }
+
+    function parseJsonLines(text) {
+      return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => JSON.parse(line));
+    }
+
+    async function tryFetchByFilename(name) {
+      const response = await fetch(name);
+      if (!response.ok) throw new Error(`Failed to fetch ${name}: ${response.status}`);
+      return response.text();
+    }
+
+    async function openWithPicker() {
+      if (window.showOpenFilePicker) {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: "JSONL trace", accept: { "application/json": [".jsonl"], "text/plain": [".jsonl", ".log"] } }],
+          excludeAcceptAllOption: false,
+          multiple: false,
+        });
+        const file = await handle.getFile();
+        filenameEl.value = file.name;
+        return file.text();
+      }
+      return new Promise((resolve, reject) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".jsonl,.log,.txt,application/json,text/plain";
+        input.addEventListener("change", async () => {
+          const file = input.files?.[0];
+          if (!file) {
+            reject(new Error("No file selected."));
+            return;
+          }
+          filenameEl.value = file.name;
+          resolve(await file.text());
+        }, { once: true });
+        input.click();
+      });
+    }
+
+    async function loadTrace({ usePicker = false } = {}) {
+      try {
+        setStatus("Loading trace...");
+        let text;
+        if (usePicker) {
+          text = await openWithPicker();
+        } else {
+          const params = new URLSearchParams(window.location.search);
+          const fromUrl = params.get("filename");
+          const fromInput = filenameEl.value.trim();
+          const filename = fromInput || fromUrl;
+          if (!filename) {
+            text = await openWithPicker();
+          } else {
+            filenameEl.value = filename;
+            try {
+              text = await tryFetchByFilename(filename);
+            } catch {
+              text = await openWithPicker();
+            }
+          }
+        }
+        const records = parseJsonLines(text);
+        renderTrace(records);
+        setStatus(`Loaded ${records.length} trace entr${records.length === 1 ? "y" : "ies"}.`);
+      } catch (error) {
+        treeEl.innerHTML = "";
+        setStatus(error instanceof Error ? error.message : String(error), true);
+      }
+    }
+
+    pickFileButton.addEventListener("click", () => loadTrace({ usePicker: true }));
+    renderMarkdownEl.addEventListener("change", () => {
+      const params = new URLSearchParams(window.location.search);
+      if (treeEl.children.length || params.get("filename") || filenameEl.value.trim()) loadTrace();
+    });
+    collapseAllButton.addEventListener("click", () => {
+      document.querySelectorAll(".node").forEach(node => {
+        node.classList.add("collapsed");
+        const caret = node.querySelector(".caret");
+        if (caret) caret.textContent = "▸";
+      });
+      document.querySelectorAll(".section").forEach(section => {
+        section.classList.add("collapsed");
+        const caret = section.querySelector(".section-caret");
+        if (caret) caret.textContent = "▸";
+      });
+    });
+    expandAllButton.addEventListener("click", () => {
+      document.querySelectorAll(".node").forEach(node => {
+        node.classList.remove("collapsed");
+        const caret = node.querySelector(".caret");
+        if (caret) caret.textContent = "▾";
+      });
+      document.querySelectorAll(".section").forEach(section => {
+        section.classList.remove("collapsed");
+        const caret = section.querySelector(".section-caret");
+        if (caret) caret.textContent = "▾";
+      });
+    });
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("filename")) {
+      filenameEl.value = params.get("filename");
+      loadTrace();
+    }
+  </script>
+</body>
+</html>

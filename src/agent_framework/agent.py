@@ -1,0 +1,57 @@
+"""Compatibility facade for the agent runtime classes.
+
+The concrete class modules now live under `agent_framework.agents`.
+"""
+
+from agent_framework.agents import (
+    Agent,
+    AgentBehavior,
+    AgentDecision,
+    AgentEndEvent,
+    AgentEndHookDecision,
+    AgentHookDecision,
+    AgentHostProtocol,
+    AgentInvocation,
+    AgentParameter,
+    AgentResult,
+    AgentRun,
+    AgentStartEvent,
+    CallContext,
+    ModelEndEvent,
+    ModelStartEvent,
+    SequentialHook,
+    SubagentEndEvent,
+    SubagentHookDecision,
+    SubagentStartEvent,
+    ToolEndEvent,
+    ToolHookDecision,
+    ToolStartEvent,
+)
+from agent_framework.model import CapabilityDefinition, CapabilityParameter
+
+__all__ = [
+    "Agent",
+    "AgentBehavior",
+    "AgentDecision",
+    "AgentEndEvent",
+    "AgentEndHookDecision",
+    "AgentHookDecision",
+    "AgentHostProtocol",
+    "AgentInvocation",
+    "AgentParameter",
+    "AgentResult",
+    "AgentRun",
+    "AgentStartEvent",
+    "CallContext",
+    "ModelEndEvent",
+    "ModelStartEvent",
+    "CapabilityDefinition",
+    "CapabilityParameter",
+    "SequentialHook",
+    "SubagentEndEvent",
+    "SubagentHookDecision",
+    "SubagentStartEvent",
+    "ToolEndEvent",
+    "ToolHookDecision",
+    "ToolStartEvent",
+]
