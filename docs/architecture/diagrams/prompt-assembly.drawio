@@ -1,0 +1,205 @@
+<mxfile host="app.diagrams.net" modified="2026-03-31T00:00:00.000Z" agent="agent_framework architecture" version="21.0.0">
+  <diagram name="Prompt Assembly" id="prompt-assembly">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1900" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Prompt Assembly Pipeline" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="20" width="900" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- ===== SYSTEM PROMPT SIDE (LEFT) ===== -->
+        <mxCell id="sys-title" value="SYSTEM PROMPT ASSEMBLY" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="70" width="720" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Source 1: Agent system_prompt -->
+        <mxCell id="agent-prompt" value="agent.system_prompt&#xa;(from .md file, §2 after frontmatter)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="260" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Source 2: capability metadata -->
+        <mxCell id="cap-meta" value="_capability_metadata(run)&#xa;&#xa;Injected XML blocks per capability type:" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="330" y="120" width="260" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Capability metadata sub-breakdown -->
+        <mxCell id="cap-tools" value="&lt;available_tools&gt;&#xa;name, description, parameters&#xa;for each allowed_tool" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="250" y="200" width="210" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-agents" value="&lt;available_subagents&gt;&#xa;id, description, parameters&#xa;for each allowed_child_agent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="480" y="200" width="210" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Source 3: response mode template -->
+        <mxCell id="mode-template" value="Response Mode Template&#xa;(assemble_system_prompt step 3)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="630" y="120" width="260" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Mode template detail -->
+        <mxCell id="mode-decision" value="decision mode&#xa;system.decision.md&#xa;JSON action schema + intent enum" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="200" width="180" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="mode-text" value="text mode&#xa;system.text.md&#xa;Plain text response instructions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="760" y="200" width="180" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="mode-json" value="json_object mode&#xa;system.json_object.md&#xa;Callback pattern + schema binding" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="960" y="200" width="180" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Shared instructions -->
+        <mxCell id="shared-instr" value="shared_instructions()&#xa;system.md base instructions&#xa;(always appended)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="120" width="220" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- assemble_system_prompt -->
+        <mxCell id="assemble-sys" value="assemble_system_prompt(run)&#xa;&#xa;Concatenation order:&#xa;1. agent.system_prompt&#xa;2. capability metadata XML&#xa;3. response mode template&#xa;4. shared_instructions()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="300" y="310" width="320" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- Assembled system prompt -->
+        <mxCell id="assembled-sys" value="assembled system_prompt: str&#xa;(passed to ModelContext.system_prompt)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="460" width="280" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- ===== USER PROMPT SIDE (RIGHT) ===== -->
+        <mxCell id="user-title" value="USER PROMPT ASSEMBLY" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="70" width="720" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Source: user prompt template -->
+        <mxCell id="user-template" value="agent.user_prompt_template&#xa;(from .md file, §3 after ---)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="120" width="250" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Source: parameters -->
+        <mxCell id="params" value="AgentParameter values&#xa;resolved from run.parameter_state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1330" y="120" width="250" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Parameter resolution detail -->
+        <mxCell id="param-extract" value="Parameter Extraction Priority:&#xa;1. explicit invocation values&#xa;2. XML tags in conversation (heuristic)&#xa;3. declared default values&#xa;4. None / omitted" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1300" y="200" width="310" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Template rendering -->
+        <mxCell id="template-render" value="Jinja2-style {{ }} substitution&#xa;render_user_prompt(template, params)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="310" width="280" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Fragments -->
+        <mxCell id="fragments-title" value="Prompt Fragments (run.prompt_fragments)" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="395" width="320" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="frag-tool" value="&lt;tool_result tool=&quot;{name}&quot;&gt;&#xa;{result}&#xa;&lt;/tool_result&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="430" width="210" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="frag-subagent" value="&lt;subagent_result subagent=&quot;{id}&quot;&gt;&#xa;{result}&#xa;&lt;/subagent_result&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="430" width="210" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="frag-callback" value="&lt;callback_response intent=&quot;{i}&quot;&gt;&#xa;{response}&#xa;&lt;/callback_response&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="510" width="210" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="frag-system" value="&lt;system_message&gt;&#xa;{hook-injected text}&#xa;&lt;/system_message&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="510" width="210" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- upsert semantics note -->
+        <mxCell id="upsert-note" value="_upsert_prompt_fragment(tag, content)&#xa;• Replace existing fragment with same tag name&#xa;• Append if no existing fragment with that tag&#xa;→ Fragments accumulate across loop iterations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="590" width="440" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- build_context assembles user prompt -->
+        <mxCell id="build-context" value="build_context(run)&#xa;&#xa;Renders template → appends fragments&#xa;→ ModelContext.user_prompt" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="690" width="280" height="75" as="geometry" />
+        </mxCell>
+
+        <!-- Assembled user prompt -->
+        <mxCell id="assembled-user" value="assembled user_prompt: str&#xa;(passed to ModelContext.user_prompt)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="800" width="280" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- ===== FINAL MODELCONTEXT ===== -->
+        <mxCell id="model-context" value="ModelContext&#xa;&#xa;system_prompt: str (assembled)&#xa;user_prompt: str (assembled)&#xa;messages: list[dict] (conversation history)&#xa;response_mode: str&#xa;tools: list[CapabilityDefinition]&#xa;subagents: list[CapabilityDefinition]&#xa;run_id: str" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="650" y="700" width="340" height="160" as="geometry" />
+        </mxCell>
+
+        <!-- Conversation history -->
+        <mxCell id="conv-history" value="conversation_messages (run)&#xa;Prior assistant + user turns&#xa;appended each loop iteration" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="650" y="550" width="260" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- === EDGES === -->
+        <!-- System side flows -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="agent-prompt" target="assemble-sys" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="cap-meta" target="assemble-sys" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="mode-template" target="assemble-sys" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="760" y="290" /><mxPoint x="460" y="290" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="shared-instr" target="assemble-sys" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="960" y="290" /><mxPoint x="460" y="290" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e4b" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="cap-meta" target="cap-tools" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4c" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="cap-meta" target="cap-agents" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4d" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="mode-template" target="mode-decision" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4e" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="mode-template" target="mode-text" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4f" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="mode-template" target="mode-json" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="assemble-sys" target="assembled-sys" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="assembled-sys" target="model-context" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="460" y="540" /><mxPoint x="460" y="720" /><mxPoint x="650" y="720" /></Array></mxGeometry>
+        </mxCell>
+
+        <!-- User side flows -->
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="user-template" target="template-render" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="params" target="template-render" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8b" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="params" target="param-extract" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="template-render" target="build-context" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1260" y="365" /><mxPoint x="1260" y="665" /><mxPoint x="1260" y="700" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="frag-tool" target="build-context" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1155" y="500" /><mxPoint x="1155" y="690" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="frag-subagent" target="build-context" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1385" y="500" /><mxPoint x="1385" y="680" /><mxPoint x="1260" y="680" /><mxPoint x="1260" y="700" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="frag-callback" target="build-context" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1155" y="600" /><mxPoint x="1155" y="690" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="build-context" target="assembled-user" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="assembled-user" target="model-context" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1260" y="855" /><mxPoint x="1260" y="880" /><mxPoint x="820" y="880" /><mxPoint x="820" y="820" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e15" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="conv-history" target="model-context" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

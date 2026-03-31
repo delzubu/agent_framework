@@ -1,0 +1,142 @@
+<mxfile host="app.diagrams.net" modified="2026-03-31T00:00:00.000Z" agent="agent_framework architecture" version="21.0.0">
+  <diagram name="Model Driver Abstraction" id="model-driver-abstraction">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1900" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Model Driver Abstraction Layer" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="20" width="900" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- ===== MODELCONTEXT INPUT ===== -->
+        <mxCell id="mc-title" value="INPUT: ModelContext" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="70" width="240" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="model-context" value="ModelContext&#xa;&#xa;system_prompt: str&#xa;user_prompt: str&#xa;messages: list[dict]&#xa;response_mode: &quot;decision&quot; | &quot;text&quot; | &quot;json_object&quot;&#xa;tools: list[CapabilityDefinition]&#xa;subagents: list[CapabilityDefinition]&#xa;skills: list[CapabilityDefinition]&#xa;run_id: str&#xa;exact_input_payload: dict | None" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="100" width="280" height="230" as="geometry" />
+        </mxCell>
+
+        <!-- ===== MODELDRIVER PROTOCOL (CENTER) ===== -->
+        <mxCell id="protocol-title" value="ModelDriver Protocol&#xa;(typing.Protocol — structural typing)" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="650" y="70" width="420" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="model-driver" value="ModelDriver (Protocol)&#xa;&#xa;def decide(&#xa;  context: ModelContext&#xa;) → ModelResponse&#xa;&#xa;def set_trace_callbacks(&#xa;  on_request: Callable[[ProviderRequestTrace], None] | None,&#xa;  on_response: Callable[[ProviderResponseTrace], None] | None&#xa;) → None&#xa;&#xa;NOTE: structural typing — no inheritance needed.&#xa;Any class with these two methods satisfies the protocol." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="630" y="100" width="460" height="230" as="geometry" />
+        </mxCell>
+
+        <!-- ===== MODELRESPONSE OUTPUT ===== -->
+        <mxCell id="mr-title" value="OUTPUT: ModelResponse" style="text;html=1;strokeColor=none;fillColor=none;align=right;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1500" y="70" width="280" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="model-response" value="ModelResponse&#xa;&#xa;payload: dict&#xa;  (parsed JSON — AgentDecision source)&#xa;raw_text: str&#xa;  (full model output string)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1500" y="100" width="280" height="135" as="geometry" />
+        </mxCell>
+
+        <!-- ===== RESPONSE MODES ===== -->
+        <mxCell id="modes-title" value="Response Modes" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="450" y="370" width="820" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mode-decision" value="decision mode&#xa;&#xa;System template: system.decision.md&#xa;Output: JSON {kind, message, ...}&#xa;Parsed to AgentDecision.kind:&#xa;  final_message | callback&#xa;  call_tool | call_subagent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="430" y="405" width="220" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mode-text" value="text mode&#xa;&#xa;System template: system.text.md&#xa;Output: plain text string&#xa;Payload: {kind: &quot;final_message&quot;,&#xa;  message: raw_text}&#xa;No JSON parsing required" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="680" y="405" width="220" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mode-json" value="json_object mode&#xa;&#xa;System template: system.json_object.md&#xa;Output: arbitrary JSON&#xa;Agent supplies schema via system_prompt&#xa;Callback pattern for structured output&#xa;Payload: raw parsed JSON dict" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="930" y="405" width="220" height="130" as="geometry" />
+        </mxCell>
+
+        <!-- ===== IMPLEMENTATIONS ===== -->
+        <mxCell id="impl-title" value="Implementations" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="200" y="580" width="1360" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- OpenAI (implemented) -->
+        <mxCell id="openai-impl" value="OpenAiModelDriver&#xa;[IMPLEMENTED]&#xa;&#xa;• Per-call openai.OpenAI() client&#xa;• Maps ModelContext → ChatCompletion&#xa;• response_mode=decision: JSON mode + schema&#xa;• response_mode=text: plain text&#xa;• response_mode=json_object: json_object type&#xa;• Fires on_request before API call&#xa;• Fires on_response after API call&#xa;• HostConfig.model_for() resolves model name&#xa;• Reads OPENAI_API_KEY from env" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="200" y="615" width="300" height="215" as="geometry" />
+        </mxCell>
+
+        <!-- Anthropic (planned) -->
+        <mxCell id="anthropic-impl" value="AnthropicModelDriver&#xa;[EXTENSION POINT]&#xa;&#xa;• Implement decide(context) using&#xa;  anthropic.Anthropic().messages.create()&#xa;• Map system_prompt → system param&#xa;• Map messages → messages param&#xa;• Implement set_trace_callbacks()&#xa;• Return ModelResponse(payload, raw_text)&#xa;• No base class needed — structural typing&#xa;  means satisfying the Protocol is enough" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="615" width="300" height="215" as="geometry" />
+        </mxCell>
+
+        <!-- Custom (extension point) -->
+        <mxCell id="custom-impl" value="CustomModelDriver&#xa;[EXTENSION POINT]&#xa;&#xa;• Any custom LLM / local model / proxy&#xa;• Implement decide(context) however needed&#xa;• Implement set_trace_callbacks() (can no-op)&#xa;• Return ModelResponse(payload, raw_text)&#xa;• Register via host.set_model_driver(driver)&#xa;  or per-agent via HostConfig.agent_models&#xa;• Framework calls no other method" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="920" y="615" width="300" height="215" as="geometry" />
+        </mxCell>
+
+        <!-- ===== TRACE CALLBACKS ===== -->
+        <mxCell id="trace-title" value="Provider-Level Trace Callbacks" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="580" width="400" height="25" as="geometry" />
+        </mxCell>
+
+        <mxCell id="trace-request" value="ProviderRequestTrace&#xa;&#xa;run_id: str&#xa;agent_id: str&#xa;model: str&#xa;system_prompt: str&#xa;user_prompt: str&#xa;messages: list[dict]&#xa;timestamp: datetime" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="615" width="200" height="175" as="geometry" />
+        </mxCell>
+
+        <mxCell id="trace-response" value="ProviderResponseTrace&#xa;&#xa;run_id: str&#xa;agent_id: str&#xa;model: str&#xa;raw_response: str&#xa;parsed_payload: dict&#xa;latency_ms: float&#xa;timestamp: datetime" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1500" y="615" width="200" height="175" as="geometry" />
+        </mxCell>
+
+        <!-- Trace consumer -->
+        <mxCell id="trace-consumer" value="Consumers of trace callbacks:&#xa;• LlmTraceLogger → file / console&#xa;• InMemoryAuditTracer → JSONL&#xa;• Custom analytics / metrics&#xa;Wired by AgentHost.set_model_driver()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1330" y="820" width="320" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- HostConfig model resolution -->
+        <mxCell id="host-config" value="HostConfig model resolution:&#xa;&#xa;model_for(agent_id) priority:&#xa;1. agent_models[agent_id] (per-agent override)&#xa;2. model (global default)&#xa;3. env: OPENAI_MODEL&#xa;4. hardcoded fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="200" y="870" width="320" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- ===== EDGES ===== -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="model-context" target="model-driver" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="340" y="215" /><mxPoint x="630" y="215" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="model-driver" target="model-response" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1090" y="215" /><mxPoint x="1500" y="215" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="model-driver" target="mode-decision" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="860" y="330" /><mxPoint x="540" y="330" /><mxPoint x="540" y="405" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="model-driver" target="mode-text" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="860" y="330" /><mxPoint x="790" y="330" /><mxPoint x="790" y="405" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="model-driver" target="mode-json" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="860" y="330" /><mxPoint x="1040" y="330" /><mxPoint x="1040" y="405" /></Array></mxGeometry>
+        </mxCell>
+        <!-- Implementations implement protocol -->
+        <mxCell id="e6" value="implements" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#82b366;" edge="1" source="openai-impl" target="model-driver" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="350" y="580" /><mxPoint x="350" y="560" /><mxPoint x="860" y="560" /><mxPoint x="860" y="330" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e7" value="implements" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#d6b656;" edge="1" source="anthropic-impl" target="model-driver" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="710" y="615" /><mxPoint x="710" y="560" /><mxPoint x="860" y="560" /><mxPoint x="860" y="330" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e8" value="implements" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;strokeColor=#d6b656;" edge="1" source="custom-impl" target="model-driver" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1070" y="615" /><mxPoint x="1070" y="560" /><mxPoint x="860" y="560" /><mxPoint x="860" y="330" /></Array></mxGeometry>
+        </mxCell>
+        <!-- Trace edges -->
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="model-driver" target="trace-request" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1090" y="215" /><mxPoint x="1380" y="215" /><mxPoint x="1380" y="615" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=open;endFill=0;dashed=1;" edge="1" source="model-driver" target="trace-response" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1090" y="215" /><mxPoint x="1600" y="215" /><mxPoint x="1600" y="615" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="trace-request" target="trace-consumer" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="trace-response" target="trace-consumer" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,134 @@
+<mxfile host="app.diagrams.net" modified="2026-03-31T00:00:00.000Z" agent="agent_framework architecture" version="21.0.0">
+  <diagram name="Decision Dispatch" id="decision-dispatch">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Decision Dispatch — AgentDecision routing to handlers" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="450" y="20" width="900" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Raw model response -->
+        <mxCell id="model-response" value="ModelResponse&#xa;(payload: dict, raw_text: str)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="680" y="70" width="280" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Normalize -->
+        <mxCell id="normalize" value="AgentDecision.from_model_response(response)&#xa;Normalize kind:&#xa;• No kind → final_message&#xa;• Legacy kinds → callback&#xa;• All 6 intent strings → callback&#xa;  (incl. delegation_return)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="655" y="150" width="330" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- Repair slot confusion -->
+        <mxCell id="normalize-caps" value="_normalize_decision_capabilities(decision)&#xa;Repair 6 slot confusion cases:&#xa;1. callback + subagent_id in allowed → call_subagent&#xa;2. callback + tool_name in allowed → call_tool&#xa;3. call_tool + tool_name=None + subagent → call_subagent&#xa;4. call_subagent + subagent=None + tool → call_tool&#xa;5. call_subagent + subagent is a tool name → call_tool&#xa;6. call_tool + tool is a subagent id → call_subagent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="595" y="280" width="450" height="130" as="geometry" />
+        </mxCell>
+
+        <!-- dispatch_decision diamond -->
+        <mxCell id="dispatch" value="dispatch_decision()&#xa;decision.kind?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="720" y="450" width="200" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- === final_message branch === -->
+        <mxCell id="handle-final" value="handle_final_message()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="200" y="450" width="230" height="45" as="geometry" />
+        </mxCell>
+
+        <mxCell id="final-detail" value="• Update conversation_messages&#xa;• Update transcript_entries&#xa;• Return AgentResult(&#xa;    status=&#34;completed&#34;,&#xa;    message=decision.message,&#xa;    decision=decision,&#xa;    prompt=run.rendered_prompt&#xa;  )" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="170" y="520" width="290" height="140" as="geometry" />
+        </mxCell>
+
+        <mxCell id="final-return" value="RETURN AgentResult&#xa;(exits run loop)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="210" y="690" width="210" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- === callback branch === -->
+        <mxCell id="handle-callback" value="handle_callback()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="640" y="580" width="230" height="45" as="geometry" />
+        </mxCell>
+
+        <mxCell id="callback-detail" value="1. open_context(kind=&#34;callback:{intent}&#34;)&#xa;2. audit: record_callback(intent, prompt)&#xa;3. Resolution path:&#xa;   if caller_id AND can_query_caller:&#xa;     → host.resolve_callback(caller_id, ...)&#xa;   elif can_use_host_interaction:&#xa;     → host.request_user_input(prompt)&#xa;   else: response = &#34;&#34;&#xa;4. Update audit (response)&#xa;5. ctx.status = &#34;resolved&#34;&#xa;6. append to conversation_messages&#xa;7. _upsert_prompt_fragment(&#34;&lt;callback_response ...&gt;&#34;)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="590" y="650" width="330" height="200" as="geometry" />
+        </mxCell>
+
+        <mxCell id="callback-return" value="return None&#xa;(loop continues)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="665" y="880" width="180" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- === call_tool branch === -->
+        <mxCell id="handle-tool" value="handle_tool_call()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="450" width="230" height="45" as="geometry" />
+        </mxCell>
+
+        <mxCell id="tool-detail" value="1. validate tool_name in allowed_tools&#xa;   (raises ValueError if not)&#xa;2. tool_call_id = UUID&#xa;3. onPreTool callbacks → ToolStartEvent&#xa;   → ToolHookDecision:&#xa;     .final_result → return early&#xa;     .updated_tool_input → modify params&#xa;     .system_message → add fragment&#xa;4. result = host.execute_tool(name, params)&#xa;5. onPostTool callbacks → ToolEndEvent&#xa;6. _upsert_prompt_fragment(&#xa;     &#34;&lt;tool_result tool=&#34;{name}&#34;&gt;{result}&lt;/...&gt;&#34;)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="520" width="310" height="200" as="geometry" />
+        </mxCell>
+
+        <mxCell id="tool-return" value="return None&#xa;(loop continues)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="750" width="180" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- === call_subagent branch === -->
+        <mxCell id="handle-subagent" value="handle_subagent_call()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="450" width="250" height="45" as="geometry" />
+        </mxCell>
+
+        <mxCell id="subagent-detail" value="1. validate subagent_id in allowed_child_agents&#xa;2. subagent_call_id = UUID&#xa;3. onPreSubagent callbacks → SubagentStartEvent&#xa;   → SubagentHookDecision:&#xa;     .final_result → return early&#xa;     .updated_subagent_id → redirect&#xa;     .updated_subagent_input → modify params&#xa;     .system_message → add fragment&#xa;4. result = host.call_subagent(callee_id, params)&#xa;5. onPostSubagent callbacks → SubagentEndEvent&#xa;6. _upsert_prompt_fragment(&#xa;     &#34;&lt;subagent_result subagent=&#34;{id}&#34;&gt;...&#34;)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1390" y="520" width="320" height="210" as="geometry" />
+        </mxCell>
+
+        <mxCell id="subagent-return" value="return None&#xa;(loop continues)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1465" y="760" width="180" height="45" as="geometry" />
+        </mxCell>
+
+        <!-- === EDGES === -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="model-response" target="normalize" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="normalize" target="normalize-caps" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="normalize-caps" target="dispatch" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="final_message" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#82b366;" edge="1" source="dispatch" target="handle-final" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="720" y="495" /><mxPoint x="315" y="495" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e5" value="callback" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#b46504;" edge="1" source="dispatch" target="handle-callback" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="820" y="540" /><mxPoint x="755" y="580" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e6" value="call_tool" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#b46504;" edge="1" source="dispatch" target="handle-tool" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="920" y="495" /><mxPoint x="1165" y="495" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e7" value="call_subagent" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeColor=#b46504;" edge="1" source="dispatch" target="handle-subagent" parent="1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="920" y="495" /><mxPoint x="1545" y="495" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="handle-final" target="final-detail" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="final-detail" target="final-return" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="handle-callback" target="callback-detail" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="callback-detail" target="callback-return" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="handle-tool" target="tool-detail" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="tool-detail" target="tool-return" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="handle-subagent" target="subagent-detail" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;" edge="1" source="subagent-detail" target="subagent-return" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
