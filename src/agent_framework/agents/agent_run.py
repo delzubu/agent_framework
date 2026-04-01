@@ -24,5 +24,6 @@ class AgentRun:
     conversation_messages: list[dict[str, str]] = field(default_factory=list)
     contexts: list[CallContext] = field(default_factory=list)
     history: list[str] = field(default_factory=list)
+    skill_tool_names: list[str] = field(default_factory=list)
 
 __all__ = ["AgentRun"]

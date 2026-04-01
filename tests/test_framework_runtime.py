@@ -2,9 +2,17 @@ import json
 from pathlib import Path
 
 from agent_framework.agent import Agent, AgentBehavior, AgentEndHookDecision, AgentHookDecision, AgentParameter, AgentResult
+from agent_framework.agents.agent_run import AgentRun
 from agent_framework.config import load_host_config
 from agent_framework.host import AgentHost
 from agent_framework.model import ModelContext, ModelResponse
+
+
+def test_agent_run_has_skill_tool_names() -> None:
+    run = AgentRun(run_id="x", rendered_prompt="p", seed_parameters={}, parameter_values={})
+    assert run.skill_tool_names == []
+    run.skill_tool_names.append("read_skill_resource")
+    assert run.skill_tool_names == ["read_skill_resource"]
 
 
 class FakeModelDriver:
