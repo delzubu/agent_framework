@@ -49,4 +49,10 @@ class AgentHostProtocol(Protocol):
     def run_post_model_hooks(self, event: ModelEndEvent) -> None:
         raise NotImplementedError
 
+    def get_skill_registry(self) -> "Any":
+        raise NotImplementedError
+
+    def register_tool(self, tool: "Any") -> None:
+        raise NotImplementedError
+
 __all__ = ["AgentHostProtocol"]

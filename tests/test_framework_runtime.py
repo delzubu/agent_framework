@@ -438,3 +438,32 @@ def test_host_config_no_skills_dir_empty_tuple(tmp_path: Path) -> None:
     write_env(env_path)  # no SKILLS_DIRECTORY, no skills/ dir
     config = load_host_config(env_path)
     assert config.skills_directories == ()
+
+
+def test_agent_host_get_skill_registry_lazy_init(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillRegistry
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "A test skill")
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        f"OPENAI_API_KEY=key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n"
+        f"AGENT_DIRECTORY=agents\nTOOLS_DIRECTORY=tools\nWORLD_DIRECTORY=world\n"
+        f"ROOT_AGENT=root\nSKILLS_DIRECTORY=skills\n",
+        encoding="utf-8",
+    )
+    host = AgentHost.from_env(env_path, model_driver=FakeModelDriver([]),
+                               input_reader=lambda _: "", output_writer=lambda _: None)
+    assert host.skill_registry is None  # not initialized yet
+    registry = host.get_skill_registry()
+    assert isinstance(registry, SkillRegistry)
+    assert host.skill_registry is registry  # cached
+
+
+def test_agent_host_get_skill_registry_returns_same_instance(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    host = AgentHost.from_env(env_path, model_driver=FakeModelDriver([]),
+                               input_reader=lambda _: "", output_writer=lambda _: None)
+    r1 = host.get_skill_registry()
+    r2 = host.get_skill_registry()
+    assert r1 is r2
