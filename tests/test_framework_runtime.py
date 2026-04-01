@@ -217,3 +217,71 @@ def test_skill_content_holds_body_and_inventory(tmp_path: Path) -> None:
     assert content.body == "# Instructions"
     assert len(content.inventory) == 1
     assert content.inventory[0].relative_path == "references/guide.md"
+
+
+def _write_skill(skill_dir: Path, name: str, description: str, priority: int = 0) -> None:
+    """Helper: create a minimal SKILL.md in a skill subdirectory."""
+    d = skill_dir / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\npriority: {priority}\n---\n# Body\n",
+        encoding="utf-8",
+    )
+
+
+def test_skill_registry_discovers_skills(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillRegistry
+    _write_skill(tmp_path, "my-skill", "A test skill")
+    registry = SkillRegistry(directories=(tmp_path,))
+    registry.discover()
+    defn = registry.get("my-skill")
+    assert defn.name == "my-skill"
+    assert defn.description == "A test skill"
+
+
+def test_skill_registry_filter_empty_returns_all(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillRegistry
+    _write_skill(tmp_path, "skill-a", "A")
+    _write_skill(tmp_path, "skill-b", "B")
+    registry = SkillRegistry(directories=(tmp_path,))
+    registry.discover()
+    result = registry.filter(())
+    assert {d.name for d in result} == {"skill-a", "skill-b"}
+
+
+def test_skill_registry_filter_restricted(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillRegistry
+    _write_skill(tmp_path, "skill-a", "A")
+    _write_skill(tmp_path, "skill-b", "B")
+    registry = SkillRegistry(directories=(tmp_path,))
+    registry.discover()
+    result = registry.filter(("skill-a",))
+    assert len(result) == 1
+    assert result[0].name == "skill-a"
+
+
+def test_skill_registry_deduplication_first_dir_wins(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillRegistry
+    high = tmp_path / "high"
+    low = tmp_path / "low"
+    _write_skill(high, "shared", "from high priority")
+    _write_skill(low, "shared", "from low priority")
+    registry = SkillRegistry(directories=(high, low))  # high is index 0 = highest
+    registry.discover()
+    assert registry.get("shared").description == "from high priority"
+
+
+def test_skill_registry_invalid_frontmatter_skipped(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillRegistry
+    bad = tmp_path / "bad-skill"
+    bad.mkdir()
+    (bad / "SKILL.md").write_text("---\n# missing name and description\n---\n# Body\n", encoding="utf-8")
+    _write_skill(tmp_path, "good-skill", "Good")
+    registry = SkillRegistry(directories=(tmp_path,))
+    registry.discover()
+    assert "good-skill" in [d.name for d in registry.get_all()]
+    try:
+        registry.get("bad-skill")
+        raise AssertionError("Expected KeyError")
+    except KeyError:
+        pass
