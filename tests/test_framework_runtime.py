@@ -285,3 +285,70 @@ def test_skill_registry_invalid_frontmatter_skipped(tmp_path: Path) -> None:
         raise AssertionError("Expected KeyError")
     except KeyError:
         pass
+
+
+def test_skill_loader_reads_body(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillDefinition, SkillLoader
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: desc\n---\n# Instructions\nDo something useful.",
+        encoding="utf-8",
+    )
+    defn = SkillDefinition(
+        name="my-skill", description="desc", version=None, priority=0,
+        source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve(),
+    )
+    content = SkillLoader().load(defn)
+    assert "# Instructions" in content.body
+    assert "Do something useful" in content.body
+    assert "---" not in content.body  # frontmatter stripped
+
+
+def test_skill_loader_builds_inventory_from_directory(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillDefinition, SkillLoader
+    skill_dir = tmp_path / "my-skill"
+    (skill_dir / "references").mkdir(parents=True)
+    (skill_dir / "references" / "guide.md").write_text("# Guide", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: desc\n---\n# Body", encoding="utf-8"
+    )
+    defn = SkillDefinition(
+        name="my-skill", description="desc", version=None, priority=0,
+        source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve(),
+    )
+    content = SkillLoader().load(defn)
+    paths = [r.relative_path for r in content.inventory]
+    assert "references/guide.md" in paths
+
+
+def test_skill_loader_detects_body_backtick_references(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillDefinition, SkillLoader
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "selling.md").write_text("# Selling guide", encoding="utf-8")
+    body = "---\nname: my-skill\ndescription: desc\n---\nRead `selling.md` for details."
+    (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+    defn = SkillDefinition(
+        name="my-skill", description="desc", version=None, priority=0,
+        source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve(),
+    )
+    content = SkillLoader().load(defn)
+    paths = [r.relative_path for r in content.inventory]
+    assert "selling.md" in paths
+
+
+def test_skill_loader_inventory_excludes_skill_md_itself(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillDefinition, SkillLoader
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: desc\n---\n# Body", encoding="utf-8"
+    )
+    defn = SkillDefinition(
+        name="my-skill", description="desc", version=None, priority=0,
+        source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve(),
+    )
+    content = SkillLoader().load(defn)
+    paths = [r.relative_path for r in content.inventory]
+    assert "SKILL.md" not in paths
