@@ -352,3 +352,43 @@ def test_skill_loader_inventory_excludes_skill_md_itself(tmp_path: Path) -> None
     content = SkillLoader().load(defn)
     paths = [r.relative_path for r in content.inventory]
     assert "SKILL.md" not in paths
+
+
+def test_read_skill_resource_resolves_relative_to_skill_dir(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillDefinition, SkillContent, ReadSkillResourceTool
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "guide.md").write_text("# Guide content", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ndescription: d\n---\n", encoding="utf-8")
+    defn = SkillDefinition(name="my-skill", description="d", version=None, priority=0,
+                           source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve())
+    content = SkillContent(definition=defn, body="", inventory=())
+    tool = ReadSkillResourceTool._make(content)
+    result = tool.invoke({"path": "guide.md"}, host=None)  # type: ignore[arg-type]
+    assert "Guide content" in result
+
+
+def test_read_skill_resource_returns_error_for_missing_file(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillDefinition, SkillContent, ReadSkillResourceTool
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ndescription: d\n---\n", encoding="utf-8")
+    defn = SkillDefinition(name="my-skill", description="d", version=None, priority=0,
+                           source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve())
+    content = SkillContent(definition=defn, body="", inventory=())
+    tool = ReadSkillResourceTool._make(content)
+    result = tool.invoke({"path": "nonexistent.md"}, host=None)  # type: ignore[arg-type]
+    assert "not found" in result.lower()
+
+
+def test_read_skill_resource_empty_path_returns_error(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillDefinition, SkillContent, ReadSkillResourceTool
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ndescription: d\n---\n", encoding="utf-8")
+    defn = SkillDefinition(name="my-skill", description="d", version=None, priority=0,
+                           source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve())
+    content = SkillContent(definition=defn, body="", inventory=())
+    tool = ReadSkillResourceTool._make(content)
+    result = tool.invoke({"path": ""}, host=None)  # type: ignore[arg-type]
+    assert "required" in result.lower() or "not found" in result.lower()
