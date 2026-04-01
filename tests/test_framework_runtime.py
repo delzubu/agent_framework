@@ -392,3 +392,49 @@ def test_read_skill_resource_empty_path_returns_error(tmp_path: Path) -> None:
     tool = ReadSkillResourceTool._make(content)
     result = tool.invoke({"path": ""}, host=None)  # type: ignore[arg-type]
     assert "required" in result.lower() or "not found" in result.lower()
+
+
+def test_host_config_skills_directory_single(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        f"OPENAI_API_KEY=key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n"
+        f"AGENT_DIRECTORY=agents\nTOOLS_DIRECTORY=tools\nWORLD_DIRECTORY=world\n"
+        f"ROOT_AGENT=root\nSKILLS_DIRECTORY=skills\n",
+        encoding="utf-8",
+    )
+    config = load_host_config(env_path)
+    assert skills_dir.resolve() in config.skills_directories
+
+
+def test_host_config_skills_directories_multi(tmp_path: Path) -> None:
+    (tmp_path / "skills-a").mkdir()
+    (tmp_path / "skills-b").mkdir()
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        f"OPENAI_API_KEY=key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n"
+        f"AGENT_DIRECTORY=agents\nTOOLS_DIRECTORY=tools\nWORLD_DIRECTORY=world\n"
+        f"ROOT_AGENT=root\nSKILLS_DIRECTORIES=skills-a,skills-b\n",
+        encoding="utf-8",
+    )
+    config = load_host_config(env_path)
+    names = [p.name for p in config.skills_directories]
+    assert "skills-a" in names
+    assert "skills-b" in names
+    assert names.index("skills-a") < names.index("skills-b")  # order preserved
+
+
+def test_host_config_auto_detects_skills_dir(tmp_path: Path) -> None:
+    (tmp_path / "skills").mkdir()
+    env_path = tmp_path / ".env"
+    write_env(env_path)  # no SKILLS_DIRECTORY set
+    config = load_host_config(env_path)
+    assert any(p.name == "skills" for p in config.skills_directories)
+
+
+def test_host_config_no_skills_dir_empty_tuple(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    write_env(env_path)  # no SKILLS_DIRECTORY, no skills/ dir
+    config = load_host_config(env_path)
+    assert config.skills_directories == ()

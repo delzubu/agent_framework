@@ -39,6 +39,7 @@ class HostConfig:
     world_directory: Path
     root_agent_id: str
     agent_models: dict[str, str] = field(default_factory=dict)
+    skills_directories: tuple[Path, ...] = field(default_factory=tuple)
 
     def model_for(self, agent_id: str, fallback: str | None = None) -> str:
         """Return the configured model for an agent.
@@ -75,6 +76,19 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
     tools_directory = (env_file.parent / values.get("TOOLS_DIRECTORY", "tools")).resolve()
     world_directory = (env_file.parent / values.get("WORLD_DIRECTORY", "world")).resolve()
     root_agent_id = values.get("ROOT_AGENT", "root").strip()
+    raw_multi = values.get("SKILLS_DIRECTORIES", "")
+    raw_single = values.get("SKILLS_DIRECTORY", "")
+    if raw_multi:
+        skills_directories: tuple[Path, ...] = tuple(
+            (env_file.parent / p.strip()).resolve()
+            for p in raw_multi.split(",")
+            if p.strip()
+        )
+    elif raw_single:
+        skills_directories = ((env_file.parent / raw_single.strip()).resolve(),)
+    else:
+        default = (env_file.parent / "skills").resolve()
+        skills_directories = (default,) if default.is_dir() else ()
     return HostConfig(
         openai_api_key=values.get("OPENAI_API_KEY", ""),
         default_provider=default_provider,
@@ -84,6 +98,7 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         world_directory=world_directory,
         root_agent_id=root_agent_id,
         agent_models=_parse_agent_models(values.get("AGENT_MODELS", "")),
+        skills_directories=skills_directories,
     )
 
 
