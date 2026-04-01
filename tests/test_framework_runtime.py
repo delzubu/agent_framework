@@ -1,4 +1,5 @@
 import json
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 from agent_framework.agent import Agent, AgentBehavior, AgentEndHookDecision, AgentHookDecision, AgentParameter, AgentResult
@@ -186,3 +187,33 @@ You are the root narrator.
     )
     result = host.run_root(initial_instruction='test instruction')
     assert result.message == 'ok'
+
+
+def test_skill_definition_is_frozen(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillDefinition
+    defn = SkillDefinition(
+        name="my-skill",
+        description="A test skill",
+        version=None,
+        priority=0,
+        source_path=tmp_path / "SKILL.md",
+        skill_dir=tmp_path,
+    )
+    try:
+        defn.name = "other"  # type: ignore[misc]
+        raise AssertionError("Expected frozen instance error")
+    except (AttributeError, FrozenInstanceError):
+        pass
+
+
+def test_skill_content_holds_body_and_inventory(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillDefinition, SkillResource, SkillContent
+    defn = SkillDefinition(
+        name="my-skill", description="desc", version=None, priority=0,
+        source_path=tmp_path / "SKILL.md", skill_dir=tmp_path,
+    )
+    resource = SkillResource(relative_path="references/guide.md", full_path=tmp_path / "references" / "guide.md")
+    content = SkillContent(definition=defn, body="# Instructions", inventory=(resource,))
+    assert content.body == "# Instructions"
+    assert len(content.inventory) == 1
+    assert content.inventory[0].relative_path == "references/guide.md"
