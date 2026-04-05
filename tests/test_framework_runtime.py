@@ -467,3 +467,24 @@ def test_agent_host_get_skill_registry_returns_same_instance(tmp_path: Path) -> 
     r1 = host.get_skill_registry()
     r2 = host.get_skill_registry()
     assert r1 is r2
+
+
+def test_skill_start_event_fields(tmp_path: Path) -> None:
+    from agent_framework.agents.skill_start_event import SkillStartEvent
+    from agent_framework.agents.agent_invocation import AgentInvocation
+    invocation = AgentInvocation(agent_id="a", run_id="r", rendered_prompt="p", caller_id=None, parameters={})
+    event = SkillStartEvent(invocation=invocation, skill_name="my-skill", parameters={})
+    assert event.skill_name == "my-skill"
+    assert event.parameters == {}
+
+
+def test_skill_end_event_fields(tmp_path: Path) -> None:
+    from agent_framework.agents.skill_end_event import SkillEndEvent
+    from agent_framework.agents.agent_invocation import AgentInvocation
+    from agent_framework.skill import SkillDefinition, SkillContent
+    invocation = AgentInvocation(agent_id="a", run_id="r", rendered_prompt="p", caller_id=None, parameters={})
+    defn = SkillDefinition(name="s", description="d", version=None, priority=0,
+                           source_path=tmp_path / "SKILL.md", skill_dir=tmp_path)
+    content = SkillContent(definition=defn, body="body", inventory=())
+    event = SkillEndEvent(invocation=invocation, skill_name="s", parameters={}, content=content)
+    assert event.content.body == "body"
