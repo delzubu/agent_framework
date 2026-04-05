@@ -488,3 +488,26 @@ def test_skill_end_event_fields(tmp_path: Path) -> None:
     content = SkillContent(definition=defn, body="body", inventory=())
     event = SkillEndEvent(invocation=invocation, skill_name="s", parameters={}, content=content)
     assert event.content.body == "body"
+
+
+def test_agent_decision_extracts_skill_name() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+    from agent_framework.model import ModelResponse
+    response = ModelResponse(
+        payload={"kind": "invoke_skill", "skill_name": "my-skill"},
+        raw_text='{"kind": "invoke_skill", "skill_name": "my-skill"}',
+    )
+    decision = AgentDecision.from_model_response(response)
+    assert decision.kind == "invoke_skill"
+    assert decision.skill_name == "my-skill"
+
+
+def test_agent_decision_skill_name_defaults_to_none() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+    from agent_framework.model import ModelResponse
+    response = ModelResponse(
+        payload={"kind": "final_message", "message": "done"},
+        raw_text="done",
+    )
+    decision = AgentDecision.from_model_response(response)
+    assert decision.skill_name is None
