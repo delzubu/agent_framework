@@ -320,6 +320,9 @@ class Agent:
                 result=self.complete_without_result(run),
             )[0]
         finally:
+            for tool_name in run.skill_tool_names:
+                if hasattr(host, "tool_registry"):
+                    host.tool_registry.pop(tool_name, None)
             audit_tracer = getattr(host, "audit_tracer", None)
             if audit_tracer is not None:
                 audit_tracer.finish_agent_call(run_id=run.run_id)
@@ -439,6 +442,7 @@ class Agent:
             "callback": self.handle_callback,
             "call_subagent": self.handle_subagent_call,
             "call_tool": self.handle_tool_call,
+            "invoke_skill": self.handle_skill_invocation,
         }
         handler = handlers.get(decision.kind)
         if handler is None:
@@ -688,6 +692,100 @@ class Agent:
             f"<subagent_result id=\"{subagent_id}\">{result.message}</subagent_result>"
         )
         return None
+
+    def handle_skill_invocation(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        decision: AgentDecision,
+        caller_id: str | None,
+    ) -> AgentResult | None:
+        """Load and inject skill content into the conversation, then continue the loop."""
+        from agent_framework.skill import SkillLoader, ReadSkillResourceTool
+
+        skill_name = decision.skill_name or ""
+        skill_registry = getattr(host, "get_skill_registry", None)
+
+        # 1. Resolve definition
+        try:
+            skill_def = host.get_skill_registry().get(skill_name) if callable(skill_registry) else None
+            if skill_def is None:
+                raise KeyError(skill_name)
+        except KeyError:
+            error_text = f"Unknown skill: {skill_name!r}. Check available skills in <available_skills>."
+            run.conversation_messages.append({"role": "user", "content": f"<skill_error>{error_text}</skill_error>"})
+            return None
+
+        # 2. Validate allowed
+        if self.allowed_skills and skill_def.name not in self.allowed_skills:
+            error_text = f"Skill {skill_name!r} is not in this agent's allowed skills: {sorted(self.allowed_skills)}."
+            run.conversation_messages.append({"role": "user", "content": f"<skill_error>{error_text}</skill_error>"})
+            return None
+
+        # 3. Pre-skill hook
+        self._run_pre_skill_hooks(
+            run=run,
+            event=SkillStartEvent(
+                invocation=self._hook_invocation(run, caller_id),
+                skill_name=skill_def.name,
+                parameters=dict(decision.parameters),
+            ),
+        )
+
+        # 4. Load skill content
+        content = SkillLoader().load(skill_def)
+
+        # 5. Register read_skill_resource tool (once per run)
+        if "read_skill_resource" not in getattr(host, "tool_registry", {}):
+            resource_tool = ReadSkillResourceTool._make(content)
+            if hasattr(host, "register_tool"):
+                host.register_tool(resource_tool)
+            elif hasattr(host, "tool_registry"):
+                host.tool_registry["read_skill_resource"] = resource_tool
+            if "read_skill_resource" not in run.skill_tool_names:
+                run.skill_tool_names.append("read_skill_resource")
+
+        # 6. Build injected fragment
+        inventory_lines = "\n".join(f"- {r.relative_path}" for r in content.inventory)
+        inventory_block = (
+            f"\n\n<skill_file_inventory>\n"
+            f"The following files are available. Use the read_skill_resource tool to read any of them.\n"
+            f"{inventory_lines}\n"
+            f"</skill_file_inventory>"
+        ) if content.inventory else ""
+        skill_fragment = (
+            f'<skill_invocation_result name="{skill_def.name}">\n'
+            f"{content.body}"
+            f"{inventory_block}\n"
+            f"</skill_invocation_result>"
+        )
+
+        # 7. Inject skill content as a user message (dispatch already added the assistant message)
+        run.conversation_messages.append({"role": "user", "content": skill_fragment})
+
+        # 8. Audit trace
+        audit_tracer = getattr(host, "audit_tracer", None)
+        if audit_tracer is not None and hasattr(audit_tracer, "record_skill_invocation"):
+            audit_tracer.record_skill_invocation(
+                run_id=run.run_id,
+                skill_name=skill_def.name,
+                parameters=dict(decision.parameters),
+                inventory=[r.relative_path for r in content.inventory],
+            )
+
+        # 9. Post-skill hook
+        self._run_post_skill_hooks(
+            run=run,
+            event=SkillEndEvent(
+                invocation=self._hook_invocation(run, caller_id),
+                skill_name=skill_def.name,
+                parameters=dict(decision.parameters),
+                content=content,
+            ),
+        )
+
+        return None  # continue loop — model now has skill instructions in context
 
     def handle_tool_call(
         self,

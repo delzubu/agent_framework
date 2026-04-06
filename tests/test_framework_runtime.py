@@ -563,3 +563,117 @@ def test_agent_has_pre_and_post_skill_hooks() -> None:
     )
     assert isinstance(agent.onPreSkill, SequentialHook)
     assert isinstance(agent.onPostSkill, SequentialHook)
+
+
+def _write_env_with_skills(env_path: Path, skills_dir: Path) -> None:
+    env_path.write_text(
+        "OPENAI_API_KEY=test-key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n"
+        f"AGENT_DIRECTORY=agents\nTOOLS_DIRECTORY=tools\nWORLD_DIRECTORY=world\n"
+        f"ROOT_AGENT=root\nSKILLS_DIRECTORY={skills_dir.name}\n",
+        encoding="utf-8",
+    )
+
+
+def test_agent_invokes_skill_and_injects_content_into_conversation(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "Does useful things")
+    (skills_dir / "my-skill" / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: Does useful things\n---\n# Do this thing\nFollow these steps.",
+        encoding="utf-8",
+    )
+    env_path = tmp_path / ".env"
+    _write_env_with_skills(env_path, skills_dir)
+
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=(),
+    )
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=FakeModelDriver([
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "final_message", "message": "done"},
+        ]),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    result = agent.run(host=host, parameters={}, caller_id="host")
+    assert result.status == "completed"
+    assert result.message == "done"
+
+
+def test_agent_unknown_skill_feeds_error_back_and_continues(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+    )
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=FakeModelDriver([
+            {"kind": "invoke_skill", "skill_name": "nonexistent-skill"},
+            {"kind": "final_message", "message": "recovered"},
+        ]),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    result = agent.run(host=host, parameters={}, caller_id="host")
+    assert result.message == "recovered"
+
+
+def test_read_skill_resource_tool_cleaned_up_after_run(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "A skill")
+    env_path = tmp_path / ".env"
+    _write_env_with_skills(env_path, skills_dir)
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=(),
+    )
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=FakeModelDriver([
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "final_message", "message": "done"},
+        ]),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    agent.run(host=host, parameters={}, caller_id="host")
+    assert "read_skill_resource" not in host.tool_registry
+
+
+def test_skill_hooks_fire_on_invocation(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "A skill")
+    env_path = tmp_path / ".env"
+    _write_env_with_skills(env_path, skills_dir)
+
+    fired = []
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=(),
+    )
+    agent.onPreSkill += lambda event: fired.append(("pre", event.skill_name))
+    agent.onPostSkill += lambda event: fired.append(("post", event.skill_name))
+
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=FakeModelDriver([
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "final_message", "message": "done"},
+        ]),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    agent.run(host=host, parameters={}, caller_id="host")
+    assert ("pre", "my-skill") in fired
+    assert ("post", "my-skill") in fired
