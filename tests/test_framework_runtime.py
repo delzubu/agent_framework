@@ -677,3 +677,42 @@ def test_skill_hooks_fire_on_invocation(tmp_path: Path) -> None:
     agent.run(host=host, parameters={}, caller_id="host")
     assert ("pre", "my-skill") in fired
     assert ("post", "my-skill") in fired
+
+
+def test_audit_tracer_records_skill_invocation(tmp_path: Path) -> None:
+    from agent_framework.audit_trace import InMemoryAuditTracer
+    tracer = InMemoryAuditTracer(output_dir=tmp_path)
+    tracer.start_agent_call(
+        run_id="r1", caller_id=None, agent_name="tester",
+        system_prompt="sys", system_prompt_sources=(),
+        user_prompt="hello", user_prompt_sources=(),
+    )
+    tracer.record_skill_invocation(
+        run_id="r1",
+        skill_name="my-skill",
+        parameters={"key": "val"},
+        inventory=["references/guide.md"],
+    )
+    record = tracer.active_records["r1"]
+    assert len(record.skill_invocations) == 1
+    assert record.skill_invocations[0].skill_name == "my-skill"
+    assert "references/guide.md" in record.skill_invocations[0].inventory
+
+
+def test_skill_invocation_record_serializes(tmp_path: Path) -> None:
+    from agent_framework.audit_trace import InMemoryAuditTracer
+    tracer = InMemoryAuditTracer(output_dir=tmp_path)
+    tracer.start_agent_call(
+        run_id="r1", caller_id=None, agent_name="tester",
+        system_prompt="sys", system_prompt_sources=(),
+        user_prompt="hello", user_prompt_sources=(),
+    )
+    tracer.record_skill_invocation(run_id="r1", skill_name="s", parameters={}, inventory=[])
+    tracer.finish_agent_call(run_id="r1")
+    import json
+    jsonl_files = list(tmp_path.glob("*.jsonl"))
+    assert jsonl_files, "Expected JSONL output file"
+    line = jsonl_files[0].read_text(encoding="utf-8").strip()
+    data = json.loads(line)
+    assert "skill_invocations" in data
+    assert data["skill_invocations"][0]["skill_name"] == "s"
