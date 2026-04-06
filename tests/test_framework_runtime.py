@@ -566,7 +566,7 @@ def test_skills_catalog_injected_as_conversation_message(tmp_path: Path) -> None
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
         parameters=(), provider_name="openai", model_name="gpt-4o-mini",
-        allowed_skills=(),
+        allowed_skills=("my-skill",),
     )
     run = agent._create_run({})
     context = agent.build_context(host=host, run=run)
