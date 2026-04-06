@@ -22,6 +22,7 @@ from agent_framework.model import (
     ModelDriver,
     ModelResponse,
     assemble_system_prompt as _assemble_system_prompt,
+    build_skills_catalog as _build_skills_catalog,
     runtime_prompt_source_paths as _runtime_prompt_source_paths,
 )
 
@@ -376,9 +377,15 @@ class Agent:
             )
         else:
             skills = ()
+        skills_catalog = _build_skills_catalog(skills)
         message_history: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
+            *(
+                [{"role": "user", "content": skills_catalog}]
+                if skills_catalog
+                else []
+            ),
             *run.conversation_messages,
         ]
         return ModelContext(

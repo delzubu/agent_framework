@@ -513,19 +513,101 @@ def test_agent_decision_skill_name_defaults_to_none() -> None:
     assert decision.skill_name is None
 
 
-def test_capability_metadata_includes_skills_section_when_skills_present() -> None:
+def test_build_skills_catalog_returns_catalog_text() -> None:
+    """build_skills_catalog returns formatted text when skills are provided."""
+    from agent_framework.model import build_skills_catalog, CapabilityDefinition
+    skills = (CapabilityDefinition(capability_id="my-skill", description="Does something"),)
+    result = build_skills_catalog(skills)
+    assert "<available_skills>" in result
+    assert "my-skill" in result
+
+
+def test_build_skills_catalog_returns_empty_for_no_skills() -> None:
+    """build_skills_catalog returns empty string when no skills."""
+    from agent_framework.model import build_skills_catalog
+    result = build_skills_catalog(())
+    assert result == ""
+
+
+def test_skills_catalog_not_in_system_prompt(tmp_path: Path) -> None:
+    """System prompt must NOT contain skills catalog (the JSON skill list)."""
+    from agent_framework.model import assemble_system_prompt, CapabilityDefinition, ModelContext
+    skills = (CapabilityDefinition(capability_id="my-skill", description="Does something"),)
+    context = ModelContext(
+        system_prompt="base",
+        user_prompt="hello",
+        messages=(),
+        response_mode="decision",
+        tools=(),
+        subagents=(),
+        skills=skills,
+        run_id="r1",
+    )
+    prompt = assemble_system_prompt(context)
+    # The skills catalog JSON (with skill id) must NOT appear in the system prompt
+    assert '"name": "my-skill"' not in prompt
+
+
+def test_skills_catalog_injected_as_conversation_message(tmp_path: Path) -> None:
+    """Skills catalog appears as user message at messages[2]."""
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "Does useful things")
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "OPENAI_API_KEY=key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n"
+        "AGENT_DIRECTORY=agents\nTOOLS_DIRECTORY=tools\nWORLD_DIRECTORY=world\n"
+        f"ROOT_AGENT=root\nSKILLS_DIRECTORY={skills_dir.name}\n",
+        encoding="utf-8",
+    )
+    host = AgentHost.from_env(env_path, model_driver=FakeModelDriver([]),
+                               input_reader=lambda _: "", output_writer=lambda _: None)
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=(),
+    )
+    run = agent._create_run({})
+    context = agent.build_context(host=host, run=run)
+    assert len(context.messages) >= 3
+    catalog_message = context.messages[2]
+    assert catalog_message["role"] == "user"
+    assert "<available_skills>" in catalog_message["content"]
+    assert "my-skill" in catalog_message["content"]
+
+
+def test_no_skills_catalog_message_when_no_skills(tmp_path: Path) -> None:
+    """Without skills, messages has only system + user (2 entries)."""
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    host = AgentHost.from_env(env_path, model_driver=FakeModelDriver([]),
+                               input_reader=lambda _: "", output_writer=lambda _: None)
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+    )
+    run = agent._create_run({})
+    context = agent.build_context(host=host, run=run)
+    assert len(context.messages) == 2
+    assert context.messages[0]["role"] == "system"
+    assert context.messages[1]["role"] == "user"
+
+
+def test_capability_metadata_does_not_include_skills_section() -> None:
+    """_capability_metadata no longer returns skills_section key."""
     from agent_framework.model import OpenAiModelDriver, CapabilityDefinition
     skills = (CapabilityDefinition(capability_id="my-skill", description="Does things"),)
     metadata = OpenAiModelDriver._capability_metadata(tools=(), subagents=(), skills=skills)
-    assert "skills_section" in metadata
-    assert "my-skill" in metadata["skills_section"]
-    assert "Does things" in metadata["skills_section"]
+    assert "skills_section" not in metadata
 
 
-def test_capability_metadata_skills_section_empty_when_no_skills() -> None:
+def test_capability_metadata_has_no_skills_section_key_when_empty() -> None:
+    """_capability_metadata no longer returns skills_section key even when no skills."""
     from agent_framework.model import OpenAiModelDriver
     metadata = OpenAiModelDriver._capability_metadata(tools=(), subagents=(), skills=())
-    assert metadata["skills_section"] == ""
+    assert "skills_section" not in metadata
 
 
 def test_agent_build_context_populates_skills_from_registry(tmp_path: Path) -> None:
