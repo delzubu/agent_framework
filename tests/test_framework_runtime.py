@@ -837,9 +837,13 @@ def test_build_skills_catalog_truncates_over_budget() -> None:
         )
         for i in range(10)
     )
-    result = build_skills_catalog(skills, max_tokens=50)
+    max_tokens = 50
+    result = build_skills_catalog(skills, max_tokens=max_tokens)
     # With max_tokens=50, not all 10 skills should appear
     assert result.count('"name"') < 10
+    # Verify either within budget or we hit the at-least-1 minimum
+    skill_count = result.count('"name"')
+    assert len(result) // 4 <= max_tokens or skill_count == 1
 
 
 def test_build_skills_catalog_keeps_highest_priority_first() -> None:
@@ -850,9 +854,10 @@ def test_build_skills_catalog_keeps_highest_priority_first() -> None:
         CapabilityDefinition(capability_id="mid-skill",  description="y" * 200, priority=5),
         CapabilityDefinition(capability_id="high-skill", description="y" * 200, priority=10),
     )
-    # Budget tight enough to keep only ~1 skill (each skill text is ~200+ chars / 4 = ~50+ tokens)
+    # Budget so tight that even one skill exceeds it — verifies the at-least-1 guarantee keeps the highest-priority skill.
     result = build_skills_catalog(skills, max_tokens=80)
     assert "high-skill" in result
+    assert "mid-skill" not in result
     assert "low-skill" not in result
 
 

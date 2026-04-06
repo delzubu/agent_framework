@@ -63,7 +63,7 @@ def build_skills_catalog(skills: "tuple[CapabilityDefinition, ...]", max_tokens:
             return text
         working.pop()  # drop the lowest-priority skill (last in sorted list)
 
-    return ""
+    return ""  # unreachable: loop always returns before working is exhausted
 
 
 def runtime_prompt_source_paths(response_mode: str) -> tuple[Path, ...]:
