@@ -372,12 +372,14 @@ class Agent:
         if callable(skill_registry):
             skill_defs = host.get_skill_registry().filter(self.allowed_skills)
             skills = tuple(
-                CapabilityDefinition(capability_id=defn.name, description=defn.description)
+                CapabilityDefinition(capability_id=defn.name, description=defn.description, priority=defn.priority)
                 for defn in skill_defs
             )
         else:
             skills = ()
-        skills_catalog = _build_skills_catalog(skills)
+        config = getattr(host, "config", None)
+        max_tokens = getattr(config, "skills_catalog_max_tokens", 2000)
+        skills_catalog = _build_skills_catalog(skills, max_tokens=max_tokens)
         message_history: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},

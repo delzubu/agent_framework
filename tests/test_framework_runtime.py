@@ -803,3 +803,99 @@ def test_skill_invocation_record_serializes(tmp_path: Path) -> None:
 def test_skill_events_importable_from_top_level_agent_module() -> None:
     from agent_framework.agent import SkillStartEvent, SkillEndEvent  # noqa: F401
     from agent_framework.agents import SkillStartEvent, SkillEndEvent  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# Task 2: token budget cap for skills catalog
+# ---------------------------------------------------------------------------
+
+def test_host_config_skills_catalog_max_tokens_from_env(tmp_path: Path) -> None:
+    """SKILLS_CATALOG_MAX_TOKENS env var is read into config."""
+    env = tmp_path / ".env"
+    env.write_text("OPENAI_API_KEY=test\nSKILLS_CATALOG_MAX_TOKENS=500\n")
+    config = load_host_config(env)
+    assert config.skills_catalog_max_tokens == 500
+
+
+def test_host_config_skills_catalog_max_tokens_default(tmp_path: Path) -> None:
+    """Default skills_catalog_max_tokens is 2000."""
+    env = tmp_path / ".env"
+    env.write_text("OPENAI_API_KEY=test\n")
+    config = load_host_config(env)
+    assert config.skills_catalog_max_tokens == 2000
+
+
+def test_build_skills_catalog_truncates_over_budget() -> None:
+    """Skills exceeding budget are dropped (lowest-priority first)."""
+    from agent_framework.model import build_skills_catalog, CapabilityDefinition
+    # Build many skills with long descriptions that exceed a tight budget
+    skills = tuple(
+        CapabilityDefinition(
+            capability_id=f"skill-{i}",
+            description="x" * 300,
+            priority=i,
+        )
+        for i in range(10)
+    )
+    result = build_skills_catalog(skills, max_tokens=50)
+    # With max_tokens=50, not all 10 skills should appear
+    assert result.count('"name"') < 10
+
+
+def test_build_skills_catalog_keeps_highest_priority_first() -> None:
+    """Skills with higher priority survive truncation."""
+    from agent_framework.model import build_skills_catalog, CapabilityDefinition
+    skills = (
+        CapabilityDefinition(capability_id="low-skill",  description="y" * 200, priority=1),
+        CapabilityDefinition(capability_id="mid-skill",  description="y" * 200, priority=5),
+        CapabilityDefinition(capability_id="high-skill", description="y" * 200, priority=10),
+    )
+    # Budget tight enough to keep only ~1 skill (each skill text is ~200+ chars / 4 = ~50+ tokens)
+    result = build_skills_catalog(skills, max_tokens=80)
+    assert "high-skill" in result
+    assert "low-skill" not in result
+
+
+def test_build_skills_catalog_passes_max_tokens_from_host_config(tmp_path: Path) -> None:
+    """build_context() reads max_tokens from host.config.skills_catalog_max_tokens.
+
+    With 3 skills and a tight budget that only fits 1, only the highest-priority
+    skill should appear in the catalog message.
+    """
+    from agent_framework.agents.agent import Agent
+
+    skills_dir = tmp_path / "skills"
+    # Write 3 skills: each description is ~200 chars (~50 tokens each)
+    for name, priority in [("low-skill", 1), ("mid-skill", 5), ("high-skill", 10)]:
+        d = skills_dir / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {'A' * 200}\npriority: {priority}\n---\n# Body\n",
+            encoding="utf-8",
+        )
+
+    env_path = tmp_path / ".env"
+    # Budget of 80 tokens: fits roughly 1 skill (each skill ~50 tokens for description alone)
+    env_path.write_text(
+        "OPENAI_API_KEY=key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n"
+        "AGENT_DIRECTORY=agents\nTOOLS_DIRECTORY=tools\nWORLD_DIRECTORY=world\n"
+        f"ROOT_AGENT=root\nSKILLS_DIRECTORY={skills_dir.name}\n"
+        "SKILLS_CATALOG_MAX_TOKENS=80\n",
+        encoding="utf-8",
+    )
+    host = AgentHost.from_env(env_path, model_driver=FakeModelDriver([]),
+                               input_reader=lambda _: "", output_writer=lambda _: None)
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=("low-skill", "mid-skill", "high-skill"),
+    )
+    run = agent._create_run({})
+    context = agent.build_context(host=host, run=run)
+    # The catalog message should exist and contain only the high-priority skill
+    catalog_messages = [m for m in context.messages if "<available_skills>" in m.get("content", "")]
+    assert len(catalog_messages) == 1
+    catalog_content = catalog_messages[0]["content"]
+    assert "high-skill" in catalog_content
+    assert "low-skill" not in catalog_content

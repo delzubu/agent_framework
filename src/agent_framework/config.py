@@ -40,6 +40,7 @@ class HostConfig:
     root_agent_id: str
     agent_models: dict[str, str] = field(default_factory=dict)
     skills_directories: tuple[Path, ...] = field(default_factory=tuple)
+    skills_catalog_max_tokens: int = 2000
 
     def model_for(self, agent_id: str, fallback: str | None = None) -> str:
         """Return the configured model for an agent.
@@ -89,6 +90,8 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
     else:
         default = (env_file.parent / "skills").resolve()
         skills_directories = (default,) if default.is_dir() else ()
+    raw_max_tokens = values.get("SKILLS_CATALOG_MAX_TOKENS", "")
+    skills_catalog_max_tokens = int(raw_max_tokens) if raw_max_tokens.strip() else 2000
     return HostConfig(
         openai_api_key=values.get("OPENAI_API_KEY", ""),
         default_provider=default_provider,
@@ -99,6 +102,7 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         root_agent_id=root_agent_id,
         agent_models=_parse_agent_models(values.get("AGENT_MODELS", "")),
         skills_directories=skills_directories,
+        skills_catalog_max_tokens=skills_catalog_max_tokens,
     )
 
 
