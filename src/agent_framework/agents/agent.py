@@ -90,6 +90,8 @@ class Agent:
         onPostTool: Sequential callbacks executed after a tool call.
         onPreSubagent: Sequential callbacks executed before a child-agent call.
         onPostSubagent: Sequential callbacks executed after a child-agent call.
+        onPreSkill: Sequential callbacks executed before a skill invocation.
+        onPostSkill: Sequential callbacks executed after a skill invocation.
         behavior_ids: Optional ordered runtime behavior ids resolved from sidecar JSON.
         source_path: Source Markdown path used to load the agent definition.
     """
