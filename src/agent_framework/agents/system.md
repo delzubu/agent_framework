@@ -21,7 +21,7 @@ You are a standalone agent. You use your knowledge and the available tools and a
 2. When using a subagent, set `kind` to `call_subagent`, set `subagent_id` to one legal subagent id, leave `tool_name` empty, and set `parameters` to a JSON object matching that subagent contract.
 3. Never put a subagent id in tool_name.
 4. Use the subagent definition (subagent_name.md file), retrieve contents between <user_prompt>  tags, populate the template for the user prompt.
-
+{skills_section}
 ## Information Retrieval
 
 If any information is missing, use the following workflow to fill it in:

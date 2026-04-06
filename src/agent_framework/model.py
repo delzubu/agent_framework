@@ -305,6 +305,7 @@ class OpenAiModelDriver:
         return {
             "tools_json": tools_json,
             "subagents_json": subagents_json,
+            "skills_section": "",
         }
 
     @classmethod
