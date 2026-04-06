@@ -374,13 +374,12 @@ Also appends `{"role": "assistant", "content": decision.message}` to `run.conver
 2. **Validate allowed:** If the agent has a non-empty `allowed_skills` list, `decision.skill_name` must be in it. Raises `ValueError` if not.
 3. **Pre-skill hooks:** Fire `SkillStartEvent(invocation, skill_name, parameters)` via `onPreSkill` callbacks.
 4. **Load content:** `SkillLoader` loads the skill body and builds the file inventory (list of resource paths, not content).
-5. **Register resource tool:** `ReadSkillResourceTool` is dynamically registered on `host` and its name recorded in `run.skill_tool_names`. This tool gives the model on-demand access to individual skill resource files.
-6. **Inject skill fragment:** The loaded skill content (body text + inventory manifest) is appended to `run.conversation_messages` as a `{"role": "user", "content": ...}` message. This is the **only** injection point — skill content never enters `system_prompt` or `prompt_fragments`.
-7. **Audit trace:** Records a `SkillInvocationRecord` on the current `AgentCallAuditRecord`.
-8. **Post-skill hooks:** Fire `SkillEndEvent(invocation, skill_name, parameters, content)` via `onPostSkill` callbacks.
-9. `return None` — loop continues.
+5. **Inject skill fragment:** `handle_skill_invocation()` injects `Base directory: <path>` and a `<skill_files>` inventory list (file names discovered in the skill directory) into the conversation fragment. This content is appended to `run.conversation_messages` as a `{"role": "user", "content": ...}` message. This is the **only** injection point — skill content never enters `system_prompt` or `prompt_fragments`.
+6. **Audit trace:** Records a `SkillInvocationRecord` on the current `AgentCallAuditRecord`.
+7. **Post-skill hooks:** Fire `SkillEndEvent(invocation, skill_name, parameters, content)` via `onPostSkill` callbacks.
+8. `return None` — loop continues.
 
-**Cleanup:** The `Agent.run()` `finally` block iterates `run.skill_tool_names` and unregisters each `ReadSkillResourceTool` from the host, ensuring no resource tools leak across runs.
+**No tool cleanup required:** The `Agent.run()` `finally` block does not perform any skill-related tool cleanup. There is no dynamically-registered resource tool to unregister — resource files are made accessible to the model via the injected base directory path, not through a tool.
 
 **`onPreSkill` / `onPostSkill` hooks** are `SequentialHook` instances on `Agent`, consistent with the existing pre/post hook pattern for tools and subagents.
 

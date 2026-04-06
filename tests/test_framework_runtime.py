@@ -847,61 +847,14 @@ def test_skill_fragment_includes_base_directory(tmp_path: Path) -> None:
         "---\nname: my-skill\ndescription: Does useful things\n---\n# Do this thing\nFollow these steps.",
         encoding="utf-8",
     )
+    # Add a resource file so the inventory is non-empty and <skill_files> is injected
+    (skills_dir / "my-skill" / "reference.md").write_text(
+        "# Reference\nExtra context for the skill.",
+        encoding="utf-8",
+    )
     env_path = tmp_path / ".env"
     _write_env_with_skills(env_path, skills_dir)
 
-    injected_messages: list[dict] = []
-    original_append = list.append
-
-    agent = Agent(
-        agent_id="tester", role="tester", description="",
-        system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
-        allowed_skills=(),
-    )
-    host = AgentHost.from_env(
-        env_path,
-        model_driver=FakeModelDriver([
-            {"kind": "invoke_skill", "skill_name": "my-skill"},
-            {"kind": "final_message", "message": "done"},
-        ]),
-        input_reader=lambda _: "",
-        output_writer=lambda _: None,
-    )
-    result = agent.run(host=host, parameters={}, caller_id="host")
-    assert result.status == "completed"
-
-    # Find the injected skill fragment message in the conversation
-    run_messages = []
-    # Access the conversation messages from the last run by inspecting the model driver calls
-    # We verify by checking that the fragment contains "Base directory:"
-    # The host.tool_registry should NOT have read_skill_resource
-    assert "read_skill_resource" not in host.tool_registry
-
-    # To verify fragment content, we capture it via a hook
-    # Re-run with a capturing hook
-    captured_fragments: list[str] = []
-    agent2 = Agent(
-        agent_id="tester", role="tester", description="",
-        system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
-        allowed_skills=(),
-    )
-    agent2.onPostSkill += lambda event: captured_fragments.append(
-        # The fragment is the last user message added
-        ""  # placeholder
-    )
-    host2 = AgentHost.from_env(
-        env_path,
-        model_driver=FakeModelDriver([
-            {"kind": "invoke_skill", "skill_name": "my-skill"},
-            {"kind": "final_message", "message": "done"},
-        ]),
-        input_reader=lambda _: "",
-        output_writer=lambda _: None,
-    )
-
-    # Patch model driver to capture messages
     skill_dir_path = str((skills_dir / "my-skill").resolve())
     conversation_snapshot: list[list[dict]] = []
 
@@ -920,7 +873,7 @@ def test_skill_fragment_includes_base_directory(tmp_path: Path) -> None:
             payload = self._payloads.pop(0)
             return ModelResponse(payload=payload, raw_text=str(payload))
 
-    host3 = AgentHost.from_env(
+    host = AgentHost.from_env(
         env_path,
         model_driver=CapturingModelDriver([
             {"kind": "invoke_skill", "skill_name": "my-skill"},
@@ -929,15 +882,15 @@ def test_skill_fragment_includes_base_directory(tmp_path: Path) -> None:
         input_reader=lambda _: "",
         output_writer=lambda _: None,
     )
-    agent3 = Agent(
+    agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
         parameters=(), provider_name="openai", model_name="gpt-4o-mini",
         allowed_skills=(),
     )
-    agent3.run(host=host3, parameters={}, caller_id="host")
+    agent.run(host=host, parameters={}, caller_id="host")
 
-    # The second call should include the skill fragment with Base directory:
+    # The second model call should include the skill fragment with Base directory:
     assert len(conversation_snapshot) == 2, "Expected 2 model calls"
     second_call_messages = conversation_snapshot[1]
     skill_messages = [m for m in second_call_messages if "skill_invocation_result" in m.get("content", "")]
@@ -948,6 +901,10 @@ def test_skill_fragment_includes_base_directory(tmp_path: Path) -> None:
         f"Expected skill directory path in fragment, got:\n{fragment}"
     assert "read_skill_resource" not in fragment, \
         f"Expected no 'read_skill_resource' in fragment, got:\n{fragment}"
+    assert "<skill_file_inventory>" not in fragment, \
+        f"Expected no '<skill_file_inventory>' in fragment, got:\n{fragment}"
+    assert "<skill_files>" in fragment, \
+        f"Expected '<skill_files>' in fragment, got:\n{fragment}"
 
 
 def test_no_skill_tool_registered_on_invocation(tmp_path: Path) -> None:
