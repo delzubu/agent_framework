@@ -3,17 +3,10 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 from agent_framework.agent import Agent, AgentBehavior, AgentEndHookDecision, AgentHookDecision, AgentParameter, AgentResult
-from agent_framework.agents.agent_run import AgentRun
 from agent_framework.config import load_host_config
 from agent_framework.host import AgentHost
 from agent_framework.model import ModelContext, ModelResponse
 
-
-def test_agent_run_has_skill_tool_names() -> None:
-    run = AgentRun(run_id="x", rendered_prompt="p", seed_parameters={}, parameter_values={})
-    assert run.skill_tool_names == []
-    run.skill_tool_names.append("read_skill_resource")
-    assert run.skill_tool_names == ["read_skill_resource"]
 
 
 class FakeModelDriver:
@@ -354,46 +347,6 @@ def test_skill_loader_inventory_excludes_skill_md_itself(tmp_path: Path) -> None
     assert "SKILL.md" not in paths
 
 
-def test_read_skill_resource_resolves_relative_to_skill_dir(tmp_path: Path) -> None:
-    from agent_framework.skill import SkillDefinition, SkillContent, ReadSkillResourceTool
-    skill_dir = tmp_path / "my-skill"
-    skill_dir.mkdir()
-    (skill_dir / "guide.md").write_text("# Guide content", encoding="utf-8")
-    (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ndescription: d\n---\n", encoding="utf-8")
-    defn = SkillDefinition(name="my-skill", description="d", version=None, priority=0,
-                           source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve())
-    content = SkillContent(definition=defn, body="", inventory=())
-    tool = ReadSkillResourceTool._make(content)
-    result = tool.invoke({"path": "guide.md"}, host=None)  # type: ignore[arg-type]
-    assert "Guide content" in result
-
-
-def test_read_skill_resource_returns_error_for_missing_file(tmp_path: Path) -> None:
-    from agent_framework.skill import SkillDefinition, SkillContent, ReadSkillResourceTool
-    skill_dir = tmp_path / "my-skill"
-    skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ndescription: d\n---\n", encoding="utf-8")
-    defn = SkillDefinition(name="my-skill", description="d", version=None, priority=0,
-                           source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve())
-    content = SkillContent(definition=defn, body="", inventory=())
-    tool = ReadSkillResourceTool._make(content)
-    result = tool.invoke({"path": "nonexistent.md"}, host=None)  # type: ignore[arg-type]
-    assert "not found" in result.lower()
-
-
-def test_read_skill_resource_empty_path_returns_error(tmp_path: Path) -> None:
-    from agent_framework.skill import SkillDefinition, SkillContent, ReadSkillResourceTool
-    skill_dir = tmp_path / "my-skill"
-    skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ndescription: d\n---\n", encoding="utf-8")
-    defn = SkillDefinition(name="my-skill", description="d", version=None, priority=0,
-                           source_path=(skill_dir / "SKILL.md").resolve(), skill_dir=skill_dir.resolve())
-    content = SkillContent(definition=defn, body="", inventory=())
-    tool = ReadSkillResourceTool._make(content)
-    result = tool.invoke({"path": ""}, host=None)  # type: ignore[arg-type]
-    assert "required" in result.lower() or "not found" in result.lower()
-
-
 def test_host_config_skills_directory_single(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -707,30 +660,6 @@ def test_agent_unknown_skill_feeds_error_back_and_continues(tmp_path: Path) -> N
     assert result.message == "recovered"
 
 
-def test_read_skill_resource_tool_cleaned_up_after_run(tmp_path: Path) -> None:
-    skills_dir = tmp_path / "skills"
-    _write_skill(skills_dir, "my-skill", "A skill")
-    env_path = tmp_path / ".env"
-    _write_env_with_skills(env_path, skills_dir)
-    agent = Agent(
-        agent_id="tester", role="tester", description="",
-        system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
-        allowed_skills=(),
-    )
-    host = AgentHost.from_env(
-        env_path,
-        model_driver=FakeModelDriver([
-            {"kind": "invoke_skill", "skill_name": "my-skill"},
-            {"kind": "final_message", "message": "done"},
-        ]),
-        input_reader=lambda _: "",
-        output_writer=lambda _: None,
-    )
-    agent.run(host=host, parameters={}, caller_id="host")
-    assert "read_skill_resource" not in host.tool_registry
-
-
 def test_skill_hooks_fire_on_invocation(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     _write_skill(skills_dir, "my-skill", "A skill")
@@ -904,3 +833,143 @@ def test_build_skills_catalog_passes_max_tokens_from_host_config(tmp_path: Path)
     catalog_content = catalog_messages[0]["content"]
     assert "high-skill" in catalog_content
     assert "low-skill" not in catalog_content
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Replace ReadSkillResourceTool with base directory injection
+# ---------------------------------------------------------------------------
+
+def test_skill_fragment_includes_base_directory(tmp_path: Path) -> None:
+    """Skill invocation injects 'Base directory:' path in the conversation message."""
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "Does useful things")
+    (skills_dir / "my-skill" / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: Does useful things\n---\n# Do this thing\nFollow these steps.",
+        encoding="utf-8",
+    )
+    env_path = tmp_path / ".env"
+    _write_env_with_skills(env_path, skills_dir)
+
+    injected_messages: list[dict] = []
+    original_append = list.append
+
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=(),
+    )
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=FakeModelDriver([
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "final_message", "message": "done"},
+        ]),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    result = agent.run(host=host, parameters={}, caller_id="host")
+    assert result.status == "completed"
+
+    # Find the injected skill fragment message in the conversation
+    run_messages = []
+    # Access the conversation messages from the last run by inspecting the model driver calls
+    # We verify by checking that the fragment contains "Base directory:"
+    # The host.tool_registry should NOT have read_skill_resource
+    assert "read_skill_resource" not in host.tool_registry
+
+    # To verify fragment content, we capture it via a hook
+    # Re-run with a capturing hook
+    captured_fragments: list[str] = []
+    agent2 = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=(),
+    )
+    agent2.onPostSkill += lambda event: captured_fragments.append(
+        # The fragment is the last user message added
+        ""  # placeholder
+    )
+    host2 = AgentHost.from_env(
+        env_path,
+        model_driver=FakeModelDriver([
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "final_message", "message": "done"},
+        ]),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+
+    # Patch model driver to capture messages
+    skill_dir_path = str((skills_dir / "my-skill").resolve())
+    conversation_snapshot: list[list[dict]] = []
+
+    class CapturingModelDriver:
+        def __init__(self, payloads):
+            self._payloads = list(payloads)
+            self.on_request_trace = None
+            self.on_response_trace = None
+
+        def set_trace_callbacks(self, *, on_request=None, on_response=None):
+            self.on_request_trace = on_request
+            self.on_response_trace = on_response
+
+        def decide(self, *, agent_id, provider_name, model_name, temperature, context):
+            conversation_snapshot.append(list(context.messages))
+            payload = self._payloads.pop(0)
+            return ModelResponse(payload=payload, raw_text=str(payload))
+
+    host3 = AgentHost.from_env(
+        env_path,
+        model_driver=CapturingModelDriver([
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "final_message", "message": "done"},
+        ]),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    agent3 = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=(),
+    )
+    agent3.run(host=host3, parameters={}, caller_id="host")
+
+    # The second call should include the skill fragment with Base directory:
+    assert len(conversation_snapshot) == 2, "Expected 2 model calls"
+    second_call_messages = conversation_snapshot[1]
+    skill_messages = [m for m in second_call_messages if "skill_invocation_result" in m.get("content", "")]
+    assert skill_messages, "Expected a skill_invocation_result message in the second model call"
+    fragment = skill_messages[0]["content"]
+    assert "Base directory:" in fragment, f"Expected 'Base directory:' in fragment, got:\n{fragment}"
+    assert skill_dir_path in fragment or str(skills_dir / "my-skill") in fragment, \
+        f"Expected skill directory path in fragment, got:\n{fragment}"
+    assert "read_skill_resource" not in fragment, \
+        f"Expected no 'read_skill_resource' in fragment, got:\n{fragment}"
+
+
+def test_no_skill_tool_registered_on_invocation(tmp_path: Path) -> None:
+    """No read_skill_resource tool registered after skill invocation."""
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "A skill")
+    env_path = tmp_path / ".env"
+    _write_env_with_skills(env_path, skills_dir)
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=(),
+    )
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=FakeModelDriver([
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "final_message", "message": "done"},
+        ]),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    agent.run(host=host, parameters={}, caller_id="host")
+    assert "read_skill_resource" not in host.tool_registry

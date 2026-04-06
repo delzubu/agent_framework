@@ -1,4 +1,4 @@
-"""Skill data types, registry, loader, and read_skill_resource tool."""
+"""Skill data types, registry, and loader."""
 
 from __future__ import annotations
 
@@ -6,14 +6,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
-
 import yaml
-
-from agent_framework.tool import Tool, ToolDefinition, ToolParameter
-
-if TYPE_CHECKING:
-    from agent_framework.host import AgentHost
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -179,69 +172,6 @@ class SkillLoader:
                 seen[rel] = SkillResource(relative_path=rel, full_path=cwd_resolved)
 
 
-_READ_SKILL_RESOURCE_DEFINITION = ToolDefinition(
-    tool_id="read_skill_resource",
-    description=(
-        "Read a file referenced in the active skill's file inventory. "
-        "Use the path exactly as listed in <skill_file_inventory>."
-    ),
-    parameters=(
-        ToolParameter(
-            name="path",
-            description=(
-                "Path to the file. Resolved in order: "
-                "1. relative to skill directory, "
-                "2. absolute path, "
-                "3. relative to cwd."
-            ),
-            required=True,
-            value_type="string",
-        ),
-    ),
-)
-
-
-class ReadSkillResourceTool(Tool):
-    """Tool that reads a file from the active skill's inventory.
-
-    Registered on host.tool_registry during skill invocation.
-    Cleaned up by Agent.run() finally block after the run ends.
-    Security: resolves any path without sandboxing — skills are trusted content.
-    """
-
-    __slots__ = ("_skill_content",)
-
-    def __init__(self, skill_content: SkillContent) -> None:
-        super().__init__(definition=_READ_SKILL_RESOURCE_DEFINITION)
-        self._skill_content = skill_content
-
-    @classmethod
-    def _make(cls, skill_content: SkillContent) -> "ReadSkillResourceTool":
-        return cls(skill_content)
-
-    def invoke(self, arguments: dict[str, Any], host: "AgentHost") -> str:  # type: ignore[override]
-        path_str = str(arguments.get("path", "")).strip()
-        if not path_str:
-            return "Error: path parameter is required."
-        resolved = self._resolve(path_str)
-        if resolved is None or not resolved.exists():
-            return f"File not found: {path_str}"
-        return resolved.read_text(encoding="utf-8")
-
-    def _resolve(self, path_str: str) -> Path | None:
-        candidate = Path(path_str)
-        skill_dir = self._skill_content.definition.skill_dir
-        rel = (skill_dir / candidate).resolve()
-        if rel.exists():
-            return rel
-        if candidate.is_absolute() and candidate.exists():
-            return candidate
-        cwd_rel = (Path.cwd() / candidate).resolve()
-        if cwd_rel.exists():
-            return cwd_rel
-        return None
-
-
 def _parse_skill_frontmatter(skill_md: Path, _dir_index: int) -> SkillDefinition | None:
     """Parse SKILL.md frontmatter. Returns None and logs on any error."""
     try:
@@ -274,5 +204,5 @@ def _parse_skill_frontmatter(skill_md: Path, _dir_index: int) -> SkillDefinition
 
 __all__ = [
     "SkillDefinition", "SkillResource", "SkillContent",
-    "SkillRegistry", "SkillLoader", "ReadSkillResourceTool",
+    "SkillRegistry", "SkillLoader",
 ]

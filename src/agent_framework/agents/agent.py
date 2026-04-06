@@ -321,9 +321,6 @@ class Agent:
                 result=self.complete_without_result(run),
             )[0]
         finally:
-            for tool_name in run.skill_tool_names:
-                if hasattr(host, "tool_registry"):
-                    host.tool_registry.pop(tool_name, None)
             audit_tracer = getattr(host, "audit_tracer", None)
             if audit_tracer is not None:
                 audit_tracer.finish_agent_call(run_id=run.run_id)
@@ -711,7 +708,7 @@ class Agent:
         caller_id: str | None,
     ) -> AgentResult | None:
         """Load and inject skill content into the conversation, then continue the loop."""
-        from agent_framework.skill import SkillLoader, ReadSkillResourceTool
+        from agent_framework.skill import SkillLoader
 
         skill_name = decision.skill_name or ""
         skill_registry = getattr(host, "get_skill_registry", None)
@@ -745,35 +742,24 @@ class Agent:
         # 4. Load skill content
         content = SkillLoader().load(skill_def)
 
-        # 5. Register read_skill_resource tool (once per run)
-        if "read_skill_resource" not in getattr(host, "tool_registry", {}):
-            resource_tool = ReadSkillResourceTool._make(content)
-            if hasattr(host, "register_tool"):
-                host.register_tool(resource_tool)
-            elif hasattr(host, "tool_registry"):
-                host.tool_registry["read_skill_resource"] = resource_tool
-            if "read_skill_resource" not in run.skill_tool_names:
-                run.skill_tool_names.append("read_skill_resource")
-
-        # 6. Build injected fragment
+        # 5. Build injected fragment with base directory
+        base_dir_line = f"\nBase directory: {content.definition.skill_dir}"
         inventory_lines = "\n".join(f"- {r.relative_path}" for r in content.inventory)
         inventory_block = (
-            f"\n\n<skill_file_inventory>\n"
-            f"The following files are available. Use the read_skill_resource tool to read any of them.\n"
-            f"{inventory_lines}\n"
-            f"</skill_file_inventory>"
+            f"\n\n<skill_files>\n{inventory_lines}\n</skill_files>"
         ) if content.inventory else ""
         skill_fragment = (
             f'<skill_invocation_result name="{skill_def.name}">\n'
             f"{content.body}"
+            f"{base_dir_line}"
             f"{inventory_block}\n"
             f"</skill_invocation_result>"
         )
 
-        # 7. Inject skill content as a user message (dispatch already added the assistant message)
+        # 6. Inject skill content as a user message (dispatch already added the assistant message)
         run.conversation_messages.append({"role": "user", "content": skill_fragment})
 
-        # 8. Audit trace
+        # 7. Audit trace
         audit_tracer = getattr(host, "audit_tracer", None)
         if audit_tracer is not None and hasattr(audit_tracer, "record_skill_invocation"):
             audit_tracer.record_skill_invocation(
@@ -783,7 +769,7 @@ class Agent:
                 inventory=[r.relative_path for r in content.inventory],
             )
 
-        # 9. Post-skill hook
+        # 8. Post-skill hook
         self._run_post_skill_hooks(
             run=run,
             event=SkillEndEvent(

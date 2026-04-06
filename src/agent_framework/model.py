@@ -51,8 +51,7 @@ def build_skills_catalog(skills: "tuple[CapabilityDefinition, ...]", max_tokens:
             "2. To invoke a skill, set `kind` to `invoke_skill` and `skill_name` to a valid skill name.\n"
             "3. After a skill is invoked, its full instructions will be injected into this conversation.\n"
             "   Follow those instructions to complete the task.\n"
-            "4. You may need to read supporting files using the `read_skill_resource` tool \u2014 the skill\n"
-            "   body will tell you when this is needed."
+            "4. Skill files are accessible via the base directory path provided with each skill invocation."
         )
 
     # Sort by priority descending so lowest-priority is at the end
