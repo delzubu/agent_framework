@@ -273,7 +273,7 @@ class CapabilityDefinition:
 
 **Subagents** are converted from `Agent` instances via `agent_to_capability_definition(agent)` in `helpers.py`, which maps `agent.agent_id` → `capability_id`, `agent.description` → `description`, and `agent.parameters` → `CapabilityParameter` tuples.
 
-**Skills** are directory-discovered markdown-defined instruction sets. `SkillRegistry` discovers skills from configured `skills_directories` and exposes them as `CapabilityDefinition` tuples. The catalog (names + descriptions) is built by `build_skills_catalog(skills, max_tokens=...)` and injected by `build_context()` as a first-turn `{"role": "user"}` conversation message (at index 2, before `run.conversation_messages`) when skills are available — it is not part of the system prompt. Full skill content is loaded on demand by `SkillLoader` only when the model emits an `invoke_skill` decision.
+**Skills** are directory-discovered markdown-defined instruction sets. `SkillRegistry` discovers skills from configured `skills_directories` and exposes them as `CapabilityDefinition` tuples. Each `CapabilityDefinition` for a skill carries a `priority: int = 0` field read from the SKILL.md frontmatter; `build_skills_catalog()` uses this to drop lowest-priority skills first when the catalog must be truncated to fit within `max_tokens`. The catalog (names + descriptions) is built by `build_skills_catalog(skills, max_tokens=...)` and injected by `build_context()` as a first-turn `{"role": "user"}` conversation message (at index 2, before `run.conversation_messages`) when skills are available — it is not part of the system prompt. Full skill content is loaded on demand by `SkillLoader` only when the model emits an `invoke_skill` decision.
 
 ---
 

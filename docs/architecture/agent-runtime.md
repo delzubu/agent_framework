@@ -54,6 +54,14 @@ The `split_markdown_sections()` function in `helpers.py` splits on `^---\s*$` (m
 | `subagents` | list | no | Allowed child agent IDs. |
 | `allowed_skills` | list | no | Allowed skill names. An empty value (omitted or empty list) means all discovered skills are available. A non-empty list restricts invocation to the named skills only. |
 
+### 2.2.1 Skill Frontmatter Fields
+
+Each SKILL.md file can include additional frontmatter fields recognized by the skill loader:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `priority` | `int` | `0` | Controls catalog ordering when `build_skills_catalog()` must truncate to fit `SKILLS_CATALOG_MAX_TOKENS`. Lower-priority skills are dropped first. Higher values are preserved preferentially. |
+
 ### 2.3 Parameter Declarations
 
 Each entry under `parameters:` declares an `AgentParameter`:
@@ -251,7 +259,10 @@ ModelContext(
     response_mode="json_object",   # hardcoded; model layer selects actual mode
     tools=tuple(tool_definitions),
     subagents=tuple(subagent_defs),
-    skills=(),
+    skills=tuple(
+        CapabilityDefinition(capability_id=d.name, description=d.description, priority=d.priority)
+        for d in skill_defs
+    ),
     run_id=run.run_id,
 )
 ```
@@ -374,7 +385,18 @@ Also appends `{"role": "assistant", "content": decision.message}` to `run.conver
 2. **Validate allowed:** If the agent has a non-empty `allowed_skills` list, `decision.skill_name` must be in it. Raises `ValueError` if not.
 3. **Pre-skill hooks:** Fire `SkillStartEvent(invocation, skill_name, parameters)` via `onPreSkill` callbacks.
 4. **Load content:** `SkillLoader` loads the skill body and builds the file inventory (list of resource paths, not content).
-5. **Inject skill fragment:** `handle_skill_invocation()` injects `Base directory: <path>` and a `<skill_files>` inventory list (file names discovered in the skill directory) into the conversation fragment. This content is appended to `run.conversation_messages` as a `{"role": "user", "content": ...}` message. This is the **only** injection point — skill content never enters `system_prompt` or `prompt_fragments`.
+5. **Inject skill fragment:** `handle_skill_invocation()` injects the skill content into `run.conversation_messages` as a `{"role": "user", "content": ...}` message wrapped in a `<skill_invocation_result>` XML element. This is the **only** injection point — skill content never enters `system_prompt` or `prompt_fragments`. The injected message has the form:
+
+   ```
+   <skill_invocation_result name="<skill-name>">
+   <body text>
+   Base directory: /abs/path/to/skill/dir
+
+   <skill_files>
+   - relative/file.md
+   </skill_files>
+   </skill_invocation_result>
+   ```
 6. **Audit trace:** Records a `SkillInvocationRecord` on the current `AgentCallAuditRecord`.
 7. **Post-skill hooks:** Fire `SkillEndEvent(invocation, skill_name, parameters, content)` via `onPostSkill` callbacks.
 8. `return None` — loop continues.

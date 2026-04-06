@@ -529,7 +529,7 @@ Both hooks are currently observation-only (return `None`). The pre-hook fires af
 
 The current implementation uses **prompt injection** — skill body text is inserted as a user message in `conversation_messages`. This is provider-agnostic and requires no special API support.
 
-A planned `SkillDriver` protocol will allow native API integration where providers such as Anthropic (system prompt caching) or OpenAI (file attachments, cached context) support more efficient skill delivery. A `SkillDriver` implementation would replace the `SkillLoader` + injection step with a provider-optimized delivery mechanism while leaving the rest of the invocation flow (hooks, audit tracing, resource tools) unchanged.
+A planned `SkillDriver` protocol will allow native API integration where providers such as Anthropic (system prompt caching) or OpenAI (file attachments, cached context) support more efficient skill delivery. A `SkillDriver` implementation would replace the `SkillLoader` + injection step with a provider-optimized delivery mechanism while leaving the rest of the invocation flow (hooks, audit tracing, base directory injection) unchanged.
 
 ---
 

@@ -349,6 +349,7 @@ class CapabilityDefinition:
     capability_id: str
     description: str
     parameters: tuple[CapabilityParameter, ...]
+    priority: int = 0
 
     def to_model_payload(self) -> dict: ...
 ```
@@ -421,6 +422,7 @@ class OpenAiModelDriver:
 |----------|-----------|-------------|
 | `assemble_system_prompt` | `(context: ModelContext) -> str` | Combines `context.system_prompt` with `_runtime_prompt(context)`. Called by drivers. |
 | `runtime_prompt_source_paths` | `(response_mode: str) -> list[Path]` | Returns template file paths for a given mode. Used by audit tracer. |
+| `build_skills_catalog` | `(skills: tuple[CapabilityDefinition, ...], max_tokens: int = 2000) -> str` | Builds a formatted skills catalog with priority-based truncation for conversation injection. Returns empty string if no skills. |
 
 ---
 
