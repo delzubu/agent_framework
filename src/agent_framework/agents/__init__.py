@@ -19,6 +19,8 @@ from .sequential_hook import SequentialHook
 from .subagent_end_event import SubagentEndEvent
 from .subagent_hook_decision import SubagentHookDecision
 from .subagent_start_event import SubagentStartEvent
+from .skill_end_event import SkillEndEvent
+from .skill_start_event import SkillStartEvent
 from .tool_end_event import ToolEndEvent
 from .tool_hook_decision import ToolHookDecision
 from .tool_start_event import ToolStartEvent
@@ -43,6 +45,8 @@ __all__ = [
     "SubagentEndEvent",
     "SubagentHookDecision",
     "SubagentStartEvent",
+    "SkillEndEvent",
+    "SkillStartEvent",
     "ToolEndEvent",
     "ToolHookDecision",
     "ToolStartEvent",

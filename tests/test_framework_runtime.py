@@ -716,3 +716,8 @@ def test_skill_invocation_record_serializes(tmp_path: Path) -> None:
     data = json.loads(line)
     assert "skill_invocations" in data
     assert data["skill_invocations"][0]["skill_name"] == "s"
+
+
+def test_skill_events_importable_from_top_level_agent_module() -> None:
+    from agent_framework.agent import SkillStartEvent, SkillEndEvent  # noqa: F401
+    from agent_framework.agents import SkillStartEvent, SkillEndEvent  # noqa: F401
