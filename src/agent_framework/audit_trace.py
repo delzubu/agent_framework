@@ -29,6 +29,16 @@ class CallbackAuditRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SkillInvocationRecord:
+    """Single skill invocation event observed during an agent run."""
+
+    timestamp: str
+    skill_name: str
+    parameters: dict[str, Any]
+    inventory: tuple[str, ...]  # file paths listed in inventory (no file contents)
+
+
+@dataclass(frozen=True, slots=True)
 class AgentCallAuditRecord:
     """Immutable audit record for a single agent invocation."""
 
@@ -45,6 +55,7 @@ class AgentCallAuditRecord:
     model_response: dict[str, Any] | None = None
     agent_decision: dict[str, Any] | None = None
     callbacks: tuple[CallbackAuditRecord, ...] = ()
+    skill_invocations: tuple[SkillInvocationRecord, ...] = ()
     events: tuple[dict[str, Any], ...] = ()
 
     def to_jsonable(self) -> dict[str, Any]:
@@ -156,6 +167,28 @@ class InMemoryAuditTracer:
             )
         )
         self.active_records[run_id] = replace(record, callbacks=tuple(callbacks))
+
+    def record_skill_invocation(
+        self,
+        *,
+        run_id: str,
+        skill_name: str,
+        parameters: dict[str, Any],
+        inventory: list[str],
+    ) -> None:
+        record = self.active_records.get(run_id)
+        if record is None:
+            return
+        invocations = list(record.skill_invocations)
+        invocations.append(
+            SkillInvocationRecord(
+                timestamp=_utc_now(),
+                skill_name=skill_name,
+                parameters=dict(parameters),
+                inventory=tuple(inventory),
+            )
+        )
+        self.active_records[run_id] = replace(record, skill_invocations=tuple(invocations))
 
     def record_event(self, *, run_id: str, event: dict[str, Any]) -> None:
         record = self.active_records.get(run_id)

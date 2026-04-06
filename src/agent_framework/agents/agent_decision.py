@@ -26,6 +26,7 @@ class AgentDecision:
     subagent_id: str | None = None
     tool_name: str | None = None
     callback_intent: str | None = None
+    skill_name: str | None = None
 
     @classmethod
     def from_model_response(cls, response: ModelResponse) -> "AgentDecision":
@@ -57,6 +58,7 @@ class AgentDecision:
             subagent_id=_optional_text(payload.get("subagent_id")),
             tool_name=_optional_text(payload.get("tool_name")),
             callback_intent=callback_intent,
+            skill_name=_optional_text(payload.get("skill_name")),
         )
 
 __all__ = ["AgentDecision"]

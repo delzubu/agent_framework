@@ -73,6 +73,7 @@ class AgentCallAuditRecord:
     model_response: Any                     # parsed payload
     agent_decision: dict | None             # decision_to_dict() result
     callbacks: tuple[CallbackAuditRecord, ...]
+    skill_invocations: tuple[SkillInvocationRecord, ...]
     events: tuple[dict, ...]
 ```
 
@@ -89,6 +90,21 @@ class CallbackAuditRecord:
     target: str | None          # caller_id
     response: str | None        # the response received (set after resolution)
 ```
+
+### 2.4b `SkillInvocationRecord`
+
+```python
+@dataclass(frozen=True, slots=True)
+class SkillInvocationRecord:
+    timestamp: str
+    skill_name: str
+    parameters: dict            # parameters from the invoke_skill decision
+    inventory: tuple[str, ...]  # file paths discovered in the skill directory (not content)
+```
+
+One record is created per `invoke_skill` decision. The `inventory` field lists the paths of all files found in the skill's directory at load time — it records what was available, not what the model actually read. There is no separate `read_skill_resource` tool; resource files are made accessible to the model via the base directory path injected directly into the skill fragment.
+
+`AgentCallAuditRecord` carries a `skill_invocations: tuple[SkillInvocationRecord, ...]` field. It starts as an empty tuple and is extended (via `dataclasses.replace()`) each time `handle_skill_invocation()` completes successfully, following the same progressive-construction pattern used for `callbacks` and `events`.
 
 ### 2.5 JSONL Output Format
 

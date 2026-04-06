@@ -223,11 +223,13 @@ formatted_system_md                         (system.md with {tools_json} and {su
 
 ### Capability Metadata Injection
 
-`_capability_metadata(tools, subagents, skills)` produces JSON strings:
+`_capability_metadata(tools, subagents)` produces JSON strings for the system prompt placeholders:
 - `{tools_json}` → JSON array of `tool.to_model_payload()` results (OpenAI function call format with `name`, `description`, `parameters` object with JSON Schema properties)
 - `{subagents_json}` → JSON array of `CapabilityDefinition.to_model_payload()` results (with `capability_id`, `description`, `parameters` array)
 
-The `system.md` base template injects these under `<allowed_tools>` and `<allowed_agents>` XML tags, and provides the Information Retrieval workflow (6-step escalation policy) and callback handling instructions.
+`_capability_metadata()` does **not** return a `skills_section` key. The skills catalog is handled separately by `build_context()` in `agent.py`: when skills are available, `build_skills_catalog(skills, max_tokens=...)` in `model.py` builds the catalog text, and `build_context()` injects it as a `{"role": "user"}` message at index 2 in the conversation — after the system prompt and initial user prompt, but before `run.conversation_messages`. This keeps the skills catalog in the conversation history rather than in the system prompt.
+
+The `system.md` base template injects `{tools_json}` and `{subagents_json}` under `<allowed_tools>` and `<allowed_agents>` XML tags, and provides the Information Retrieval workflow (6-step escalation policy) and callback handling instructions.
 
 ### Template File Locations
 
@@ -271,7 +273,7 @@ class CapabilityDefinition:
 
 **Subagents** are converted from `Agent` instances via `agent_to_capability_definition(agent)` in `helpers.py`, which maps `agent.agent_id` → `capability_id`, `agent.description` → `description`, and `agent.parameters` → `CapabilityParameter` tuples.
 
-**Skills** are stub capability declarations — currently a placeholder for future capability types.
+**Skills** are directory-discovered markdown-defined instruction sets. `SkillRegistry` discovers skills from configured `skills_directories` and exposes them as `CapabilityDefinition` tuples. Each `CapabilityDefinition` for a skill carries a `priority: int = 0` field read from the SKILL.md frontmatter; `build_skills_catalog()` uses this to drop lowest-priority skills first when the catalog must be truncated to fit within `max_tokens`. The catalog (names + descriptions) is built by `build_skills_catalog(skills, max_tokens=...)` and injected by `build_context()` as a first-turn `{"role": "user"}` conversation message (at index 2, before `run.conversation_messages`) when skills are available — it is not part of the system prompt. Full skill content is loaded on demand by `SkillLoader` only when the model emits an `invoke_skill` decision.
 
 ---
 

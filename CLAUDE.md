@@ -35,6 +35,8 @@ This is a **markdown-defined agent runtime**. Agents and tools are defined in Ma
 
 **AgentHost** (`host.py`): Central orchestration runtime. Owns the agent registry, tool registry, model driver, call context stack, audit tracer, and I/O. All agent invocations flow through the host.
 
+**Skills** (`skills_directories`): Markdown-defined instruction sets discovered from one or more configured directories. Each skill is a `.md` file with YAML frontmatter (`id`, `description`, `priority`). The skills catalog (names + descriptions) is injected as a first-turn conversation message (`{"role": "user"}` at index 2) with priority-based truncation to stay within the `SKILLS_CATALOG_MAX_TOKENS` budget — lower-priority skills are dropped first. When a model emits an `invoke_skill` decision, `handle_skill_invocation()` injects `Base directory: <path>` and a `<skill_files>` file list directly into the conversation (no resource tool required). Configure with `SKILLS_DIRECTORY`/`SKILLS_DIRECTORIES` and `SKILLS_CATALOG_MAX_TOKENS`.
+
 ### Decision Loop
 
 Each agent runs a loop: call model → parse `AgentDecision` → act → repeat.
@@ -66,6 +68,9 @@ TOOLS_DIRECTORY=path/to/tools
 WORLD_DIRECTORY=path/to/sandbox
 ROOT_AGENT=<agent_id>
 AGENT_MODELS=agent_id:model,...   # per-agent overrides
+SKILLS_DIRECTORY=path/to/skills   # single skills directory
+SKILLS_DIRECTORIES=path/a,path/b  # multiple skills directories
+SKILLS_CATALOG_MAX_TOKENS=2000    # max tokens for skills catalog injected into conversation
 ```
 
 ### Extensibility

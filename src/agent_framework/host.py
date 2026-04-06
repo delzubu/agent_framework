@@ -12,6 +12,7 @@ from agent_framework.agent import Agent, AgentResult, CallContext, ModelEndEvent
 from agent_framework.audit_trace import InMemoryAuditTracer
 from agent_framework.config import HostConfig, load_host_config
 from agent_framework.model import ModelDriver, OpenAiModelDriver, ProviderRequestTrace, ProviderResponseTrace
+from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool
 
 
@@ -41,6 +42,7 @@ class AgentHost:
     onPreModel: SequentialHook = field(default_factory=SequentialHook)
     onPostModel: SequentialHook = field(default_factory=SequentialHook)
     audit_tracer: InMemoryAuditTracer | None = None
+    skill_registry: SkillRegistry | None = None
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=8))
 
     @classmethod
@@ -114,6 +116,13 @@ class AgentHost:
 
             driver.set_trace_callbacks(on_request=on_request, on_response=on_response)
         return tracer
+
+    def get_skill_registry(self) -> SkillRegistry:
+        """Lazy-initialize and return the host-level skill registry."""
+        if self.skill_registry is None:
+            self.skill_registry = SkillRegistry.from_config(self.config)
+            self.skill_registry.discover()
+        return self.skill_registry
 
     def register_tool(self, tool: Tool) -> None:
         """Register a concrete tool instance for runtime execution."""

@@ -26,6 +26,45 @@ _SYSTEM_JSON_OBJECT_TEMPLATE_PATH = Path(__file__).with_name("agents") / "system
 _SYSTEM_JSON_OBJECT_TEMPLATE = _SYSTEM_JSON_OBJECT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
+def build_skills_catalog(skills: "tuple[CapabilityDefinition, ...]", max_tokens: int = 2000) -> str:
+    """Return a formatted skills catalog string, or empty string if no skills.
+
+    Skills are sorted by priority descending (highest first). When the catalog
+    exceeds ``max_tokens`` (estimated as ``len(text) // 4``), the lowest-priority
+    skill is dropped and the catalog is rebuilt. At least one skill is always
+    kept.
+    """
+    if not skills:
+        return ""
+
+    def _render(skill_list: list["CapabilityDefinition"]) -> str:
+        skills_list = json.dumps(
+            [{"name": s.capability_id, "description": s.description} for s in skill_list],
+            indent=2,
+        )
+        return (
+            "## Skills\n\n"
+            "<available_skills>\n"
+            f"{skills_list}\n"
+            "</available_skills>\n\n"
+            "1. Review available skills and their descriptions to decide if a skill applies to the task.\n"
+            "2. To invoke a skill, set `kind` to `invoke_skill` and `skill_name` to a valid skill name.\n"
+            "3. After a skill is invoked, its full instructions will be injected into this conversation.\n"
+            "   Follow those instructions to complete the task.\n"
+            "4. Skill files are accessible via the base directory path provided with each skill invocation."
+        )
+
+    # Sort by priority descending so lowest-priority is at the end
+    working = sorted(skills, key=lambda s: s.priority, reverse=True)
+    while working:
+        text = _render(working)
+        if len(text) // 4 <= max_tokens or len(working) == 1:
+            return text
+        working.pop()  # drop the lowest-priority skill (last in sorted list)
+
+    return ""  # unreachable: loop always returns before working is exhausted
+
+
 def runtime_prompt_source_paths(response_mode: str) -> tuple[Path, ...]:
     """Return the system prompt source files used for the given response mode."""
     mode_map = {
@@ -71,6 +110,7 @@ class CapabilityDefinition:
     capability_id: str
     description: str
     parameters: tuple[CapabilityParameter, ...] = ()
+    priority: int = 0
 
     def to_model_payload(self) -> dict[str, object]:
         """Return a serializable payload for model-facing capability injection."""
@@ -370,6 +410,7 @@ __all__ = [
     "ProviderResponseTrace",
     "ToolDefinition",
     "assemble_system_prompt",
+    "build_skills_catalog",
     "runtime_prompt_source_paths",
 ]
 

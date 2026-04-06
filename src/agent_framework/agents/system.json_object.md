@@ -55,3 +55,4 @@ When the current agent system prompt is asking for a runtime action, return a si
     - "callback": the agent needs some information or decision from the caller agent (if caller agent is host, it will prompt for the information / decision for the user). "intent", "message" and "parameters" are populated
     - "call_subagent": the agent calls a subagent to respond to the prompt. "message" contains the user prompt, "subagent_id" is populated. "parameters" are populated matching the subagent specification
     - "call_tool": the agent calls a tool. "tool_name" is populated. "parameters" are populated matching the tool specification
+    - "invoke_skill": invoke a named skill; set `skill_name` to a valid skill name from `<available_skills>`

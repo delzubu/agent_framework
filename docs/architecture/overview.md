@@ -50,6 +50,17 @@ Eight `SequentialHook` instances on `Agent` (pre/post for agent, tool, subagent,
 
 Agents invoke other agents as subagents via the host. The call tree is explicit, not emergent: each agent has a declared `allowed_child_agents` allowlist, and `CallContext` objects track each call edge with correlation IDs. Subagents can be invoked synchronously (`call_subagent`) or asynchronously via a shared thread pool (`call_subagent_async`).
 
+### 2.6b Skills as a Third Capability Pillar
+
+Alongside tools and subagents, **skills** are a first-class agent capability. Skills are directory-discovered, markdown-defined behavioral instruction sets — reusable knowledge fragments that the model can invoke by name rather than implementing the same instructions in every agent prompt.
+
+**Three-tier loading** keeps context usage proportional to need:
+1. **Catalog** (names + descriptions) — always present as a first-turn conversation message (injected by `build_context()` as a `{"role": "user"}` message at index 2, before run conversation history) inside `<available_skills>` so the model knows what skills exist.
+2. **Body** (full skill content) — loaded on demand when the model emits an `invoke_skill` decision; injected as a user message in `conversation_messages`, not into the system prompt.
+3. **Resources** (individual files) — accessible to the model via the base directory path injected into the skill fragment; no separate tool call is required.
+
+Skills are **model-invoked** via the `invoke_skill` decision kind in the agent decision loop. Context isolation is strict: skill content is injected only as a `conversation_messages` user message and never merged into `system_prompt` or `prompt_fragments`.
+
 ### 2.7 Unified Callback Protocol
 
 All escalations from an agent to its caller flow through a single `callback` decision kind with six typed intents: `information_request`, `proposal_review`, `execution_recovery`, `delegation_return`, `policy_or_approval`, `guardrail_trip`. This creates a clean, uniform boundary between agent execution and human/caller interaction. All six intent strings normalize to `kind="callback"`; the caller resolves each based on the intent value.
@@ -193,7 +204,7 @@ Agent runtime layer — one class per file discipline. Each file exports exactly
 - `agent_invocation.py` — `AgentInvocation`
 - `agent_host_protocol.py` — `AgentHostProtocol` (Protocol)
 
-**Events (8):** `AgentStartEvent`, `AgentEndEvent`, `ModelStartEvent`, `ModelEndEvent`, `ToolStartEvent`, `ToolEndEvent`, `SubagentStartEvent`, `SubagentEndEvent`
+**Events (10):** `AgentStartEvent`, `AgentEndEvent`, `ModelStartEvent`, `ModelEndEvent`, `ToolStartEvent`, `ToolEndEvent`, `SubagentStartEvent`, `SubagentEndEvent`, `SkillStartEvent`, `SkillEndEvent`
 
 **Hook decisions (4):** `AgentHookDecision`, `AgentEndHookDecision`, `ToolHookDecision`, `SubagentHookDecision`
 

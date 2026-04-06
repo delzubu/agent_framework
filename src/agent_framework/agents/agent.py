@@ -22,6 +22,7 @@ from agent_framework.model import (
     ModelDriver,
     ModelResponse,
     assemble_system_prompt as _assemble_system_prompt,
+    build_skills_catalog as _build_skills_catalog,
     runtime_prompt_source_paths as _runtime_prompt_source_paths,
 )
 
@@ -52,6 +53,8 @@ from .helpers import (
 from .model_end_event import ModelEndEvent
 from .model_start_event import ModelStartEvent
 from .sequential_hook import SequentialHook
+from .skill_end_event import SkillEndEvent
+from .skill_start_event import SkillStartEvent
 from .subagent_end_event import SubagentEndEvent
 from .subagent_hook_decision import SubagentHookDecision
 from .subagent_start_event import SubagentStartEvent
@@ -88,6 +91,8 @@ class Agent:
         onPostTool: Sequential callbacks executed after a tool call.
         onPreSubagent: Sequential callbacks executed before a child-agent call.
         onPostSubagent: Sequential callbacks executed after a child-agent call.
+        onPreSkill: Sequential callbacks executed before a skill invocation.
+        onPostSkill: Sequential callbacks executed after a skill invocation.
         behavior_ids: Optional ordered runtime behavior ids resolved from sidecar JSON.
         source_path: Source Markdown path used to load the agent definition.
     """
@@ -112,6 +117,8 @@ class Agent:
     onPostTool: SequentialHook = field(default_factory=SequentialHook)
     onPreSubagent: SequentialHook = field(default_factory=SequentialHook)
     onPostSubagent: SequentialHook = field(default_factory=SequentialHook)
+    onPreSkill: SequentialHook = field(default_factory=SequentialHook)
+    onPostSkill: SequentialHook = field(default_factory=SequentialHook)
     onPreModel: SequentialHook = field(default_factory=SequentialHook)
     onPostModel: SequentialHook = field(default_factory=SequentialHook)
     behavior_ids: tuple[str, ...] = ()
@@ -358,16 +365,26 @@ class Agent:
                 )
                 for name in self.allowed_child_agents
             )
-        skills = tuple(
-            CapabilityDefinition(
-                capability_id=name,
-                description=f"Declared skill capability {name}.",
+        skill_registry = getattr(host, "get_skill_registry", None)
+        if callable(skill_registry):
+            skill_defs = host.get_skill_registry().filter(self.allowed_skills)
+            skills = tuple(
+                CapabilityDefinition(capability_id=defn.name, description=defn.description, priority=defn.priority)
+                for defn in skill_defs
             )
-            for name in self.allowed_skills
-        )
+        else:
+            skills = ()
+        config = getattr(host, "config", None)
+        max_tokens = getattr(config, "skills_catalog_max_tokens", 2000)
+        skills_catalog = _build_skills_catalog(skills, max_tokens=max_tokens)
         message_history: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
+            *(
+                [{"role": "user", "content": skills_catalog}]
+                if skills_catalog
+                else []
+            ),
             *run.conversation_messages,
         ]
         return ModelContext(
@@ -431,6 +448,7 @@ class Agent:
             "callback": self.handle_callback,
             "call_subagent": self.handle_subagent_call,
             "call_tool": self.handle_tool_call,
+            "invoke_skill": self.handle_skill_invocation,
         }
         handler = handlers.get(decision.kind)
         if handler is None:
@@ -680,6 +698,89 @@ class Agent:
             f"<subagent_result id=\"{subagent_id}\">{result.message}</subagent_result>"
         )
         return None
+
+    def handle_skill_invocation(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        decision: AgentDecision,
+        caller_id: str | None,
+    ) -> AgentResult | None:
+        """Load and inject skill content into the conversation, then continue the loop."""
+        from agent_framework.skill import SkillLoader
+
+        skill_name = decision.skill_name or ""
+        skill_registry = getattr(host, "get_skill_registry", None)
+
+        # 1. Resolve definition
+        try:
+            skill_def = host.get_skill_registry().get(skill_name) if callable(skill_registry) else None
+            if skill_def is None:
+                raise KeyError(skill_name)
+        except KeyError:
+            error_text = f"Unknown skill: {skill_name!r}. Check available skills in <available_skills>."
+            run.conversation_messages.append({"role": "user", "content": f"<skill_error>{error_text}</skill_error>"})
+            return None
+
+        # 2. Validate allowed
+        if self.allowed_skills and skill_def.name not in self.allowed_skills:
+            error_text = f"Skill {skill_name!r} is not in this agent's allowed skills: {sorted(self.allowed_skills)}."
+            run.conversation_messages.append({"role": "user", "content": f"<skill_error>{error_text}</skill_error>"})
+            return None
+
+        # 3. Pre-skill hook
+        self._run_pre_skill_hooks(
+            run=run,
+            event=SkillStartEvent(
+                invocation=self._hook_invocation(run, caller_id),
+                skill_name=skill_def.name,
+                parameters=dict(decision.parameters),
+            ),
+        )
+
+        # 4. Load skill content
+        content = SkillLoader().load(skill_def)
+
+        # 5. Build injected fragment with base directory
+        base_dir_line = f"\nBase directory: {content.definition.skill_dir}"
+        inventory_lines = "\n".join(f"- {r.relative_path}" for r in content.inventory)
+        inventory_block = (
+            f"\n\n<skill_files>\n{inventory_lines}\n</skill_files>"
+        ) if content.inventory else ""
+        skill_fragment = (
+            f'<skill_invocation_result name="{skill_def.name}">\n'
+            f"{content.body}"
+            f"{base_dir_line}"
+            f"{inventory_block}\n"
+            f"</skill_invocation_result>"
+        )
+
+        # 6. Inject skill content as a user message (dispatch already added the assistant message)
+        run.conversation_messages.append({"role": "user", "content": skill_fragment})
+
+        # 7. Audit trace
+        audit_tracer = getattr(host, "audit_tracer", None)
+        if audit_tracer is not None and hasattr(audit_tracer, "record_skill_invocation"):
+            audit_tracer.record_skill_invocation(
+                run_id=run.run_id,
+                skill_name=skill_def.name,
+                parameters=dict(decision.parameters),
+                inventory=[r.relative_path for r in content.inventory],
+            )
+
+        # 8. Post-skill hook
+        self._run_post_skill_hooks(
+            run=run,
+            event=SkillEndEvent(
+                invocation=self._hook_invocation(run, caller_id),
+                skill_name=skill_def.name,
+                parameters=dict(decision.parameters),
+                content=content,
+            ),
+        )
+
+        return None  # continue loop — model now has skill instructions in context
 
     def handle_tool_call(
         self,
@@ -941,6 +1042,18 @@ class Agent:
         """Execute all subscribed post-subagent callbacks sequentially."""
         run.history.append(f"after_subagent:{event.subagent_id}")
         for callback in self.onPostSubagent:
+            callback(event)
+
+    def _run_pre_skill_hooks(self, *, run: AgentRun, event: SkillStartEvent) -> None:
+        """Execute all subscribed pre-skill callbacks sequentially."""
+        run.history.append(f"before_skill:{event.skill_name}")
+        for callback in self.onPreSkill:
+            callback(event)
+
+    def _run_post_skill_hooks(self, *, run: AgentRun, event: SkillEndEvent) -> None:
+        """Execute all subscribed post-skill callbacks sequentially."""
+        run.history.append(f"after_skill:{event.skill_name}")
+        for callback in self.onPostSkill:
             callback(event)
 
     def _run_pre_model_hooks(
