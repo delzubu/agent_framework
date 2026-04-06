@@ -223,11 +223,12 @@ formatted_system_md                         (system.md with {tools_json} and {su
 
 ### Capability Metadata Injection
 
-`_capability_metadata(tools, subagents, skills)` produces JSON strings:
+`_capability_metadata(tools, subagents, skills)` produces JSON strings and the skills section text:
 - `{tools_json}` → JSON array of `tool.to_model_payload()` results (OpenAI function call format with `name`, `description`, `parameters` object with JSON Schema properties)
 - `{subagents_json}` → JSON array of `CapabilityDefinition.to_model_payload()` results (with `capability_id`, `description`, `parameters` array)
+- `{skills_section}` → **conditional block**: empty string `""` when no skills are available; a full `## Skills` section containing an `<available_skills>` XML block with each skill's name and description when skills are present. This gives the model a stable catalog of invokable skills without loading any skill content into the prompt.
 
-The `system.md` base template injects these under `<allowed_tools>` and `<allowed_agents>` XML tags, and provides the Information Retrieval workflow (6-step escalation policy) and callback handling instructions.
+The `system.md` base template injects these under `<allowed_tools>` and `<allowed_agents>` XML tags plus the `{skills_section}` placeholder, and provides the Information Retrieval workflow (6-step escalation policy) and callback handling instructions.
 
 ### Template File Locations
 
@@ -271,7 +272,7 @@ class CapabilityDefinition:
 
 **Subagents** are converted from `Agent` instances via `agent_to_capability_definition(agent)` in `helpers.py`, which maps `agent.agent_id` → `capability_id`, `agent.description` → `description`, and `agent.parameters` → `CapabilityParameter` tuples.
 
-**Skills** are stub capability declarations — currently a placeholder for future capability types.
+**Skills** are directory-discovered markdown-defined instruction sets. `SkillRegistry` discovers skills from configured `skills_directories` and exposes them as `CapabilityDefinition` tuples. The catalog (names + descriptions) appears in the system prompt via `{skills_section}`; full content is loaded on demand by `SkillLoader` only when the model emits an `invoke_skill` decision.
 
 ---
 

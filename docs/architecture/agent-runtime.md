@@ -52,7 +52,7 @@ The `split_markdown_sections()` function in `helpers.py` splits on `^---\s*$` (m
 | `parameters` | mapping | no | Declared parameter specifications (see Section 2.3). |
 | `tools` | list/dict | no | Allowed tool names. Formats: list of strings, list of `{name: str}` dicts, or dict with name keys. Parsed by `parse_allowed_tool_names()`. |
 | `subagents` | list | no | Allowed child agent IDs. |
-| `skills` | list | no | Allowed skill IDs (stub capability declarations for future use). |
+| `allowed_skills` | list | no | Allowed skill names. An empty value (omitted or empty list) means all discovered skills are available. A non-empty list restricts invocation to the named skills only. |
 
 ### 2.3 Parameter Declarations
 
@@ -367,6 +367,22 @@ Also appends `{"role": "assistant", "content": decision.message}` to `run.conver
 4. **Post-subagent hooks:** Fire `SubagentEndEvent(invocation, subagent_call_id, subagent_id, subagent_input, result)` via `onPostSubagent` callbacks.
 5. Append: `self._upsert_prompt_fragment(run, f'<subagent_result subagent="{subagent_id}">{result.message}</subagent_result>')`
 6. `return None` — loop continues.
+
+### 6.5 `"invoke_skill"` → `handle_skill_invocation()`
+
+1. **Resolve definition:** Looks up `decision.skill_name` in the `SkillRegistry` via `host.get_skill_registry()`.
+2. **Validate allowed:** If the agent has a non-empty `allowed_skills` list, `decision.skill_name` must be in it. Raises `ValueError` if not.
+3. **Pre-skill hooks:** Fire `SkillStartEvent(invocation, skill_name, parameters)` via `onPreSkill` callbacks.
+4. **Load content:** `SkillLoader` loads the skill body and builds the file inventory (list of resource paths, not content).
+5. **Register resource tool:** `ReadSkillResourceTool` is dynamically registered on `host` and its name recorded in `run.skill_tool_names`. This tool gives the model on-demand access to individual skill resource files.
+6. **Inject skill fragment:** The loaded skill content (body text + inventory manifest) is appended to `run.conversation_messages` as a `{"role": "user", "content": ...}` message. This is the **only** injection point — skill content never enters `system_prompt` or `prompt_fragments`.
+7. **Audit trace:** Records a `SkillInvocationRecord` on the current `AgentCallAuditRecord`.
+8. **Post-skill hooks:** Fire `SkillEndEvent(invocation, skill_name, parameters, content)` via `onPostSkill` callbacks.
+9. `return None` — loop continues.
+
+**Cleanup:** The `Agent.run()` `finally` block iterates `run.skill_tool_names` and unregisters each `ReadSkillResourceTool` from the host, ensuring no resource tools leak across runs.
+
+**`onPreSkill` / `onPostSkill` hooks** are `SequentialHook` instances on `Agent`, consistent with the existing pre/post hook pattern for tools and subagents.
 
 ---
 

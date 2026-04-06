@@ -192,7 +192,7 @@ class SequentialHook:
 
 Callbacks are stored in order and fired in insertion order. Removing (`-=`) removes the first matching callback by identity (`is`).
 
-### 3.1 Agent-Level Hooks (8 total)
+### 3.1 Agent-Level Hooks (10 total)
 
 | Hook | Event Type | When Fired | Decision Type |
 |------|-----------|------------|---------------|
@@ -204,6 +204,8 @@ Callbacks are stored in order and fired in insertion order. Removing (`-=`) remo
 | `onPostTool` | `ToolEndEvent` | After each tool execution | `None` (observation only) |
 | `onPreSubagent` | `SubagentStartEvent` | Before each subagent call | `SubagentHookDecision \| None` |
 | `onPostSubagent` | `SubagentEndEvent` | After each subagent call | `None` (observation only) |
+| `onPreSkill` | `SkillStartEvent` | Before skill content is loaded | `None` (observation only) |
+| `onPostSkill` | `SkillEndEvent` | After skill content is injected | `None` (observation only) |
 
 ### 3.2 Host-Level Hooks (2 total)
 
@@ -301,6 +303,10 @@ class AgentInvocation:
 | `ToolEndEvent` | `tool_end_event.py` | `tool_call_id: str`, `tool_name: str`, `tool_input: dict`, `result: str` | `handle_tool_call()` via `onPostTool` |
 | `SubagentStartEvent` | `subagent_start_event.py` | `subagent_call_id: str`, `subagent_id: str`, `subagent_input: dict`, `decision: AgentDecision` | `handle_subagent_call()` via `onPreSubagent` |
 | `SubagentEndEvent` | `subagent_end_event.py` | `subagent_call_id: str`, `subagent_id: str`, `subagent_input: dict`, `result: AgentResult` | `handle_subagent_call()` via `onPostSubagent` |
+| `SkillStartEvent` | `skill_start_event.py` | `skill_name: str`, `parameters: dict` | `handle_skill_invocation()` via `onPreSkill` |
+| `SkillEndEvent` | `skill_end_event.py` | `skill_name: str`, `parameters: dict`, `content: SkillContent` | `handle_skill_invocation()` via `onPostSkill` |
+
+**`SkillContent`** (carried by `SkillEndEvent`): a dataclass with `body: str` (the full text of `SKILL.md` minus frontmatter) and `inventory: tuple[SkillResource, ...]` (file paths and metadata, not file content). Behaviors observing `onPostSkill` can inspect what was loaded and log, audit, or react accordingly.
 
 ---
 
@@ -498,11 +504,40 @@ Register via: `AgentHost.from_env(".env", model_driver=MyDriver(...))`
 
 ---
 
-## 8. Custom Agents
+## 8. Skills Extension Points
+
+### 8.1 `onPreSkill` / `onPostSkill` Hooks
+
+Subscribe to these hooks in `attach()` to observe every skill invocation:
+
+```python
+def attach(self, agent: Agent) -> None:
+    agent.onPreSkill += self._on_pre_skill
+    agent.onPostSkill += self._on_post_skill
+
+def _on_pre_skill(self, event: SkillStartEvent) -> None:
+    print(f"[SKILL] {event.skill_name} params={event.parameters}")
+
+def _on_post_skill(self, event: SkillEndEvent) -> None:
+    print(f"[SKILL DONE] {event.skill_name} body_len={len(event.content.body)} "
+          f"resources={len(event.content.inventory)}")
+```
+
+Both hooks are currently observation-only (return `None`). The pre-hook fires after the allowed-skills validation but before `SkillLoader` runs; the post-hook fires after skill content has been injected into `conversation_messages`.
+
+### 8.2 Future: `SkillDriver` Protocol
+
+The current implementation uses **prompt injection** — skill body text is inserted as a user message in `conversation_messages`. This is provider-agnostic and requires no special API support.
+
+A planned `SkillDriver` protocol will allow native API integration where providers such as Anthropic (system prompt caching) or OpenAI (file attachments, cached context) support more efficient skill delivery. A `SkillDriver` implementation would replace the `SkillLoader` + injection step with a provider-optimized delivery mechanism while leaving the rest of the invocation flow (hooks, audit tracing, resource tools) unchanged.
+
+---
+
+## 9. Custom Agents
 
 Beyond modifying the Markdown definition, agents can be extended by:
 
-### 8.1 Subclassing `Agent`
+### 9.1 Subclassing `Agent`
 
 Override any of the template method steps:
 
@@ -525,7 +560,7 @@ class MaxIterationAgent(Agent):
         )
 ```
 
-### 8.2 Recording Host for Testing (`RecordingAgentHost`)
+### 9.2 Recording Host for Testing (`RecordingAgentHost`)
 
 `RecordingAgentHost` (in `evaluator.py`) extends `AgentHost` to intercept and record all interactions:
 
