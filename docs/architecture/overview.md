@@ -55,7 +55,7 @@ Agents invoke other agents as subagents via the host. The call tree is explicit,
 Alongside tools and subagents, **skills** are a first-class agent capability. Skills are directory-discovered, markdown-defined behavioral instruction sets — reusable knowledge fragments that the model can invoke by name rather than implementing the same instructions in every agent prompt.
 
 **Three-tier loading** keeps context usage proportional to need:
-1. **Catalog** (names + descriptions) — always present in the model's system prompt inside `<available_skills>` so the model knows what skills exist.
+1. **Catalog** (names + descriptions) — always present as a first-turn conversation message (injected by `build_context()` as a `{"role": "user"}` message at index 2, before run conversation history) inside `<available_skills>` so the model knows what skills exist.
 2. **Body** (full skill content) — loaded on demand when the model emits an `invoke_skill` decision; injected as a user message in `conversation_messages`, not into the system prompt.
 3. **Resources** (individual files) — accessible to the model via the base directory path injected into the skill fragment; no separate tool call is required.
 
