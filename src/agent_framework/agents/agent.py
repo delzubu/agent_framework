@@ -52,6 +52,8 @@ from .helpers import (
 from .model_end_event import ModelEndEvent
 from .model_start_event import ModelStartEvent
 from .sequential_hook import SequentialHook
+from .skill_end_event import SkillEndEvent
+from .skill_start_event import SkillStartEvent
 from .subagent_end_event import SubagentEndEvent
 from .subagent_hook_decision import SubagentHookDecision
 from .subagent_start_event import SubagentStartEvent
@@ -112,6 +114,8 @@ class Agent:
     onPostTool: SequentialHook = field(default_factory=SequentialHook)
     onPreSubagent: SequentialHook = field(default_factory=SequentialHook)
     onPostSubagent: SequentialHook = field(default_factory=SequentialHook)
+    onPreSkill: SequentialHook = field(default_factory=SequentialHook)
+    onPostSkill: SequentialHook = field(default_factory=SequentialHook)
     onPreModel: SequentialHook = field(default_factory=SequentialHook)
     onPostModel: SequentialHook = field(default_factory=SequentialHook)
     behavior_ids: tuple[str, ...] = ()
@@ -358,13 +362,15 @@ class Agent:
                 )
                 for name in self.allowed_child_agents
             )
-        skills = tuple(
-            CapabilityDefinition(
-                capability_id=name,
-                description=f"Declared skill capability {name}.",
+        skill_registry = getattr(host, "get_skill_registry", None)
+        if callable(skill_registry):
+            skill_defs = host.get_skill_registry().filter(self.allowed_skills)
+            skills = tuple(
+                CapabilityDefinition(capability_id=defn.name, description=defn.description)
+                for defn in skill_defs
             )
-            for name in self.allowed_skills
-        )
+        else:
+            skills = ()
         message_history: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
@@ -941,6 +947,18 @@ class Agent:
         """Execute all subscribed post-subagent callbacks sequentially."""
         run.history.append(f"after_subagent:{event.subagent_id}")
         for callback in self.onPostSubagent:
+            callback(event)
+
+    def _run_pre_skill_hooks(self, *, run: AgentRun, event: SkillStartEvent) -> None:
+        """Execute all subscribed pre-skill callbacks sequentially."""
+        run.history.append(f"before_skill:{event.skill_name}")
+        for callback in self.onPreSkill:
+            callback(event)
+
+    def _run_post_skill_hooks(self, *, run: AgentRun, event: SkillEndEvent) -> None:
+        """Execute all subscribed post-skill callbacks sequentially."""
+        run.history.append(f"after_skill:{event.skill_name}")
+        for callback in self.onPostSkill:
             callback(event)
 
     def _run_pre_model_hooks(

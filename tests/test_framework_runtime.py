@@ -526,3 +526,40 @@ def test_capability_metadata_skills_section_empty_when_no_skills() -> None:
     from agent_framework.model import OpenAiModelDriver
     metadata = OpenAiModelDriver._capability_metadata(tools=(), subagents=(), skills=())
     assert metadata["skills_section"] == ""
+
+
+def test_agent_build_context_populates_skills_from_registry(tmp_path: Path) -> None:
+    from agent_framework.skill import SkillRegistry
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "Does useful things")
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "OPENAI_API_KEY=key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n"
+        "AGENT_DIRECTORY=agents\nTOOLS_DIRECTORY=tools\nWORLD_DIRECTORY=world\n"
+        "ROOT_AGENT=root\nSKILLS_DIRECTORY=skills\n",
+        encoding="utf-8",
+    )
+    host = AgentHost.from_env(env_path, model_driver=FakeModelDriver([]),
+                               input_reader=lambda _: "", output_writer=lambda _: None)
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        allowed_skills=(),  # empty = all skills
+    )
+    run = agent._create_run({})
+    context = agent.build_context(host=host, run=run)
+    skill_ids = [s.capability_id for s in context.skills]
+    assert "my-skill" in skill_ids
+
+
+def test_agent_has_pre_and_post_skill_hooks() -> None:
+    from agent_framework.agents.sequential_hook import SequentialHook
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+    )
+    assert isinstance(agent.onPreSkill, SequentialHook)
+    assert isinstance(agent.onPostSkill, SequentialHook)
