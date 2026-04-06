@@ -511,3 +511,18 @@ def test_agent_decision_skill_name_defaults_to_none() -> None:
     )
     decision = AgentDecision.from_model_response(response)
     assert decision.skill_name is None
+
+
+def test_capability_metadata_includes_skills_section_when_skills_present() -> None:
+    from agent_framework.model import OpenAiModelDriver, CapabilityDefinition
+    skills = (CapabilityDefinition(capability_id="my-skill", description="Does things"),)
+    metadata = OpenAiModelDriver._capability_metadata(tools=(), subagents=(), skills=skills)
+    assert "skills_section" in metadata
+    assert "my-skill" in metadata["skills_section"]
+    assert "Does things" in metadata["skills_section"]
+
+
+def test_capability_metadata_skills_section_empty_when_no_skills() -> None:
+    from agent_framework.model import OpenAiModelDriver
+    metadata = OpenAiModelDriver._capability_metadata(tools=(), subagents=(), skills=())
+    assert metadata["skills_section"] == ""

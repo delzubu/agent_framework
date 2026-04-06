@@ -302,10 +302,29 @@ class OpenAiModelDriver:
             ],
             indent=2,
         )
+        if skills:
+            skills_list = json.dumps(
+                [{"name": s.capability_id, "description": s.description} for s in skills],
+                indent=2,
+            )
+            skills_section = (
+                "## Skills\n\n"
+                "<available_skills>\n"
+                f"{skills_list}\n"
+                "</available_skills>\n\n"
+                "1. Review available skills and their descriptions to decide if a skill applies to the task.\n"
+                "2. To invoke a skill, set `kind` to `invoke_skill` and `skill_name` to a valid skill name.\n"
+                "3. After a skill is invoked, its full instructions will be injected into this conversation.\n"
+                "   Follow those instructions to complete the task.\n"
+                "4. You may need to read supporting files using the `read_skill_resource` tool — the skill\n"
+                "   body will tell you when this is needed."
+            )
+        else:
+            skills_section = ""
         return {
             "tools_json": tools_json,
             "subagents_json": subagents_json,
-            "skills_section": "",
+            "skills_section": skills_section,
         }
 
     @classmethod
