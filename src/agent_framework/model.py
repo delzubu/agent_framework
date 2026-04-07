@@ -7,14 +7,57 @@ fakes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from openai import OpenAI
 
 from agent_framework.tool import ToolDefinition
+
+# ---------------------------------------------------------------------------
+# Driver capability contract (G-15)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DriverCapabilities:
+    """Declared capabilities of a model driver.
+
+    Drivers expose a ``capabilities`` class attribute so callers can inspect
+    what a driver supports before constructing a ``ModelContext`` or invoking
+    ``decide``.  Use ``get_driver_capabilities()`` to query any driver safely.
+
+    Attributes:
+        is_async: True if the driver's ``decide`` method is a coroutine.
+        supports_multimodal: True if the driver accepts image ``ContentPart``
+            objects in ``ModelContext.messages``.
+        supports_response_format: True if the driver forwards
+            ``ModelContext.response_format`` to the provider.
+        supports_tools: True if the driver forwards native tool definitions to
+            the provider rather than embedding them in the system prompt.
+        supports_streaming: True if the driver supports streaming responses.
+    """
+
+    is_async: bool = False
+    supports_multimodal: bool = False
+    supports_response_format: bool = False
+    supports_tools: bool = False
+    supports_streaming: bool = False
+
+
+def get_driver_capabilities(driver: Any) -> DriverCapabilities:
+    """Return the declared capabilities of a driver.
+
+    Falls back to conservative defaults for legacy drivers that pre-date the
+    capability contract.
+    """
+    caps = getattr(driver, "capabilities", None)
+    if caps is None:
+        return DriverCapabilities()
+    return caps() if callable(caps) else caps
 
 _SYSTEM_TEMPLATE_PATH = Path(__file__).with_name("agents") / "system.md"
 _SYSTEM_TEMPLATE = _SYSTEM_TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -148,6 +191,7 @@ class ModelContext:
     subagents: tuple[CapabilityDefinition, ...] = ()
     skills: tuple[CapabilityDefinition, ...] = ()
     run_id: str | None = None
+    response_format: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,10 +201,19 @@ class ModelResponse:
     Attributes:
         payload: Parsed structured payload consumed by the agent runtime.
         raw_text: Original model text before runtime normalization.
+        tool_calls: Tool calls requested by the model (chat completions
+            drivers), or None if not applicable.
+        finish_reason: Stop reason reported by the provider (e.g. ``"stop"``,
+            ``"tool_calls"``, ``"length"``).
+        usage: Token usage reported by the provider, keyed by
+            ``"prompt_tokens"``, ``"completion_tokens"``, etc.
     """
 
     payload: dict[str, object]
     raw_text: str
+    tool_calls: tuple[dict[str, Any], ...] | None = None
+    finish_reason: str | None = None
+    usage: dict[str, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +263,122 @@ class ModelDriver(Protocol):
         """Attach optional adapter-boundary trace callbacks."""
 
 
+class AsyncModelDriver(Protocol):
+    """Provider-agnostic protocol for an async single agent decision step.
+
+    Implement this protocol for drivers that run on an ``asyncio`` event loop
+    (e.g. DIAL, Anthropic).  The sync ``ModelDriver`` protocol continues to
+    work unchanged; use ``SyncToAsyncAdapter`` or ``AsyncToSyncAdapter`` to
+    bridge between the two when needed.
+    """
+
+    async def decide(
+        self,
+        *,
+        agent_id: str | None,
+        provider_name: str,
+        model_name: str,
+        temperature: float,
+        context: ModelContext,
+    ) -> ModelResponse:
+        """Return a normalized structured response (coroutine)."""
+
+    def set_trace_callbacks(
+        self,
+        *,
+        on_request: Any | None = None,
+        on_response: Any | None = None,
+    ) -> None:
+        """Attach optional adapter-boundary trace callbacks."""
+
+
+@dataclass(slots=True)
+class SyncToAsyncAdapter:
+    """Wrap a synchronous ``ModelDriver`` for async callers.
+
+    Runs the blocking ``decide()`` call in a thread pool via
+    ``asyncio.to_thread`` so it does not block the event loop.
+    """
+
+    _driver: ModelDriver
+
+    async def decide(
+        self,
+        *,
+        agent_id: str | None,
+        provider_name: str,
+        model_name: str,
+        temperature: float,
+        context: ModelContext,
+    ) -> ModelResponse:
+        return await asyncio.to_thread(
+            self._driver.decide,
+            agent_id=agent_id,
+            provider_name=provider_name,
+            model_name=model_name,
+            temperature=temperature,
+            context=context,
+        )
+
+    def set_trace_callbacks(
+        self,
+        *,
+        on_request: Any | None = None,
+        on_response: Any | None = None,
+    ) -> None:
+        self._driver.set_trace_callbacks(on_request=on_request, on_response=on_response)
+
+
+@dataclass(slots=True)
+class AsyncToSyncAdapter:
+    """Wrap an ``AsyncModelDriver`` for synchronous callers.
+
+    Used by the existing sync agent loop when a caller configures an async
+    driver (e.g. ``DialChatCompletionsDriver``) and then runs a markdown-
+    defined agent via ``AgentHost.run_agent()``.  Uses ``asyncio.run()`` if no
+    event loop is running, or ``asyncio.get_event_loop().run_until_complete()``
+    as a fallback.
+    """
+
+    _driver: Any  # AsyncModelDriver — typed as Any to avoid circular issues
+
+    def decide(
+        self,
+        *,
+        agent_id: str | None,
+        provider_name: str,
+        model_name: str,
+        temperature: float,
+        context: ModelContext,
+    ) -> ModelResponse:
+        coro = self._driver.decide(
+            agent_id=agent_id,
+            provider_name=provider_name,
+            model_name=model_name,
+            temperature=temperature,
+            context=context,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        # Running inside an existing event loop — use a new thread to avoid
+        # "cannot run nested event loop" errors.
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(asyncio.run, coro)
+            return future.result()
+
+    def set_trace_callbacks(
+        self,
+        *,
+        on_request: Any | None = None,
+        on_response: Any | None = None,
+    ) -> None:
+        self._driver.set_trace_callbacks(on_request=on_request, on_response=on_response)
+
+
 @dataclass(slots=True)
 class OpenAiModelDriver:
     """OpenAI-backed model driver for the first draft runtime.
@@ -217,6 +386,13 @@ class OpenAiModelDriver:
     Attributes:
         api_key: API key used to construct the OpenAI client lazily per call.
     """
+
+    capabilities: ClassVar[DriverCapabilities] = DriverCapabilities(
+        is_async=False,
+        supports_multimodal=False,
+        supports_response_format=False,
+        supports_tools=False,
+    )
 
     api_key: str
     on_request_trace: Any | None = None
@@ -400,31 +576,32 @@ class OpenAiModelDriver:
         return _SYSTEM_TEMPLATE.format(**metadata)
 
 __all__ = [
+    "AsyncModelDriver",
+    "AsyncToSyncAdapter",
     "CapabilityDefinition",
     "CapabilityParameter",
+    "DriverCapabilities",
     "ModelContext",
     "ModelDriver",
     "ModelResponse",
     "OpenAiModelDriver",
     "ProviderRequestTrace",
     "ProviderResponseTrace",
+    "SyncToAsyncAdapter",
     "ToolDefinition",
     "assemble_system_prompt",
     "build_skills_catalog",
+    "get_driver_capabilities",
     "runtime_prompt_source_paths",
 ]
 
 
 def _normalize_json_text(raw_text: str) -> str:
-    """Extract JSON text from plain or fenced model responses."""
-    text = raw_text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-        if text.lower().startswith("json"):
-            text = text[4:].lstrip()
-    return text
+    """Extract JSON text from plain or fenced model responses.
+
+    Delegates to ``agent_framework.validation._normalize_json_text`` which is
+    the canonical implementation.  Kept here for backward compatibility.
+    """
+    from agent_framework.validation import _normalize_json_text as _impl
+
+    return _impl(raw_text)

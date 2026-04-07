@@ -124,6 +124,7 @@ class Agent:
     behavior_ids: tuple[str, ...] = ()
     behaviors: tuple[AgentBehavior, ...] = field(default=(), repr=False)
     source_path: Path | None = None
+    terminal_tools: tuple[str, ...] = ()
 
     @classmethod
     def from_markdown(
@@ -170,6 +171,7 @@ class Agent:
             can_use_host_interaction=bool(runtime_metadata.get("can_use_host_interaction", True)),
             behavior_ids=behavior_ids,
             source_path=source_path,
+            terminal_tools=tuple(metadata.get("terminal_tools", []) or ()),
         )
         agent._validate_template_contract()
         agent._attach_behaviors()
@@ -806,6 +808,15 @@ class Agent:
             run.transcript_entries.append(f"<tool_error>{error_text}</tool_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
             return None
+
+        # Terminal tool check — exit loop immediately without executing the tool
+        if decision.tool_name in self.terminal_tools:
+            return AgentResult(
+                status="completed",
+                message=json.dumps(decision.parameters) if decision.parameters else "",
+                decision=decision,
+                prompt=run.rendered_prompt,
+            )
 
         tool_call_id = str(uuid4())
         event = ToolStartEvent(

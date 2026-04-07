@@ -31,16 +31,21 @@ class HostConfig:
             source file stem.
     """
 
-    openai_api_key: str
-    default_provider: str
-    default_model: str
-    agent_directory: Path
-    tools_directory: Path
-    world_directory: Path
-    root_agent_id: str
+    openai_api_key: str = ""
+    default_provider: str = "openai"
+    default_model: str = "gpt-4o-mini"
+    agent_directory: Path = field(default_factory=lambda: Path("agents"))
+    tools_directory: Path = field(default_factory=lambda: Path("tools"))
+    world_directory: Path = field(default_factory=lambda: Path("world"))
+    root_agent_id: str = "root"
     agent_models: dict[str, str] = field(default_factory=dict)
     skills_directories: tuple[Path, ...] = field(default_factory=tuple)
     skills_catalog_max_tokens: int = 2000
+    # DIAL provider credentials
+    dial_base_url: str = ""
+    dial_deployment: str = ""
+    dial_api_version: str = "2024-10-21"
+    dial_api_key: str = ""
 
     def model_for(self, agent_id: str, fallback: str | None = None) -> str:
         """Return the configured model for an agent.
@@ -103,6 +108,10 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         agent_models=_parse_agent_models(values.get("AGENT_MODELS", "")),
         skills_directories=skills_directories,
         skills_catalog_max_tokens=skills_catalog_max_tokens,
+        dial_base_url=values.get("DIAL_BASE_URL", ""),
+        dial_deployment=values.get("DIAL_DEPLOYMENT", ""),
+        dial_api_version=values.get("DIAL_API_VERSION", "2024-10-21"),
+        dial_api_key=values.get("DIAL_API_KEY", ""),
     )
 
 

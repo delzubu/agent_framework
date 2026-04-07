@@ -1,7 +1,7 @@
 # Host & Orchestration
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Extension Points](./extension-points.md) · [Interface Specifications](./interfaces.md)
+> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Extension Points](./extension-points.md) · [Interface Specifications](./interfaces.md)
 
 ---
 
@@ -43,11 +43,23 @@ class AgentHost:
 
 **`AgentHost.from_env(env_path, *, model_driver, input_reader, output_writer) -> AgentHost`**
 
-Loads `HostConfig` from the `.env` file, constructs an `OpenAiModelDriver` if `model_driver` is not provided, creates the `InMemoryAuditTracer`, and wires model driver trace callbacks to the tracer.
+Loads `HostConfig` from the `.env` file. If `model_driver` is not provided, auto-detects the driver from config: if `DEFAULT_PROVIDER=dial` and `DIAL_BASE_URL` is set, constructs a `DialChatCompletionsDriver`; otherwise constructs an `OpenAiModelDriver`. Creates the `InMemoryAuditTracer` and wires model driver trace callbacks to it.
 
 **`AgentHost.from_env_console(env_path, *, model_driver) -> AgentHost`**
 
 Shorthand: `from_env` wired to real `input` and `print` callables. Used by the CLI.
+
+**`AgentHost.create(*, model_driver, config=None, conversation_store=None, input_reader=None, output_writer=None) -> AgentHost`** *(v0.2)*
+
+Programmatic construction without a `.env` file. All fields have sensible defaults — useful for testing or for services that construct the host from injected dependencies:
+
+```python
+from agent_framework import AgentHost, HostConfig
+from agent_framework.drivers.dial import DialChatCompletionsDriver
+
+driver = DialChatCompletionsDriver(base_url="https://...", deployment="gpt-4o", api_key="...")
+host = AgentHost.create(model_driver=driver, config=HostConfig(default_model="gpt-4o"))
+```
 
 ---
 
@@ -56,28 +68,44 @@ Shorthand: `from_env` wired to real `input` and `print` callables. Used by the C
 ```python
 @dataclass(frozen=True, slots=True)
 class HostConfig:
-    openai_api_key: str
-    default_provider: str           # "openai"
-    default_model: str              # "gpt-4o-mini"
-    agent_directory: Path
-    tools_directory: Path
-    world_directory: Path
-    root_agent_id: str              # "root"
-    agent_models: dict[str, str]    # per-agent model overrides
+    openai_api_key: str = ""
+    default_provider: str = "openai"
+    default_model: str = "gpt-4o-mini"
+    agent_directory: Path = Path("agents")
+    tools_directory: Path = Path("tools")
+    world_directory: Path = Path("world")
+    root_agent_id: str = "root"
+    agent_models: dict[str, str] = field(default_factory=dict)
+    skills_directories: tuple[Path, ...] = ()
+    skills_catalog_max_tokens: int = 2000
+    # DIAL provider (v0.2)
+    dial_base_url: str = ""
+    dial_deployment: str = ""
+    dial_api_version: str = "2024-10-21"
+    dial_api_key: str = ""
 ```
+
+All fields have defaults — `HostConfig()` with no arguments is valid. This enables programmatic construction via `AgentHost.create()` without a `.env` file.
 
 **`.env` Keys:**
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `OPENAI_API_KEY` | API key for OpenAI (required if using OpenAI) | — |
-| `DEFAULT_PROVIDER` | Provider name | `openai` |
+| `OPENAI_API_KEY` | API key for OpenAI | `""` |
+| `DEFAULT_PROVIDER` | Provider name (`openai` or `dial`) | `openai` |
 | `DEFAULT_MODEL` | Default model ID | `gpt-4o-mini` |
 | `AGENT_DIRECTORY` | Directory containing agent `.md` files | `agents` |
 | `TOOLS_DIRECTORY` | Directory containing tool `.md` + `.py` pairs | `tools` |
 | `WORLD_DIRECTORY` | Sandboxed root for tool file access | `world` |
 | `ROOT_AGENT` | Agent ID to run as the root agent | `root` |
 | `AGENT_MODELS` | Per-agent model overrides: `agent_id:model,...` | — |
+| `SKILLS_DIRECTORY` | Single skills directory path | — |
+| `SKILLS_DIRECTORIES` | Multiple skills directories (comma-separated) | — |
+| `SKILLS_CATALOG_MAX_TOKENS` | Max tokens for skills catalog | `2000` |
+| `DIAL_BASE_URL` | DIAL API base URL | `""` |
+| `DIAL_DEPLOYMENT` | DIAL deployment name | `""` |
+| `DIAL_API_VERSION` | DIAL API version query param | `2024-10-21` |
+| `DIAL_API_KEY` | DIAL API key | `""` |
 
 **`HostConfig.model_for(agent_id, fallback=None) -> str`**
 
@@ -288,7 +316,11 @@ Uses the injected `output_writer` and `input_reader` callables. In the standard 
 
 **`get_model_driver(agent: Agent) -> ModelDriver`**
 
-Returns `self.model_driver`. Currently all agents share the same driver instance. (Per-agent driver dispatch is a planned extension for multi-provider configurations.)
+Returns the driver suitable for use in the sync agent loop. If the configured driver is an `AsyncModelDriver` (detected via `asyncio.iscoroutinefunction(driver.decide)`), it is automatically wrapped with `AsyncToSyncAdapter` before returning. This means the existing sync agent loop works unchanged with async drivers (e.g., `DialChatCompletionsDriver`).
+
+**`get_model_driver_raw() -> Any`**
+
+Returns the raw driver without adapter wrapping. Used by `complete_async()` and `run_tool_loop()` which want to call the async driver directly.
 
 ### 8.2 Host-Level Model Hooks
 
@@ -356,7 +388,110 @@ Agents receive a reference typed as `AgentHostProtocol`, not `AgentHost`. This e
 
 ---
 
-## 10. CLI Entry Point
+## 10. Headless Model Invocation (v0.2)
+
+For services that need direct model access without running a markdown agent — e.g., multi-phase LLM orchestration, chat completion services, or tool-calling loops — the host exposes `complete()`, `complete_async()`, and `run_tool_loop()`.
+
+### 10.1 `complete()` — Sync Single-Turn Invocation
+
+```python
+result: ModelResponse = host.complete(
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+    model_name="gpt-4o",          # optional, overrides config.default_model
+    temperature=0.2,
+    response_format=None,         # {"type": "json_object"} or json_schema dict
+    response_mode="json_object",
+    tools=None,
+    conversation_id=None,         # if set and conversation_store configured, loads/saves history
+)
+```
+
+Fires trace callbacks if the host has `audit_tracer` or LLM trace logging configured. If `conversation_id` is provided and a `conversation_store` is attached, the method: (1) loads existing messages from the store, (2) prepends them to the provided messages, (3) appends the assistant response to the store after completion.
+
+### 10.2 `complete_async()` — Async Single-Turn Invocation
+
+```python
+result = await host.complete_async(
+    messages=[{"role": "user", "content": "Summarize this."}],
+    **kwargs,  # same as complete()
+)
+```
+
+Uses the raw async driver if available (via `get_model_driver_raw()`), otherwise wraps a sync driver with `SyncToAsyncAdapter`. Preferred for async service contexts.
+
+### 10.3 `run_tool_loop()` — Async Multi-Turn Tool Loop
+
+```python
+from agent_framework.host import run_tool_loop
+
+result = await run_tool_loop(
+    host,
+    messages=[{"role": "user", "content": "Find and summarize."}],
+    tools=[...],                  # ToolDefinition list passed to model
+    tool_executor=my_executor,    # async callable(name, args) -> str
+    terminal_tools=["clarify"],   # tool names that exit the loop immediately
+    max_iterations=10,
+    conversation_id=None,
+)
+```
+
+Loops until:
+- `finish_reason == "stop"` (no tool calls requested)
+- A terminal tool is called (returns immediately with `finish_reason="terminal_tool"` and args as `raw_text`)
+- `max_iterations` is reached (raises `RuntimeError("max_iterations")`)
+
+When a non-terminal tool is called: the `tool_executor` coroutine is called with `(tool_name, arguments_dict)`, its string result is appended as a `tool` role message, and the loop continues.
+
+**Terminal tool pattern:** Useful for implementing clarification requests. The orchestrator calls `run_tool_loop()` with `terminal_tools=["request_clarification"]`. When the model calls `request_clarification`, the loop exits immediately with the clarification arguments — the caller interprets them and decides whether to re-enter the loop or escalate.
+
+---
+
+## 11. Conversation Store (v0.2)
+
+`AgentHost` accepts an optional `conversation_store` (any object satisfying `ConversationStore` or `AsyncConversationStore` protocol). When set, it integrates with `complete()` and `complete_async()` for automatic multi-turn history management.
+
+```python
+from agent_framework.conversation import InMemoryConversationStore
+
+store = InMemoryConversationStore(ttl_seconds=3600)
+host = AgentHost.create(model_driver=driver, conversation_store=store)
+
+# Create a conversation
+cid = store.create([{"role": "system", "content": "You are helpful."}])
+
+# Each complete() call with conversation_id loads and saves history automatically
+result = host.complete(messages=[{"role": "user", "content": "hi"}], conversation_id=cid)
+result = host.complete(messages=[{"role": "user", "content": "follow-up"}], conversation_id=cid)
+
+# History is accumulated in the store
+msgs = store.get_messages(cid)  # system + user + assistant + user + assistant
+```
+
+See [Conversation Model](./conversation-model.md) for the full protocol reference.
+
+---
+
+## 12. Terminal Tools in the Agent Loop (v0.2)
+
+Markdown agents support a `terminal_tools` list in frontmatter:
+
+```yaml
+---
+id: orchestrator
+tools:
+  - request_clarification
+terminal_tools:
+  - request_clarification
+---
+```
+
+When the model calls a terminal tool, `handle_tool_call()` returns immediately with `AgentResult(status="completed", message=json.dumps(args))` — the tool implementation is **not** executed. This enables a clean exit point for clarification or escalation workflows without requiring a separate callback mechanism.
+
+`terminal_tools` defaults to `()` — agents without this key behave identically to before.
+
+---
+
+## 13. CLI Entry Point  *(was §10)*
 
 `__main__.py` provides the command-line interface:
 

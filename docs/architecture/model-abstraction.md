@@ -1,7 +1,7 @@
 # Model Driver Abstraction Layer
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Host & Orchestration](./host-orchestration.md) · [Extension Points](./extension-points.md) · [Interface Specifications](./interfaces.md)
+> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Extension Points](./extension-points.md) · [Interface Specifications](./interfaces.md)
 
 ---
 
@@ -63,6 +63,107 @@ Both callbacks are optional (`None` means no-op). The driver must not raise if t
 
 ---
 
+## 2b. `AsyncModelDriver` — The Async Protocol
+
+Added in v0.2 to support async providers (DIAL, custom async HTTP clients):
+
+```python
+class AsyncModelDriver(Protocol):
+    async def decide(
+        self,
+        *,
+        agent_id: str | None,
+        provider_name: str,
+        model_name: str,
+        temperature: float,
+        context: ModelContext,
+    ) -> ModelResponse: ...
+
+    def set_trace_callbacks(
+        self,
+        *,
+        on_request: Callable[[ProviderRequestTrace], None] | None = None,
+        on_response: Callable[[ProviderResponseTrace], None] | None = None,
+    ) -> None: ...
+```
+
+`AsyncModelDriver` is structurally identical to `ModelDriver` except `decide()` is an `async def` coroutine. The sync agent loop cannot call it directly — see the adapter classes below.
+
+### Sync/Async Adapters
+
+Two adapter classes bridge the sync and async worlds:
+
+**`SyncToAsyncAdapter`** — wraps a sync `ModelDriver` for async callers:
+```python
+adapter = SyncToAsyncAdapter(my_sync_driver)
+result = await adapter.decide(...)  # runs decide() in asyncio.to_thread
+```
+
+**`AsyncToSyncAdapter`** — wraps an `AsyncModelDriver` for sync callers:
+```python
+adapter = AsyncToSyncAdapter(my_async_driver)
+result = adapter.decide(...)  # runs the coroutine to completion
+```
+
+`AsyncToSyncAdapter` handles both cases: when called outside an event loop it uses `asyncio.run()`, and when called from within a running loop (e.g., from a `ThreadPoolExecutor` worker) it creates a new event loop in the current thread.
+
+`AgentHost.get_model_driver(agent)` automatically wraps async drivers with `AsyncToSyncAdapter`, so the existing sync agent loop works unchanged when an `AsyncModelDriver` is configured.
+
+---
+
+## 2c. `DriverCapabilities` — Runtime Feature Declaration
+
+Drivers declare what they support via a `ClassVar[DriverCapabilities]`:
+
+```python
+@dataclass(frozen=True, slots=True)
+class DriverCapabilities:
+    is_async: bool = False
+    supports_multimodal: bool = False
+    supports_response_format: bool = False
+    supports_tools: bool = False
+    supports_streaming: bool = False
+```
+
+| Flag | Meaning |
+|------|---------|
+| `is_async` | `decide()` is a coroutine (implements `AsyncModelDriver`) |
+| `supports_multimodal` | Accepts `image_url` content parts in messages |
+| `supports_response_format` | Accepts `context.response_format` hint |
+| `supports_tools` | Accepts OpenAI-format tool definitions in the request |
+| `supports_streaming` | Supports streaming responses (not yet used by the framework) |
+
+**Querying capabilities:**
+
+```python
+from agent_framework.model import get_driver_capabilities
+
+caps = get_driver_capabilities(driver)
+if caps.supports_response_format:
+    context = ModelContext(..., response_format={"type": "json_object"})
+```
+
+`get_driver_capabilities(driver)` returns `driver.capabilities` if the attribute exists (class or instance), otherwise returns `DriverCapabilities()` (all False) for backward compatibility with legacy drivers.
+
+**Declaring capabilities on a custom driver:**
+
+```python
+from typing import ClassVar
+from agent_framework.model import DriverCapabilities
+
+@dataclass(slots=True)
+class MyDriver:
+    capabilities: ClassVar[DriverCapabilities] = DriverCapabilities(
+        is_async=True,
+        supports_tools=True,
+    )
+    ...
+```
+
+`ClassVar` is important — it makes `capabilities` a class-level attribute, not a constructor argument.
+
+---
+
 ## 3. `ModelContext` — The Complete Prompt Payload
 
 ```python
@@ -77,6 +178,7 @@ class ModelContext:
     subagents: tuple[CapabilityDefinition, ...]
     skills: tuple[CapabilityDefinition, ...]
     run_id: str | None
+    response_format: dict[str, Any] | None = None  # added in v0.2
 ```
 
 | Field | Description |
@@ -90,6 +192,7 @@ class ModelContext:
 | `subagents` | Subagent capability definitions (converted from `Agent` via `agent_to_capability_definition()`). Injected into the system prompt as JSON. |
 | `skills` | Skill stub definitions (same structure as subagents, for future use). |
 | `run_id` | Correlation ID for the current run. Passed through to trace records. |
+| `response_format` | Optional structured output format hint. Dict with `{"type": "json_object"}` or `{"type": "json_schema", "json_schema": {...}}`. Forwarded verbatim to drivers that support it (`DriverCapabilities.supports_response_format = True`). Ignored by drivers that don't. |
 
 ---
 
@@ -100,11 +203,24 @@ class ModelContext:
 class ModelResponse:
     payload: dict[str, object]
     raw_text: str
+    tool_calls: tuple[dict[str, Any], ...] | None = None   # added in v0.2
+    finish_reason: str | None = None                        # added in v0.2
+    usage: dict[str, int] | None = None                    # added in v0.2
 ```
+
+| Field | Description |
+|-------|-------------|
+| `payload` | Parsed JSON dict, or `{}` for text mode. Populated from `raw_text` by the driver. |
+| `raw_text` | Verbatim string returned by the model (before JSON parsing). Always populated. |
+| `tool_calls` | Tuple of raw tool call dicts from the provider response (OpenAI format: `[{"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}]`). Set by async drivers when the model requests tool use. `None` for sync agent loop responses that use the decision envelope pattern. |
+| `finish_reason` | Provider finish reason string (e.g., `"stop"`, `"tool_calls"`, `"length"`). Set by async drivers. |
+| `usage` | Token usage dict from the provider (e.g., `{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}`). Set by async drivers when available. |
 
 The `raw_text` field is **always** the verbatim string returned by the model (before any JSON parsing). The `payload` is the parsed dict (or `{}` for text mode). Both are preserved in `AgentCallAuditRecord` via the audit tracer.
 
 `AgentDecision.from_model_response(response)` is called on the returned `ModelResponse` to normalize it into a structured `AgentDecision`. See the [Agent Runtime](./agent-runtime.md#7-decision-normalization) documentation.
+
+**Backward compatibility:** The new fields default to `None` — existing code constructing `ModelResponse(payload=..., raw_text=...)` continues to work without modification.
 
 ---
 
