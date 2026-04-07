@@ -367,7 +367,8 @@ class DialChatCompletionsDriver:
             resp = await client.post(endpoint, json=body)
         except httpx.TransportError as exc:
             raise ModelDriverError(
-                f"Transport error calling DIAL: {exc}",
+                f"Cannot reach DIAL at {self.base_url!r}: {exc}. "
+                "Check network connectivity and VPN access to the DIAL endpoint.",
                 status_code=502,
                 upstream_body=None,
             ) from exc

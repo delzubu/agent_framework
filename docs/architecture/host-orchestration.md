@@ -400,11 +400,13 @@ result: ModelResponse = host.complete(
     model_name="gpt-4o",          # optional, overrides config.default_model
     temperature=0.2,
     response_format=None,         # {"type": "json_object"} or json_schema dict
-    response_mode="json_object",
+    response_mode="json_object",  # default — parse response as JSON
     tools=None,
     conversation_id=None,         # if set and conversation_store configured, loads/saves history
 )
 ```
+
+`response_mode` defaults to `"json_object"` — the driver parses the model output as JSON and populates `ModelResponse.payload`. Pass `"text"` when you expect plain-text output and want `raw_text` only.
 
 Fires trace callbacks if the host has `audit_tracer` or LLM trace logging configured. If `conversation_id` is provided and a `conversation_store` is attached, the method: (1) loads existing messages from the store, (2) prepends them to the provided messages, (3) appends the assistant response to the store after completion.
 
@@ -432,6 +434,7 @@ result = await run_tool_loop(
     terminal_tools=["clarify"],   # tool names that exit the loop immediately
     max_iterations=10,
     conversation_id=None,
+    response_mode="json_object",  # default — parse each turn as JSON
 )
 ```
 

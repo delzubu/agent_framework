@@ -184,7 +184,7 @@ class AgentHost:
         model_name: str | None = None,
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
-        response_mode: str = "text",
+        response_mode: str = "json_object",
         tools: Sequence[ToolDefinition] | None = None,
         conversation_id: str | None = None,
     ) -> ModelResponse:
@@ -201,7 +201,10 @@ class AgentHost:
             temperature: Sampling temperature.
             response_format: Provider-native response format (forwarded to
                 drivers that support it, e.g. ``{"type": "json_object"}``).
-            response_mode: ``"text"`` or ``"json_object"``.
+            response_mode: ``"json_object"`` (default) or ``"text"``.  Controls
+                how the driver parses the model output.  Use ``"text"`` for
+                plain-text responses or tool-calling loops where JSON parsing
+                of the assistant turn is not needed.
             tools: Tool definitions to expose to the model.
             conversation_id: If provided and a ``conversation_store`` is
                 attached, prior messages are prepended and the response is
@@ -241,7 +244,7 @@ class AgentHost:
         model_name: str | None = None,
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
-        response_mode: str = "text",
+        response_mode: str = "json_object",
         tools: Sequence[ToolDefinition] | None = None,
         conversation_id: str | None = None,
     ) -> ModelResponse:
@@ -600,6 +603,7 @@ async def run_tool_loop(
     model_name: str | None = None,
     temperature: float = 0.2,
     response_format: dict[str, Any] | None = None,
+    response_mode: str = "json_object",
 ) -> ModelResponse:
     """Run a multi-turn tool-calling loop using ``complete_async()``.
 
@@ -628,6 +632,10 @@ async def run_tool_loop(
         model_name: Passed to ``complete_async()``.
         temperature: Passed to ``complete_async()``.
         response_format: Passed to ``complete_async()``.
+        response_mode: ``"json_object"`` (default) or ``"text"``.  Controls
+            how the driver parses the assistant turn.  Use ``"text"`` when the
+            loop is purely tool-driven and the final assistant message is plain
+            text.
 
     Returns:
         The final ``ModelResponse``.  ``finish_reason`` is ``"terminal_tool"``
@@ -649,7 +657,7 @@ async def run_tool_loop(
             model_name=model_name,
             temperature=temperature,
             response_format=response_format,
-            response_mode="text",
+            response_mode=response_mode,
             tools=tools,
             conversation_id=conversation_id,
         )

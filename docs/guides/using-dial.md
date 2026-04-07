@@ -59,6 +59,17 @@ host = AgentHost.create(
 Use `complete_async()` for single-turn model invocations without a markdown agent:
 
 ```python
+# Default: response_mode="json_object" — result.payload is a parsed dict
+result = await host.complete_async(
+    messages=[{"role": "user", "content": "Return a JSON object with 'name' and 'score'."}],
+)
+data = result.payload  # already parsed dict
+print(data["name"])
+```
+
+For plain-text output, pass `response_mode="text"` explicitly:
+
+```python
 result = await host.complete_async(
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
@@ -67,17 +78,6 @@ result = await host.complete_async(
     response_mode="text",
 )
 print(result.raw_text)
-```
-
-For JSON output:
-
-```python
-result = await host.complete_async(
-    messages=[{"role": "user", "content": "Return a JSON object with 'name' and 'score'."}],
-    response_mode="json_object",
-)
-data = result.payload  # already parsed dict
-print(data["name"])
 ```
 
 With structured output hint (for models that support `response_format`):
@@ -300,7 +300,8 @@ except ModelDriverError as e:
         # Bad request — check e.upstream_body for DIAL error details
         print(f"DIAL error: {e.upstream_body}")
     elif e.status_code == 502:
-        # Transport error — network issue
+        # Transport error — network/VPN issue; str(e) contains the target URL
+        # and a connectivity hint for operators
         raise
     else:
         raise

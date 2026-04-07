@@ -146,7 +146,7 @@ class DialChatCompletionsDriver:
 - Response format: converts `response_format` dict → `ResponseFormatJsonObject` or `ResponseFormatJsonSchema`
 - **HTTP 400 retry:** When the server returns 400 and `response_format` was in the request body, retries once without `response_format` (configurable via `retry_without_response_format=False`)
 - Raises `ModelDriverError(status_code=..., upstream_body=...)` on HTTP errors
-- Raises `ModelDriverError(status_code=502)` on transport errors
+- Raises `ModelDriverError(status_code=502)` on transport errors; message includes the target URL and a VPN/network connectivity hint so operators can diagnose connectivity issues without digging into logs
 - Fires `ProviderRequestTrace` / `ProviderResponseTrace` — same mechanism as `OpenAiModelDriver`
 - `custom_fields`: merged into request body as DIAL-specific `custom_fields.configuration` (for rate limiting, model routing, etc.)
 
