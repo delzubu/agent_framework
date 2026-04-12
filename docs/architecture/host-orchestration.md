@@ -8,12 +8,14 @@
 ## 1. Overview
 
 `AgentHost` (`src/agent_framework/host.py`) is the central orchestration runtime for the framework. It owns:
-- **Agent registry** — loads, caches, and resolves `Agent` instances from Markdown files
-- **Tool registry** — loads, caches, and executes `Tool` instances
+- **Tool registry** (`ToolRegistry`) — discovers, caches, and executes `Tool` instances; accepts programmatic registration for built-in and MCP-bridged tools
+- **Agent registry** (`AgentRegistry`) — discovers, caches, and resolves `Agent` instances from Markdown files
+- **Command registry** (`CommandRegistry`) — discovers parametrized markdown prompt commands
 - **Model driver** — the `ModelDriver` implementation used for all LLM calls
+- **User communication** (`UserCommunication`) — async I/O abstraction replacing `input_reader`/`output_writer`; default `NullUserCommunication` for headless use
+- **MCP manager** (`McpManager`) — optional client-side MCP integration; bridges MCP tools into `ToolRegistry`
 - **Call contexts** — `CallContext` objects tracking active call edges between agents
 - **Audit tracer** — optional `InMemoryAuditTracer` for immutable JSONL audit output
-- **I/O callables** — pluggable `input_reader` and `output_writer` for console interaction
 - **Thread pool** — `ThreadPoolExecutor` for async subagent parallelism
 - **Host-level hooks** — `onPreModel` and `onPostModel` for cross-cutting model interception
 
@@ -27,39 +29,55 @@
 @dataclass(slots=True)
 class AgentHost:
     config: HostConfig
-    model_driver: ModelDriver | None
-    input_reader: Callable[[str], str]           # default: input
-    output_writer: Callable[[str], None]          # default: print
-    agent_registry: dict[str, Agent]
-    tool_registry: dict[str, Tool]
+    model_driver: ModelDriver | AsyncModelDriver | None
+    tool_registry: ToolRegistry              # eager catalog / lazy load; programmatic registration
+    agent_registry: AgentRegistry            # eager catalog / lazy load
+    command_registry: CommandRegistry        # fully loaded at discovery time
+    user_comm: UserCommunication | None      # default: NullUserCommunication
+    mcp_manager: McpManager | None           # None when MCP disabled or no servers configured
     contexts: dict[str, CallContext]
     onPreModel: SequentialHook
     onPostModel: SequentialHook
     audit_tracer: InMemoryAuditTracer | None
-    _executor: ThreadPoolExecutor                 # max_workers=8
+    skill_registry: SkillRegistry | None
+    conversation_store: ConversationStore | AsyncConversationStore | None
+    _executor: ThreadPoolExecutor            # max_workers=8
+    _command_fallback: Callable | None       # (name, raw_args) -> Awaitable[str | None]
+    _started: bool
 ```
 
 ### Factory Methods
 
-**`AgentHost.from_env(env_path, *, model_driver, input_reader, output_writer) -> AgentHost`**
+**`AgentHost.create(*, model_driver, config=None, conversation_store=None, user_comm=None, builtin_tools=True, mcp_enabled=True, command_fallback=None) -> AgentHost`**
 
-Loads `HostConfig` from the `.env` file. If `model_driver` is not provided, auto-detects the driver from config: if `DEFAULT_PROVIDER=dial` and `DIAL_BASE_URL` is set, constructs a `DialChatCompletionsDriver`; otherwise constructs an `OpenAiModelDriver`. Creates the `InMemoryAuditTracer` and wires model driver trace callbacks to it.
-
-**`AgentHost.from_env_console(env_path, *, model_driver) -> AgentHost`**
-
-Shorthand: `from_env` wired to real `input` and `print` callables. Used by the CLI.
-
-**`AgentHost.create(*, model_driver, config=None, conversation_store=None, input_reader=None, output_writer=None) -> AgentHost`** *(v0.2)*
-
-Programmatic construction without a `.env` file. All fields have sensible defaults — useful for testing or for services that construct the host from injected dependencies:
+Preferred programmatic entry point — no `.env` file required. Constructs formal registries from config directories, registers built-in tools when `builtin_tools=True`, loads MCP configs (if available and `mcp_enabled=True`) but does **not** start connections. Returns an unstarted host.
 
 ```python
-from agent_framework import AgentHost, HostConfig
+from agent_framework import AgentHost
 from agent_framework.drivers.dial import DialChatCompletionsDriver
 
-driver = DialChatCompletionsDriver(base_url="https://...", deployment="gpt-4o", api_key="...")
-host = AgentHost.create(model_driver=driver, config=HostConfig(default_model="gpt-4o"))
+driver = DialChatCompletionsDriver(base_url="https://...", api_key="...")
+host = AgentHost.create(model_driver=driver)
+await host.start()
 ```
+
+**`AgentHost.from_env(env_path, *, model_driver=None, model_override=None, user_comm=None) -> AgentHost`**
+
+Loads `HostConfig` from the `.env` file, auto-detects the driver, creates the `InMemoryAuditTracer`, and runs synchronous registry discovery. Does **not** call `start()` — MCP startup still requires `await host.start()`. The deprecated `input_reader`/`output_writer` kwargs are silently ignored for backward compatibility.
+
+**`AgentHost.from_env_console(env_path, *, model_driver=None, model_override=None) -> AgentHost`**
+
+Calls `from_env` with `ConsoleUserCommunication` wired, then runs `await host.start()` synchronously via a thread pool executor. Used by the CLI. Returns a fully started host.
+
+### Lifecycle
+
+**`await host.start() -> None`**
+
+Idempotent. Discovers registries (tool, agent, command, skill), starts MCP connections (`McpManager.start_all()`), bridges MCP tools into `tool_registry`, and wraps `user_comm` with `_TracingUserCommunication` when `audit_tracer` is set. Safe to call multiple times.
+
+**`await host.aclose() -> None`**
+
+Stops MCP connections (`McpManager.stop_all()`) and calls `driver.aclose()` if the driver exposes it (e.g., `DialChatCompletionsDriver`).
 
 ---
 
@@ -70,22 +88,26 @@ host = AgentHost.create(model_driver=driver, config=HostConfig(default_model="gp
 class HostConfig:
     openai_api_key: str = ""
     default_provider: str = "openai"
-    default_model: str = "gpt-4o-mini"
+    default_model: tuple[str, ...] = ("gpt-4o-mini",)   # first = highest priority
     agent_directory: Path = Path("agents")
     tools_directory: Path = Path("tools")
     world_directory: Path = Path("world")
     root_agent_id: str = "root"
-    agent_models: dict[str, str] = field(default_factory=dict)
+    agent_models: dict[str, tuple[str, ...]] = field(default_factory=dict)
     skills_directories: tuple[Path, ...] = ()
     skills_catalog_max_tokens: int = 2000
-    # DIAL provider (v0.2)
+    # DIAL provider
     dial_base_url: str = ""
-    dial_deployment: str = ""
     dial_api_version: str = "2024-10-21"
     dial_api_key: str = ""
+    # Commands
+    commands_directories: tuple[Path, ...] = ()
+    # MCP
+    mcp_config_path: Path | None = None
+    mcp_enabled: bool = True
 ```
 
-All fields have defaults — `HostConfig()` with no arguments is valid. This enables programmatic construction via `AgentHost.create()` without a `.env` file.
+All fields have defaults — `HostConfig()` with no arguments is valid.
 
 **`.env` Keys:**
 
@@ -93,23 +115,22 @@ All fields have defaults — `HostConfig()` with no arguments is valid. This ena
 |-----|-------------|---------|
 | `OPENAI_API_KEY` | API key for OpenAI | `""` |
 | `DEFAULT_PROVIDER` | Provider name (`openai` or `dial`) | `openai` |
-| `DEFAULT_MODEL` | Default model ID | `gpt-4o-mini` |
+| `DEFAULT_MODEL` | Comma-separated model list (first = highest priority): `gpt-4o,gpt-4o-mini` | `gpt-4o-mini` |
 | `AGENT_DIRECTORY` | Directory containing agent `.md` files | `agents` |
 | `TOOLS_DIRECTORY` | Directory containing tool `.md` + `.py` pairs | `tools` |
 | `WORLD_DIRECTORY` | Sandboxed root for tool file access | `world` |
 | `ROOT_AGENT` | Agent ID to run as the root agent | `root` |
-| `AGENT_MODELS` | Per-agent model overrides: `agent_id:model,...` | — |
+| `AGENT_MODELS` | Per-agent model overrides: `agent1=m1,m2\|agent2=m3` (`\|` separates agents, `,` separates models) | — |
 | `SKILLS_DIRECTORY` | Single skills directory path | — |
 | `SKILLS_DIRECTORIES` | Multiple skills directories (comma-separated) | — |
 | `SKILLS_CATALOG_MAX_TOKENS` | Max tokens for skills catalog | `2000` |
 | `DIAL_BASE_URL` | DIAL API base URL | `""` |
-| `DIAL_DEPLOYMENT` | DIAL deployment name | `""` |
 | `DIAL_API_VERSION` | DIAL API version query param | `2024-10-21` |
 | `DIAL_API_KEY` | DIAL API key | `""` |
-
-**`HostConfig.model_for(agent_id, fallback=None) -> str`**
-
-Returns `agent_models[agent_id]` if present, else `fallback` if provided, else `default_model`.
+| `COMMANDS_DIRECTORY` | Single commands directory | — |
+| `COMMANDS_DIRECTORIES` | Multiple commands directories (comma-separated) | — |
+| `MCP_CONFIG_PATH` | Explicit `.mcp.json` path (overrides auto-discovery) | — |
+| `MCP_ENABLED` | Set `false` to disable MCP entirely | `true` |
 
 Directory paths in `.env` are relative to the env file's parent directory and are resolved to absolute `Path` objects by `load_host_config()`.
 

@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_framework_runtime.py -x -q)",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -m pytest tests/test_terminal_tools.py -x -q)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''src/agent_framework/config.py''\\).read\\(\\)\\); print\\(''syntax OK''\\)\")",
+      "Bash(pytest --tb=short -q)",
+      "Bash(python -m pytest --tb=short -q)",
+      "Bash(python -c \"from agent_framework.user_communication import UserCommunication, NullUserCommunication; from agent_framework.console_communication import ConsoleUserCommunication; print\\(''OK''\\)\")",
+      "Bash(python:*)",
+      "Read(//c/Python313/Lib/site-packages/**)",
+      "Bash(ls C:/Python313/Lib/site-packages/__editable*)",
+      "Bash(find C:/Python313/Lib/site-packages -name *.pth)",
+      "Bash(xargs grep:*)",
+      "Bash(cp \"C:/Users/Balazs_Misangyi/src/Python/agent_framework/src/agent_framework/user_communication.py\" \"C:/Users/Balazs_Misangyi/AppData/Roaming/Python/Python313/site-packages/agent_framework/user_communication.py\")",
+      "Bash(cp \"C:/Users/Balazs_Misangyi/src/Python/agent_framework/src/agent_framework/console_communication.py\" \"C:/Users/Balazs_Misangyi/AppData/Roaming/Python/Python313/site-packages/agent_framework/console_communication.py\")",
+      "Bash(pip show:*)",
+      "Bash(pip install:*)",
+      "Bash(python -c \":*)",
+      "Bash(pytest tests/test_framework_runtime.py -x -q)"
+    ]
+  }
+}

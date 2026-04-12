@@ -23,7 +23,7 @@ class FakeModelDriver:
     def set_trace_callbacks(self, *, on_request=None, on_response=None):
         pass
 
-    def decide(self, *, agent_id, provider_name, model_name, temperature, context):
+    def decide(self, *, agent_id, provider_name, model_names, temperature, context):
         payload = self._payloads.pop(0)
         return ModelResponse(payload=payload, raw_text=str(payload))
 
@@ -87,7 +87,7 @@ def _make_agent(terminal_tools=(), allowed_tools=()) -> Agent:
         user_prompt_template="Hello",
         parameters=(),
         provider_name="openai",
-        model_name="gpt-4o-mini",
+        model_names=("gpt-4o-mini",),
         terminal_tools=terminal_tools,
         allowed_tools=allowed_tools,
     )
@@ -124,7 +124,7 @@ class TestTerminalToolsField:
             "tools:\n  - ask_user\nterminal_tools:\n  - ask_user\n---\nsys\n---\nHello\n",
             encoding="utf-8",
         )
-        agent = Agent.from_markdown(md, default_provider="openai", default_model="gpt-4o-mini")
+        agent = Agent.from_markdown(md, default_provider="openai", default_model=("gpt-4o-mini",))
         assert "ask_user" in agent.terminal_tools
 
     def test_from_markdown_no_terminal_tools_key(self, tmp_path):
@@ -133,7 +133,7 @@ class TestTerminalToolsField:
             "---\nid: test\nrole: tester\ndescription: x\n---\nsys\n---\nHello\n",
             encoding="utf-8",
         )
-        agent = Agent.from_markdown(md, default_provider="openai", default_model="gpt-4o-mini")
+        agent = Agent.from_markdown(md, default_provider="openai", default_model=("gpt-4o-mini",))
         assert agent.terminal_tools == ()
 
 

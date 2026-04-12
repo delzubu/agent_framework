@@ -154,7 +154,7 @@ class TestDecideSuccess:
         result = await driver.decide(
             agent_id="a1",
             provider_name="dial",
-            model_name="gpt-4o",
+            model_names=("gpt-4o",),
             temperature=0.2,
             context=ctx,
         )
@@ -177,7 +177,7 @@ class TestDecideSuccess:
         result = await driver.decide(
             agent_id="a1",
             provider_name="dial",
-            model_name="gpt-4o",
+            model_names=("gpt-4o",),
             temperature=0.2,
             context=ctx,
         )
@@ -198,7 +198,7 @@ class TestDecideSuccess:
         result = await driver.decide(
             agent_id="a1",
             provider_name="dial",
-            model_name="gpt-4o",
+            model_names=("gpt-4o",),
             temperature=0.2,
             context=ctx,
         )
@@ -229,7 +229,7 @@ class TestDecideSuccess:
         await driver.decide(
             agent_id="a1",
             provider_name="dial",
-            model_name="gpt-4o",
+            model_names=("gpt-4o",),
             temperature=0.2,
             context=ctx,
         )
@@ -257,7 +257,7 @@ class TestDecideSuccess:
         await driver.decide(
             agent_id="a1",
             provider_name="dial",
-            model_name="gpt-4o",
+            model_names=("gpt-4o",),
             temperature=0.1,
             context=ctx,
         )
@@ -286,7 +286,7 @@ class TestDecideErrors:
             await driver.decide(
                 agent_id="a1",
                 provider_name="dial",
-                model_name="gpt-4o",
+                model_names=("gpt-4o",),
                 temperature=0.2,
                 context=ctx,
             )
@@ -310,7 +310,7 @@ class TestDecideErrors:
             await driver.decide(
                 agent_id="a1",
                 provider_name="dial",
-                model_name="gpt-4o",
+                model_names=("gpt-4o",),
                 temperature=0.2,
                 context=ctx,
             )
@@ -331,7 +331,7 @@ class TestDecideErrors:
             await driver.decide(
                 agent_id="a1",
                 provider_name="dial",
-                model_name="gpt-4o",
+                model_names=("gpt-4o",),
                 temperature=0.2,
                 context=ctx,
             )
@@ -381,7 +381,7 @@ class TestResponseFormatRetry:
         result = await driver.decide(
             agent_id="a1",
             provider_name="dial",
-            model_name="gpt-4o",
+            model_names=("gpt-4o",),
             temperature=0.2,
             context=ctx,
         )
@@ -412,7 +412,7 @@ class TestResponseFormatRetry:
             await driver.decide(
                 agent_id="a1",
                 provider_name="dial",
-                model_name="gpt-4o",
+                model_names=("gpt-4o",),
                 temperature=0.2,
                 context=ctx,
             )

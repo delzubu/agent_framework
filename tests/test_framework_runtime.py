@@ -19,7 +19,7 @@ class FakeModelDriver:
         self.on_request_trace = on_request
         self.on_response_trace = on_response
 
-    def decide(self, *, agent_id, provider_name, model_name, temperature, context: ModelContext):
+    def decide(self, *, agent_id, provider_name, model_names, temperature, context: ModelContext):
         payload = self._payloads.pop(0)
         return ModelResponse(payload=payload, raw_text=str(payload))
 
@@ -67,7 +67,7 @@ You are the root narrator.
 """,
         encoding='utf-8',
     )
-    agent = Agent.from_markdown(agent_path, default_provider='openai', default_model='gpt-4o-mini')
+    agent = Agent.from_markdown(agent_path, default_provider='openai', default_model=('gpt-4o-mini',))
     rendered = agent.render_user_prompt({'instruction': 'Explore the ruin.'})
     assert '<instruction>Explore the ruin.</instruction>' in rendered
 
@@ -97,7 +97,7 @@ def test_post_agent_hook_replace_is_default_and_append_is_opt_in() -> None:
         user_prompt_template='Hello',
         parameters=(),
         provider_name='openai',
-        model_name='gpt-4o-mini',
+        model_names=('gpt-4o-mini',),
         behaviors=(ReplacingAppendingBehavior(),),
     )
     run = agent._create_run({})
@@ -129,13 +129,11 @@ def test_agent_pre_hook_can_return_final_result(tmp_path: Path) -> None:
         user_prompt_template='Hello {{name}}',
         parameters=(AgentParameter(name='name', description='name'),),
         provider_name='openai',
-        model_name='gpt-4o-mini',
+        model_names=('gpt-4o-mini',),
     )
     host = AgentHost(
         config=load_host_config(env_path),
         model_driver=FakeModelDriver([{'kind': 'final_message', 'message': 'done'}]),
-        input_reader=lambda _: '',
-        output_writer=lambda _: None,
     )
 
     def stop_agent_callback(event):
@@ -518,7 +516,7 @@ def test_skills_catalog_injected_as_conversation_message(tmp_path: Path) -> None
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
         allowed_skills=("my-skill",),
     )
     run = agent._create_run({})
@@ -539,7 +537,7 @@ def test_no_skills_catalog_message_when_no_skills(tmp_path: Path) -> None:
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
     )
     run = agent._create_run({})
     context = agent.build_context(host=host, run=run)
@@ -580,7 +578,7 @@ def test_agent_build_context_populates_skills_from_registry(tmp_path: Path) -> N
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
         allowed_skills=(),  # empty = all skills
     )
     run = agent._create_run({})
@@ -594,7 +592,7 @@ def test_agent_has_pre_and_post_skill_hooks() -> None:
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
     )
     assert isinstance(agent.onPreSkill, SequentialHook)
     assert isinstance(agent.onPostSkill, SequentialHook)
@@ -622,7 +620,7 @@ def test_agent_invokes_skill_and_injects_content_into_conversation(tmp_path: Pat
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
         allowed_skills=(),
     )
     host = AgentHost.from_env(
@@ -645,7 +643,7 @@ def test_agent_unknown_skill_feeds_error_back_and_continues(tmp_path: Path) -> N
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
     )
     host = AgentHost.from_env(
         env_path,
@@ -670,7 +668,7 @@ def test_skill_hooks_fire_on_invocation(tmp_path: Path) -> None:
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
         allowed_skills=(),
     )
     agent.onPreSkill += lambda event: fired.append(("pre", event.skill_name))
@@ -822,7 +820,7 @@ def test_build_skills_catalog_passes_max_tokens_from_host_config(tmp_path: Path)
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
         allowed_skills=("low-skill", "mid-skill", "high-skill"),
     )
     run = agent._create_run({})
@@ -868,7 +866,7 @@ def test_skill_fragment_includes_base_directory(tmp_path: Path) -> None:
             self.on_request_trace = on_request
             self.on_response_trace = on_response
 
-        def decide(self, *, agent_id, provider_name, model_name, temperature, context):
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
             conversation_snapshot.append(list(context.messages))
             payload = self._payloads.pop(0)
             return ModelResponse(payload=payload, raw_text=str(payload))
@@ -885,7 +883,7 @@ def test_skill_fragment_includes_base_directory(tmp_path: Path) -> None:
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
         allowed_skills=(),
     )
     agent.run(host=host, parameters={}, caller_id="host")
@@ -916,7 +914,7 @@ def test_no_skill_tool_registered_on_invocation(tmp_path: Path) -> None:
     agent = Agent(
         agent_id="tester", role="tester", description="",
         system_prompt="sys", user_prompt_template="Hello",
-        parameters=(), provider_name="openai", model_name="gpt-4o-mini",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
         allowed_skills=(),
     )
     host = AgentHost.from_env(
@@ -929,4 +927,4 @@ def test_no_skill_tool_registered_on_invocation(tmp_path: Path) -> None:
         output_writer=lambda _: None,
     )
     agent.run(host=host, parameters={}, caller_id="host")
-    assert "read_skill_resource" not in host.tool_registry
+    assert "read_skill_resource" not in host.tool_registry.list_names()

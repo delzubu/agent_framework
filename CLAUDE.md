@@ -36,7 +36,17 @@ This is a **markdown-defined agent runtime**. Agents and tools are defined in Ma
 
 **Tools** (`tool.py`): Also `.md` files with a Python sibling module. The module must export `build_tool(definition: ToolDefinition) -> Tool`.
 
-**AgentHost** (`host.py`): Central orchestration runtime. Owns the agent registry, tool registry, model driver, conversation store, call context stack, audit tracer, and I/O. All agent invocations flow through the host. Also provides `complete()`, `complete_async()` for headless model calls.
+**AgentHost** (`host.py`): Central orchestration runtime. Owns the agent registry (`AgentRegistry`), tool registry (`ToolRegistry`), command registry (`CommandRegistry`), model driver, conversation store, call context stack, audit tracer, user communication (`UserCommunication`), and optional MCP manager. All agent invocations flow through the host. Also provides `complete()`, `complete_async()` for headless model calls. Lifecycle: `await host.start()` (discovers registries, starts MCP), `await host.aclose()` (shuts down MCP and async driver). Factory: `AgentHost.create(model_driver=..., builtin_tools=True)` — no `.env` needed. CLI path: `AgentHost.from_env_console(env_path)` — wires `ConsoleUserCommunication` and calls `start()` synchronously.
+
+**Registries** (`tool_registry.py`, `agent_registry.py`, `command.py`): Formal dataclass registries following the `SkillRegistry` pattern. Each supports `discover()` (eager catalog scan), `get()` (lazy load), `reload()`, and `list_names()`. `ToolRegistry` also accepts `register(tool)` for programmatic registration (builtins, MCP bridges).
+
+**Built-in tools** (`builtin_tools/`): Seven `Tool` subclasses registered programmatically (no `.md` files): `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`. Permission-gated tools (`Write`, `Edit`, `Bash`, `WebFetch`) call `host.user_comm.request_permission()` before acting. Registered by `register_builtin_tools(registry)`. Enabled by default in `AgentHost.create()`.
+
+**Commands** (`command.py`): Parametrized markdown prompts in a configured directory. Claude Code frontmatter format (`description`, `argument-hint`, `allowed-tools`, `model`). `render(cmd, raw_args)` substitutes `$ARGUMENTS` and `$1`–`$9`. Unknown commands dispatch to a `_command_fallback` callable on the host. Execute via `await host.execute_command(name, raw_args) -> str | None`.
+
+**UserCommunication** (`user_communication.py`, `console_communication.py`): Async Protocol replacing the old `input_reader`/`output_writer` callables. Key methods: `send_message`, `read_user_input`, `request_permission`, `ask_confirmation`. `NullUserCommunication` — no-op (default for `AgentHost.create()`). `ConsoleUserCommunication` — `asyncio.to_thread`-based console I/O with `[y/n/a/d]` permission prompts and session-level allow/deny caching.
+
+**MCP** (`mcp/`): Client-only MCP integration. `McpManager` connects to stdio/HTTP MCP servers (`start_all()`, `stop_all()`), then `bridge_mcp_tools()` registers each MCP tool as a `McpBridgeTool` in `ToolRegistry`. Config via `.mcp.json` (auto-discovered from cwd upward) or `MCP_CONFIG_PATH`. Qualified tool names: `mcp__<server>__<tool>`.
 
 **Skills** (`skills_directories`): Markdown-defined instruction sets discovered from one or more configured directories. Each skill is a `.md` file with YAML frontmatter (`id`, `description`, `priority`). The skills catalog (names + descriptions) is injected as a first-turn conversation message (`{"role": "user"}` at index 2) with priority-based truncation to stay within the `SKILLS_CATALOG_MAX_TOKENS` budget — lower-priority skills are dropped first. When a model emits an `invoke_skill` decision, `handle_skill_invocation()` injects `Base directory: <path>` and a `<skill_files>` file list directly into the conversation (no resource tool required). Configure with `SKILLS_DIRECTORY`/`SKILLS_DIRECTORIES` and `SKILLS_CATALOG_MAX_TOKENS`.
 
@@ -78,12 +88,11 @@ System prompt templates in `agents/` control output format:
 # OpenAI
 OPENAI_API_KEY=...
 DEFAULT_PROVIDER=openai
-DEFAULT_MODEL=gpt-4o-mini
+DEFAULT_MODEL=gpt-4o-mini          # comma-separated list for fallback: gpt-4o,gpt-4o-mini
 
 # DIAL (alternative to OpenAI)
 DEFAULT_PROVIDER=dial
 DIAL_BASE_URL=https://your-dial.example.com
-DIAL_DEPLOYMENT=gpt-4o
 DIAL_API_VERSION=2024-10-21
 DIAL_API_KEY=...
 
@@ -92,10 +101,18 @@ AGENT_DIRECTORY=path/to/agents
 TOOLS_DIRECTORY=path/to/tools
 WORLD_DIRECTORY=path/to/sandbox
 ROOT_AGENT=<agent_id>
-AGENT_MODELS=agent_id:model,...   # per-agent overrides
-SKILLS_DIRECTORY=path/to/skills   # single skills directory
-SKILLS_DIRECTORIES=path/a,path/b  # multiple skills directories
-SKILLS_CATALOG_MAX_TOKENS=2000    # max tokens for skills catalog injected into conversation
+AGENT_MODELS=agent1=m1,m2|agent2=m3   # | separates agents, , separates models per agent
+SKILLS_DIRECTORY=path/to/skills        # single skills directory
+SKILLS_DIRECTORIES=path/a,path/b       # multiple skills directories
+SKILLS_CATALOG_MAX_TOKENS=2000         # max tokens for skills catalog injected into conversation
+
+# Commands
+COMMANDS_DIRECTORY=path/to/commands    # single commands directory
+COMMANDS_DIRECTORIES=path/a,path/b     # multiple commands directories (comma-separated)
+
+# MCP
+MCP_CONFIG_PATH=path/to/mcp.json       # explicit .mcp.json path (default: auto-discover)
+MCP_ENABLED=true                        # set false to disable MCP entirely
 ```
 
 ### Extensibility

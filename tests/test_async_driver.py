@@ -25,7 +25,7 @@ from agent_framework.model import (
 class FakeSyncDriver:
     """Minimal sync ModelDriver fake."""
 
-    def decide(self, *, agent_id, provider_name, model_name, temperature, context):
+    def decide(self, *, agent_id, provider_name, model_names, temperature, context):
         return ModelResponse(payload={"kind": "final_message", "message": "sync"}, raw_text="sync")
 
     def set_trace_callbacks(self, *, on_request=None, on_response=None):
@@ -37,7 +37,7 @@ class FakeAsyncDriver:
 
     capabilities = DriverCapabilities(is_async=True, supports_tools=True)
 
-    async def decide(self, *, agent_id, provider_name, model_name, temperature, context):
+    async def decide(self, *, agent_id, provider_name, model_names, temperature, context):
         return ModelResponse(payload={"kind": "final_message", "message": "async"}, raw_text="async")
 
     def set_trace_callbacks(self, *, on_request=None, on_response=None):
@@ -95,7 +95,7 @@ class TestSyncToAsyncAdapter:
         response = await adapter.decide(
             agent_id=None,
             provider_name="test",
-            model_name="m",
+            model_names=("m",),
             temperature=0.0,
             context=ctx,
         )
@@ -127,7 +127,7 @@ class TestAsyncToSyncAdapter:
         response = adapter.decide(
             agent_id=None,
             provider_name="test",
-            model_name="m",
+            model_names=("m",),
             temperature=0.0,
             context=ctx,
         )

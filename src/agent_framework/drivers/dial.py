@@ -34,6 +34,7 @@ from agent_framework.model import (
     ModelResponse,
     ProviderRequestTrace,
     ProviderResponseTrace,
+    _FallbackMixin,
 )
 from agent_framework.tool import ToolDefinition
 from agent_framework.validation import _normalize_json_text
@@ -149,17 +150,20 @@ def _build_tools(tools: tuple[ToolDefinition, ...]) -> list[Any] | None:
         return None
     result = []
     for t in tools:
-        parameters: dict[str, Any] = {
-            "type": "object",
-            "properties": {
-                p.name: {
-                    "type": p.value_type,
-                    "description": p.description,
-                }
-                for p in t.parameters
-            },
-            "required": [p.name for p in t.parameters if p.required],
-        }
+        if t.parameters_schema is not None:
+            parameters = dict(t.parameters_schema)
+        else:
+            parameters = {
+                "type": "object",
+                "properties": {
+                    p.name: {
+                        "type": p.value_type,
+                        "description": p.description,
+                    }
+                    for p in t.parameters
+                },
+                "required": [p.name for p in t.parameters if p.required],
+            }
         result.append(
             Tool(
                 type="function",
@@ -195,7 +199,7 @@ def _build_response_format(response_format: dict[str, Any] | None) -> Any | None
 
 
 @dataclass(slots=True)
-class DialChatCompletionsDriver:
+class DialChatCompletionsDriver(_FallbackMixin):
     """Async driver for DIAL (OpenAI-compatible chat completions).
 
     Uses ``aidial_sdk.chat_completion.request`` types for well-typed request
@@ -205,7 +209,10 @@ class DialChatCompletionsDriver:
 
     Attributes:
         base_url: DIAL API base URL (e.g. ``https://dial.example.com``).
-        deployment: DIAL deployment name used in the endpoint path.
+        deployment: Optional default deployment name.  Kept for backward
+            compatibility and direct construction in tests.  In normal use the
+            active deployment is taken from the ``model_names`` argument passed
+            to ``decide()`` on each call.
         api_version: ``api-version`` query parameter (default ``"2024-10-21"``).
         api_key: DIAL API key sent as the ``Api-Key`` header.
         custom_fields: Optional ``custom_fields`` dict merged into the request
@@ -215,6 +222,9 @@ class DialChatCompletionsDriver:
         timeout: HTTP timeout in seconds (default 120).
         on_request_trace: Optional ``ProviderRequestTrace`` callback.
         on_response_trace: Optional ``ProviderResponseTrace`` callback.
+        _fallback_state: Per-model-list fallback index map (managed by
+            ``_FallbackMixin``).  Call ``reset_model_fallback()`` to restart
+            from the first model.
     """
 
     capabilities: ClassVar[DriverCapabilities] = DriverCapabilities(
@@ -225,7 +235,7 @@ class DialChatCompletionsDriver:
     )
 
     base_url: str
-    deployment: str
+    deployment: str = ""
     api_version: str = "2024-10-21"
     api_key: str = ""
     custom_fields: dict[str, Any] | None = None
@@ -234,60 +244,67 @@ class DialChatCompletionsDriver:
     on_request_trace: Any | None = None
     on_response_trace: Any | None = None
     _client: Any | None = field(default=None, repr=False)
+    _fallback_state: dict[tuple[str, ...], int] = field(default_factory=dict, repr=False)
 
     async def decide(
         self,
         *,
         agent_id: str | None,
         provider_name: str,
-        model_name: str,
+        model_names: tuple[str, ...],
         temperature: float,
         context: ModelContext,
     ) -> ModelResponse:
-        """Request a structured response from a DIAL deployment."""
+        """Request a structured response from a DIAL deployment.
+
+        Tries each model in ``model_names`` in order, starting from the last
+        known-good index.  The active deployment name for each attempt is taken
+        directly from the model list; ``self.deployment`` is not used.
+        """
         _require_dial()
 
-        endpoint = (
-            f"/openai/deployments/{self.deployment}/chat/completions"
-            f"?api-version={self.api_version}"
-        )
-        body = self._build_request_body(context, temperature)
-
-        # Trace the request
-        if callable(self.on_request_trace):
-            self.on_request_trace(
-                ProviderRequestTrace(
-                    agent_id=agent_id,
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    input_payload=body,
-                    temperature=temperature,
-                    run_id=context.run_id,
-                )
+        async def _try_model(model: str) -> ModelResponse:
+            endpoint = (
+                f"/openai/deployments/{model}/chat/completions"
+                f"?api-version={self.api_version}"
             )
+            body = self._build_request_body(context, temperature, model=model)
 
-        response_data = await self._post(endpoint, body)
-        if response_data is None:
-            # HTTP 400 with response_format — retry without it
-            body_no_fmt = {k: v for k, v in body.items() if k != "response_format"}
-            response_data = await self._post(endpoint, body_no_fmt, allow_retry=False)
-
-        result = self._parse_response(response_data, context)
-
-        # Trace the response
-        if callable(self.on_response_trace):
-            self.on_response_trace(
-                ProviderResponseTrace(
-                    agent_id=agent_id,
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    raw_text=result.raw_text,
-                    parsed_payload=dict(result.payload) if result.payload else None,
-                    run_id=context.run_id,
+            if callable(self.on_request_trace):
+                self.on_request_trace(
+                    ProviderRequestTrace(
+                        agent_id=agent_id,
+                        provider_name=provider_name,
+                        model_name=model,
+                        input_payload=body,
+                        temperature=temperature,
+                        run_id=context.run_id,
+                    )
                 )
-            )
 
-        return result
+            response_data = await self._post(endpoint, body)
+            if response_data is None:
+                # HTTP 400 with response_format — retry without it
+                body_no_fmt = {k: v for k, v in body.items() if k != "response_format"}
+                response_data = await self._post(endpoint, body_no_fmt, allow_retry=False)
+
+            result = self._parse_response(response_data, context)
+
+            if callable(self.on_response_trace):
+                self.on_response_trace(
+                    ProviderResponseTrace(
+                        agent_id=agent_id,
+                        provider_name=provider_name,
+                        model_name=model,
+                        raw_text=result.raw_text,
+                        parsed_payload=dict(result.payload) if result.payload else None,
+                        run_id=context.run_id,
+                    )
+                )
+
+            return result
+
+        return await self._fallback_decide_async(model_names, _try_model)
 
     def set_trace_callbacks(
         self,
@@ -318,8 +335,8 @@ class DialChatCompletionsDriver:
             )
         return self._client
 
-    def _build_request_body(self, context: ModelContext, temperature: float) -> dict[str, Any]:
-        """Assemble the DIAL chat completions request body."""
+    def _build_request_body(self, context: ModelContext, temperature: float, *, model: str) -> dict[str, Any]:
+        """Assemble the DIAL chat completions request body for the given model."""
         messages = _build_messages(context.messages)
         tools = _build_tools(context.tools)
         response_format = _build_response_format(context.response_format)
@@ -330,7 +347,7 @@ class DialChatCompletionsDriver:
         )
 
         kwargs: dict[str, Any] = {
-            "model": self.deployment,
+            "model": model,
             "messages": messages,
             "temperature": temperature,
         }

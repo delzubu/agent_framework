@@ -10,7 +10,9 @@ from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from agent_framework.agent import Agent, AgentResult, CallContext, ModelEndEvent, ModelStartEvent, SequentialHook
+from agent_framework.agent_registry import AgentRegistry
 from agent_framework.audit_trace import InMemoryAuditTracer
+from agent_framework.command import CommandDefinition, CommandRegistry, render as render_command
 from agent_framework.config import HostConfig, load_host_config
 from agent_framework.model import (
     AsyncToSyncAdapter,
@@ -23,6 +25,8 @@ from agent_framework.model import (
 )
 from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
+from agent_framework.tool_registry import ToolRegistry
+from agent_framework.user_communication import NullUserCommunication, UserCommunication
 
 
 @dataclass(slots=True)
@@ -34,10 +38,11 @@ class AgentHost:
         model_driver: Provider-backed model driver used by all agents.  May be
             a sync ``ModelDriver`` or an async ``AsyncModelDriver`` — the host
             bridges between the two transparently.
-        input_reader: Callable used for console input.
-        output_writer: Callable used for console output.
-        agent_registry: Loaded agent cache keyed by id and sometimes source path.
-        tool_registry: Loaded tool cache keyed by tool name.
+        agent_registry: Formal AgentRegistry with discover/cache semantics.
+        tool_registry: Formal ToolRegistry with discover/cache semantics.
+        command_registry: Formal CommandRegistry for slash-commands.
+        user_comm: UserCommunication implementation (console, web, null, etc).
+        mcp_manager: Optional MCP manager for bridging MCP tools.
         contexts: Call contexts opened during execution.
         conversation_store: Optional conversation store for multi-turn sessions.
             When set, ``complete()`` / ``complete_async()`` can load and persist
@@ -47,10 +52,11 @@ class AgentHost:
 
     config: HostConfig
     model_driver: Any | None = None  # ModelDriver | AsyncModelDriver | None
-    input_reader: Callable[[str], str] = input
-    output_writer: Callable[[str], None] = print
-    agent_registry: dict[str, Agent] = field(default_factory=dict)
-    tool_registry: dict[str, Tool] = field(default_factory=dict)
+    tool_registry: ToolRegistry = field(default_factory=lambda: ToolRegistry(directories=()))
+    agent_registry: AgentRegistry = field(default_factory=lambda: AgentRegistry(directories=(), config=None))
+    command_registry: CommandRegistry = field(default_factory=lambda: CommandRegistry(directories=()))
+    user_comm: Any = None   # UserCommunication | None
+    mcp_manager: Any = None  # McpManager | None
     contexts: dict[str, CallContext] = field(default_factory=dict)
     onPreModel: SequentialHook = field(default_factory=SequentialHook)
     onPostModel: SequentialHook = field(default_factory=SequentialHook)
@@ -58,6 +64,8 @@ class AgentHost:
     skill_registry: SkillRegistry | None = None
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=8))
+    _command_fallback: Any = None  # Callable[[str, str], Awaitable[str | None]] | None
+    _started: bool = False
 
     # ------------------------------------------------------------------
     # Construction
@@ -69,8 +77,10 @@ class AgentHost:
         env_path: str | Path = ".env",
         *,
         model_driver: Any | None = None,
-        input_reader: Callable[[str], str] = input,
-        output_writer: Callable[[str], None] = print,
+        model_override: str | tuple[str, ...] | None = None,
+        user_comm: Any | None = None,
+        input_reader: Any = None,  # deprecated; ignored (kept for test compat)
+        output_writer: Any = None,  # deprecated; ignored (kept for test compat)
     ) -> "AgentHost":
         """Construct a host from ``.env`` configuration.
 
@@ -78,27 +88,50 @@ class AgentHost:
         - ``dial``: constructs a ``DialChatCompletionsDriver`` (requires
           ``agent_framework[dial]`` to be installed).
         - ``openai`` (default): constructs an ``OpenAiModelDriver``.
+
+        Note: Does NOT call ``start()`` — callers must await ``host.start()``
+        (or use ``from_env_console`` which does it synchronously) to run
+        registry discovery and MCP startup.
+
+        Args:
+            model_override: When provided, overrides ``DEFAULT_MODEL`` from the
+                ``.env`` file.  Accepts a comma-separated string or a tuple of
+                model names (first = highest priority).  This is the programmatic
+                mechanism for runtime model selection; no default behaviour is
+                added here.
+            user_comm: Optional ``UserCommunication`` implementation.  Defaults
+                to ``NullUserCommunication`` inside ``create()``.
         """
+        from dataclasses import replace as _replace
+
         config = load_host_config(env_path)
+        if model_override is not None:
+            if isinstance(model_override, str):
+                model_override = tuple(m.strip() for m in model_override.split(",") if m.strip())
+            config = _replace(config, default_model=model_override)
         if model_driver is None:
             if config.default_provider == "dial" and config.dial_base_url:
                 from agent_framework.drivers.dial import DialChatCompletionsDriver
 
                 model_driver = DialChatCompletionsDriver(
                     base_url=config.dial_base_url,
-                    deployment=config.dial_deployment,
                     api_version=config.dial_api_version,
                     api_key=config.dial_api_key,
                 )
             else:
                 model_driver = OpenAiModelDriver(api_key=config.openai_api_key)
-        host = cls(
-            config=config,
+        host = cls.create(
             model_driver=model_driver,
-            input_reader=input_reader,
-            output_writer=output_writer,
+            config=config,
+            user_comm=user_comm,
         )
         host.enable_audit_trace(output_dir="logs")
+        # Eagerly run synchronous registry discovery so disk-backed tools/agents
+        # are resolvable without requiring the caller to await start().  MCP
+        # startup still only happens in start().
+        host.tool_registry.discover()
+        host.agent_registry.discover()
+        host.command_registry.discover()
         return host
 
     @classmethod
@@ -107,14 +140,30 @@ class AgentHost:
         env_path: str | Path = ".env",
         *,
         model_driver: Any | None = None,
+        model_override: str | tuple[str, ...] | None = None,
     ) -> "AgentHost":
-        """Construct a host wired to real console input and output."""
-        return cls.from_env(
+        """Construct a console host, run discovery, and start MCP connections."""
+        from agent_framework.console_communication import ConsoleUserCommunication
+
+        host = cls.from_env(
             env_path,
             model_driver=model_driver,
-            input_reader=input,
-            output_writer=print,
+            model_override=model_override,
+            user_comm=ConsoleUserCommunication(),
         )
+        # Run start() synchronously to discover registries and start MCP
+        import concurrent.futures
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            asyncio.run(host.start())
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(asyncio.run, host.start()).result()
+        return host
 
     @classmethod
     def create(
@@ -123,8 +172,10 @@ class AgentHost:
         model_driver: Any,
         config: HostConfig | None = None,
         conversation_store: Any | None = None,
-        input_reader: Callable[[str], str] = input,
-        output_writer: Callable[[str], None] = print,
+        user_comm: Any | None = None,
+        builtin_tools: bool = True,
+        mcp_enabled: bool = True,
+        command_fallback: Any | None = None,
     ) -> "AgentHost":
         """Construct a host with an explicit driver.  No ``.env`` file required.
 
@@ -138,19 +189,128 @@ class AgentHost:
                 all paths set to sensible defaults.
             conversation_store: Optional ``ConversationStore`` or
                 ``AsyncConversationStore`` for multi-turn sessions.
-            input_reader: Console input callable (rarely needed in headless use).
-            output_writer: Console output callable (rarely needed in headless use).
+            user_comm: Optional ``UserCommunication``.  Defaults to
+                ``NullUserCommunication`` when not provided.
+            builtin_tools: When True (default), registers all built-in tools
+                into the tool registry.
+            mcp_enabled: When True (default), attempts to load MCP configs and
+                construct an ``McpManager``.  Actual connections happen in
+                ``start()``.
+            command_fallback: Optional async callable
+                ``(name, raw_args) -> str | None`` invoked by
+                ``execute_command`` when the command registry has no match.
         """
         if config is None:
             config = HostConfig()
+
+        tool_registry = ToolRegistry.from_config(config)
+        agent_registry = AgentRegistry.from_config(config)
+        command_registry = CommandRegistry.from_config(config)
+
+        if builtin_tools:
+            from agent_framework.builtin_tools import register_builtin_tools
+            register_builtin_tools(tool_registry)
+
+        mcp_manager: Any = None
+        if mcp_enabled and getattr(config, "mcp_enabled", True):
+            try:
+                from agent_framework.mcp import McpManager, load_mcp_configs
+                mcp_configs = load_mcp_configs(
+                    explicit_path=getattr(config, "mcp_config_path", None),
+                )
+                if mcp_configs:
+                    mcp_manager = McpManager(configs=mcp_configs)
+            except ImportError:
+                pass
+
+        if user_comm is None:
+            user_comm = NullUserCommunication()
+
         host = cls(
             config=config,
             model_driver=model_driver,
-            input_reader=input_reader,
-            output_writer=output_writer,
+            tool_registry=tool_registry,
+            agent_registry=agent_registry,
+            command_registry=command_registry,
+            user_comm=user_comm,
+            mcp_manager=mcp_manager,
             conversation_store=conversation_store,
+            _command_fallback=command_fallback,
         )
         return host
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Discover all registries and start MCP servers.  Idempotent."""
+        if self._started:
+            return
+        self.tool_registry.discover()
+        self.agent_registry.discover()
+        self.command_registry.discover()
+        # Ensure skill registry is initialized
+        self.get_skill_registry()
+        # Start MCP if configured
+        if self.mcp_manager is not None:
+            errors = await self.mcp_manager.start_all()
+            for name, err in errors.items():
+                if err is not None:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "MCP server %r failed to connect: %s", name, err
+                    )
+            # Bridge MCP tools into tool registry
+            from agent_framework.mcp.tools import bridge_mcp_tools
+            bridge_mcp_tools(self.mcp_manager, self.tool_registry, self._run_user_comm_coro)
+        # Wrap user_comm with tracing decorator if audit_tracer is set
+        if self.audit_tracer is not None and self.user_comm is not None:
+            self.user_comm = _TracingUserCommunication(self.user_comm, self.audit_tracer)
+        self._started = True
+
+    async def aclose(self) -> None:
+        """Shut down MCP connections and close async driver if applicable."""
+        if self.mcp_manager is not None:
+            await self.mcp_manager.stop_all()
+        driver = self.model_driver
+        if driver is not None and hasattr(driver, "aclose"):
+            await driver.aclose()
+
+    def _run_user_comm_coro(self, coro: "Awaitable[Any]") -> Any:
+        """Run an async coroutine synchronously (bridges sync tool invoke → async user_comm).
+
+        Uses ``asyncio.run()`` when no loop is running, or a thread-pool
+        executor trick to avoid nested-loop errors (same pattern as
+        ``AsyncToSyncAdapter``).
+        """
+        import concurrent.futures
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            return asyncio.run(coro)
+        # Running inside an event loop — run in a separate thread with its own loop
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            fut = executor.submit(asyncio.run, coro)
+            return fut.result()
+
+    async def execute_command(self, name: str, raw_args: str = "") -> str | None:
+        """Render and return a command prompt, or invoke the fallback for unknown commands.
+
+        Returns the rendered prompt string when the command is found (caller
+        decides what to do with it, e.g. pass it to ``run_agent``).  Returns
+        ``None`` when the command is unknown and no fallback is registered.
+        """
+        try:
+            cmd = self.command_registry.get(name)
+            return render_command(cmd, raw_args)
+        except KeyError:
+            if self._command_fallback is not None:
+                return await self._command_fallback(name, raw_args)
+            return None
 
     # ------------------------------------------------------------------
     # Driver access
@@ -181,7 +341,7 @@ class AgentHost:
         self,
         *,
         messages: Sequence[dict[str, Any]],
-        model_name: str | None = None,
+        model_names: str | tuple[str, ...] | None = None,
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
         response_mode: str = "json_object",
@@ -197,7 +357,10 @@ class AgentHost:
 
         Args:
             messages: Chat messages to send.  May include history.
-            model_name: Model to use, defaults to ``config.default_model``.
+            model_names: Model(s) to use.  Accepts a comma-separated string,
+                a tuple of model names, or ``None`` to use
+                ``config.default_model``.  When multiple models are given the
+                driver tries them in order (first = highest priority).
             temperature: Sampling temperature.
             response_format: Provider-native response format (forwarded to
                 drivers that support it, e.g. ``{"type": "json_object"}``).
@@ -213,6 +376,7 @@ class AgentHost:
         Returns:
             ``ModelResponse`` with the model's reply.
         """
+        resolved_model_names = _normalize_model_names(model_names, self.config.default_model)
         all_messages = self._load_conversation(conversation_id, messages)
         run_id = str(uuid4())
         context = ModelContext(
@@ -230,7 +394,7 @@ class AgentHost:
         response = driver.decide(
             agent_id=None,
             provider_name=self.config.default_provider,
-            model_name=model_name or self.config.default_model,
+            model_names=resolved_model_names,
             temperature=temperature,
             context=context,
         )
@@ -241,7 +405,7 @@ class AgentHost:
         self,
         *,
         messages: Sequence[dict[str, Any]],
-        model_name: str | None = None,
+        model_names: str | tuple[str, ...] | None = None,
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
         response_mode: str = "json_object",
@@ -255,6 +419,7 @@ class AgentHost:
 
         See ``complete()`` for parameter documentation.
         """
+        resolved_model_names = _normalize_model_names(model_names, self.config.default_model)
         all_messages = await self._load_conversation_async(conversation_id, messages)
         run_id = str(uuid4())
         context = ModelContext(
@@ -271,7 +436,7 @@ class AgentHost:
             response = await driver.decide(
                 agent_id=None,
                 provider_name=self.config.default_provider,
-                model_name=model_name or self.config.default_model,
+                model_names=resolved_model_names,
                 temperature=temperature,
                 context=context,
             )
@@ -280,7 +445,7 @@ class AgentHost:
                 driver.decide,
                 agent_id=None,
                 provider_name=self.config.default_provider,
-                model_name=model_name or self.config.default_model,
+                model_names=resolved_model_names,
                 temperature=temperature,
                 context=context,
             )
@@ -397,48 +562,20 @@ class AgentHost:
 
     def register_tool(self, tool: Tool) -> None:
         """Register a concrete tool instance for runtime execution."""
-        self.tool_registry[tool.name] = tool
+        self.tool_registry.register(tool)
 
     def get_tool(self, tool_name: str) -> Tool:
-        """Return a loaded tool, creating it from the configured tool directory on demand."""
-        if tool_name in self.tool_registry:
-            return self.tool_registry[tool_name]
-        tool = Tool.from_name(tool_name, self.config.tools_directory)
-        self.tool_registry[tool.name] = tool
-        return tool
+        """Return a loaded tool by name."""
+        return self.tool_registry.get(tool_name)
 
     def load_agent(self, agent_ref: str | Path) -> Agent:
         """Load and cache an agent definition from Markdown."""
         source_path = self._resolve_agent_markdown_path(agent_ref)
-        agent = Agent.from_markdown(
-            source_path,
-            default_provider=self.config.default_provider,
-            default_model=self.config.default_model,
-        )
-        if source_path.stem in self.config.agent_models:
-            agent.model_name = self.config.agent_models[source_path.stem]
-        if agent.agent_id in self.config.agent_models:
-            agent.model_name = self.config.agent_models[agent.agent_id]
-        self.agent_registry[agent.agent_id] = agent
-        if agent.source_path is not None:
-            self.agent_registry[str(agent.source_path)] = agent
-        return agent
+        return self.agent_registry._load_and_cache(source_path)
 
     def get_agent(self, agent_id: str, *, base_dir: Path | None = None) -> Agent:
         """Resolve an agent by logical id, explicit path, sibling path, or agent directory."""
-        if agent_id in self.agent_registry:
-            return self.agent_registry[agent_id]
-        path_candidate = Path(agent_id)
-        if path_candidate.exists():
-            return self.load_agent(path_candidate)
-        if base_dir is not None:
-            sibling_candidate = (base_dir / f"{agent_id}.md").resolve()
-            if sibling_candidate.exists():
-                return self.load_agent(sibling_candidate)
-        default_dir_candidate = (self.config.agent_directory / f"{agent_id}.md").resolve()
-        if default_dir_candidate.exists():
-            return self.load_agent(default_dir_candidate)
-        raise KeyError(f"Unknown agent: {agent_id}")
+        return self.agent_registry.get(agent_id, base_dir=base_dir)
 
     def run_root(
         self,
@@ -476,10 +613,18 @@ class AgentHost:
 
     def run_console(self) -> AgentResult:
         """Prompt for the initial instruction, run the root agent, and print the result."""
-        initial_instruction = self.input_reader("Instruction: ")
+        if self.user_comm is not None:
+            initial_instruction = self._run_user_comm_coro(
+                self.user_comm.read_user_input("Instruction: ")
+            ) or ""
+        else:
+            initial_instruction = input("Instruction: ")
         result = self.run_root(initial_instruction=initial_instruction)
         if result.message:
-            self.output_writer(result.message)
+            if self.user_comm is not None:
+                self._run_user_comm_coro(self.user_comm.send_message(result.message))
+            else:
+                print(result.message)
         return result
 
     def call_subagent(self, *, caller: Agent, callee_id: str, parameters: dict[str, Any]) -> AgentResult:
@@ -503,7 +648,7 @@ class AgentHost:
         return self.get_tool(tool_name).invoke(parameters, self)
 
     def resolve_callback(self, *, caller_id: str, callee: Agent, prompt: str) -> str:
-        """Collect a callback response from the caller side through console I/O."""
+        """Collect a callback response from the caller side."""
         if caller_id != "host":
             try:
                 caller_agent = self.get_agent(caller_id)
@@ -521,12 +666,21 @@ class AgentHost:
                 )
                 if result.message:
                     return result.message
+        # Fall back to user_comm
+        if self.user_comm is None:
+            return ""
         message = f"{callee.agent_id} asks {caller_id}: {prompt}\nResponse: "
-        return self.input_reader(message)
+        result = self._run_user_comm_coro(self.user_comm.read_user_input(message))
+        return result or ""
 
     def request_user_input(self, prompt: str) -> str:
-        """Collect direct user input requested by an agent."""
-        return self.input_reader(f"{prompt}\n> ")
+        """Collect direct user input via ``user_comm``."""
+        if self.user_comm is None:
+            raise RuntimeError(
+                "No UserCommunication configured. Use AgentHost.create() with user_comm=."
+            )
+        result = self._run_user_comm_coro(self.user_comm.read_user_input(f"{prompt}\n> "))
+        return result or ""
 
     def open_context(self, *, caller_id: str, callee_id: str, kind: str) -> CallContext:
         """Create, store, and return a new runtime call context."""
@@ -600,7 +754,7 @@ async def run_tool_loop(
     terminal_tools: Sequence[str] = (),
     max_iterations: int = 10,
     conversation_id: str | None = None,
-    model_name: str | None = None,
+    model_names: str | tuple[str, ...] | None = None,
     temperature: float = 0.2,
     response_format: dict[str, Any] | None = None,
     response_mode: str = "json_object",
@@ -629,7 +783,8 @@ async def run_tool_loop(
             ``RuntimeError``.
         conversation_id: Passed through to ``complete_async()`` for store
             integration.
-        model_name: Passed to ``complete_async()``.
+        model_names: Model(s) to use.  Accepts a comma-separated string, a
+            tuple, or ``None`` to use ``host.config.default_model``.
         temperature: Passed to ``complete_async()``.
         response_format: Passed to ``complete_async()``.
         response_mode: ``"json_object"`` (default) or ``"text"``.  Controls
@@ -654,7 +809,7 @@ async def run_tool_loop(
     for _ in range(max_iterations):
         response = await host.complete_async(
             messages=current_messages,
-            model_name=model_name,
+            model_names=model_names,
             temperature=temperature,
             response_format=response_format,
             response_mode=response_mode,
@@ -713,6 +868,66 @@ async def run_tool_loop(
     raise RuntimeError(
         f"run_tool_loop reached max_iterations={max_iterations} without a stop condition."
     )
+
+
+def _normalize_model_names(
+    value: str | tuple[str, ...] | None,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Normalize a model specification to a non-empty tuple of model names.
+
+    Accepts a comma-separated string, an existing tuple, or ``None`` (use
+    ``default``).
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        parsed = tuple(m.strip() for m in value.split(",") if m.strip())
+        return parsed if parsed else default
+    return value if value else default
+
+
+class _TracingUserCommunication:
+    """Decorator that adds audit tracing to any UserCommunication implementation."""
+
+    def __init__(self, wrapped: Any, tracer: "InMemoryAuditTracer") -> None:
+        self._wrapped = wrapped
+        self._tracer = tracer
+
+    async def send_message(self, text: str, *, role: str = "assistant") -> None:
+        self._tracer.record_user_output(role=role, text=text)
+        await self._wrapped.send_message(text, role=role)
+
+    async def ask_question(self, prompt: str, *, options: Any = None, allow_freetext: bool = True) -> str:
+        response = await self._wrapped.ask_question(prompt, options=options, allow_freetext=allow_freetext)
+        self._tracer.record_user_input(prompt=prompt, response=response)
+        return response
+
+    async def ask_confirmation(self, prompt: str, *, default: bool = False) -> bool:
+        result = await self._wrapped.ask_confirmation(prompt, default=default)
+        self._tracer.record_user_input(prompt=prompt, response=str(result))
+        return result
+
+    async def request_permission(self, request: Any) -> Any:
+        decision = await self._wrapped.request_permission(request)
+        self._tracer.record_permission(
+            tool_name=request.tool_name,
+            action=request.action,
+            resource=request.resource,
+            summary=request.summary,
+            allowed=decision.allowed,
+            remember_for_session=decision.remember_for_session,
+        )
+        return decision
+
+    async def read_user_input(self, prompt: str = "") -> Any:
+        response = await self._wrapped.read_user_input(prompt)
+        if response is not None:
+            self._tracer.record_user_input(prompt=prompt, response=response)
+        return response
+
+    async def stream_text(self, chunks: Any) -> None:
+        await self._wrapped.stream_text(chunks)
 
 
 __all__ = ["AgentHost", "run_tool_loop"]

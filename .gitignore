@@ -5,5 +5,5 @@ __pycache__/
 logs/
 tmp/
 *.out.json
-
+build/
 *.egg-info/

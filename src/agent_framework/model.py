@@ -9,13 +9,88 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import Any, Awaitable, Callable, ClassVar, Protocol
 
 from openai import OpenAI
 
 from agent_framework.tool import ToolDefinition
+
+_LOGGER = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Shared model fallback base
+# ---------------------------------------------------------------------------
+
+
+class _FallbackMixin:
+    """Shared model fallback state and retry logic for LLM driver dataclasses.
+
+    Subclasses must declare a dataclass field named ``_fallback_state``::
+
+        _fallback_state: dict[tuple[str, ...], int] = field(default_factory=dict, repr=False)
+
+    The fallback state maps each model-list tuple to the index of the last
+    successfully used model.  Subsequent calls start from that index, skipping
+    known-bad models.  Call ``reset_model_fallback()`` to restart from the
+    beginning of the list.
+    """
+
+    __slots__ = ()
+
+    def reset_model_fallback(self) -> None:
+        """Reset fallback memory so the next call starts from the first model."""
+        self._fallback_state.clear()  # type: ignore[attr-defined]
+
+    def _fallback_decide(
+        self,
+        model_names: tuple[str, ...],
+        try_fn: Callable[[str], "ModelResponse"],
+    ) -> "ModelResponse":
+        """Try each model in ``model_names`` starting from the last known-good index.
+
+        On success the successful index is persisted so future calls skip
+        earlier failing models.  Each failure is logged at INFO level with the
+        full error message.
+        """
+        state: dict[tuple[str, ...], int] = self._fallback_state  # type: ignore[attr-defined]
+        start = state.get(model_names, 0)
+        last_exc: Exception | None = None
+        for i in range(len(model_names)):
+            idx = (start + i) % len(model_names)
+            model = model_names[idx]
+            try:
+                result = try_fn(model)
+                state[model_names] = idx
+                return result
+            except Exception as exc:
+                _LOGGER.info("Model %r not available: %s", model, exc)
+                last_exc = exc
+        raise last_exc  # type: ignore[misc]
+
+    async def _fallback_decide_async(
+        self,
+        model_names: tuple[str, ...],
+        try_fn: Callable[[str], Awaitable["ModelResponse"]],
+    ) -> "ModelResponse":
+        """Async counterpart of ``_fallback_decide``."""
+        state: dict[tuple[str, ...], int] = self._fallback_state  # type: ignore[attr-defined]
+        start = state.get(model_names, 0)
+        last_exc: Exception | None = None
+        for i in range(len(model_names)):
+            idx = (start + i) % len(model_names)
+            model = model_names[idx]
+            try:
+                result = await try_fn(model)
+                state[model_names] = idx
+                return result
+            except Exception as exc:
+                _LOGGER.info("Model %r not available: %s", model, exc)
+                last_exc = exc
+        raise last_exc  # type: ignore[misc]
+
 
 # ---------------------------------------------------------------------------
 # Driver capability contract (G-15)
@@ -248,7 +323,7 @@ class ModelDriver(Protocol):
         *,
         agent_id: str | None,
         provider_name: str,
-        model_name: str,
+        model_names: tuple[str, ...],
         temperature: float,
         context: ModelContext,
     ) -> ModelResponse:
@@ -277,7 +352,7 @@ class AsyncModelDriver(Protocol):
         *,
         agent_id: str | None,
         provider_name: str,
-        model_name: str,
+        model_names: tuple[str, ...],
         temperature: float,
         context: ModelContext,
     ) -> ModelResponse:
@@ -307,7 +382,7 @@ class SyncToAsyncAdapter:
         *,
         agent_id: str | None,
         provider_name: str,
-        model_name: str,
+        model_names: tuple[str, ...],
         temperature: float,
         context: ModelContext,
     ) -> ModelResponse:
@@ -315,7 +390,7 @@ class SyncToAsyncAdapter:
             self._driver.decide,
             agent_id=agent_id,
             provider_name=provider_name,
-            model_name=model_name,
+            model_names=model_names,
             temperature=temperature,
             context=context,
         )
@@ -347,14 +422,14 @@ class AsyncToSyncAdapter:
         *,
         agent_id: str | None,
         provider_name: str,
-        model_name: str,
+        model_names: tuple[str, ...],
         temperature: float,
         context: ModelContext,
     ) -> ModelResponse:
         coro = self._driver.decide(
             agent_id=agent_id,
             provider_name=provider_name,
-            model_name=model_name,
+            model_names=model_names,
             temperature=temperature,
             context=context,
         )
@@ -380,11 +455,14 @@ class AsyncToSyncAdapter:
 
 
 @dataclass(slots=True)
-class OpenAiModelDriver:
+class OpenAiModelDriver(_FallbackMixin):
     """OpenAI-backed model driver for the first draft runtime.
 
     Attributes:
         api_key: API key used to construct the OpenAI client lazily per call.
+        _fallback_state: Per-model-list fallback index map (managed by
+            ``_FallbackMixin``).  Call ``reset_model_fallback()`` to restart
+            from the first model.
     """
 
     capabilities: ClassVar[DriverCapabilities] = DriverCapabilities(
@@ -397,6 +475,7 @@ class OpenAiModelDriver:
     api_key: str
     on_request_trace: Any | None = None
     on_response_trace: Any | None = None
+    _fallback_state: dict[tuple[str, ...], int] = field(default_factory=dict, repr=False)
 
     def set_trace_callbacks(
         self,
@@ -413,17 +492,20 @@ class OpenAiModelDriver:
         *,
         agent_id: str | None,
         provider_name: str,
-        model_name: str,
+        model_names: tuple[str, ...],
         temperature: float,
         context: ModelContext,
     ) -> ModelResponse:
-        """Request a structured decision from the OpenAI Responses API."""
+        """Request a structured decision from the OpenAI Responses API.
+
+        Tries each model in ``model_names`` in order, starting from the last
+        known-good index.  Falls back to the next model on any error.
+        """
         if provider_name != "openai":
             raise ValueError(f"Unsupported provider: {provider_name}")
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY is required for OpenAI-backed agents.")
 
-        client = OpenAI(api_key=self.api_key)
         if context.exact_input_payload is not None:
             model_input = context.exact_input_payload
         else:
@@ -439,39 +521,44 @@ class OpenAiModelDriver:
                     {"role": "system", "content": combined_system_prompt},
                     {"role": "user", "content": context.user_prompt},
                 ]
-        if callable(self.on_request_trace):
-            self.on_request_trace(
-                ProviderRequestTrace(
-                    agent_id=agent_id,
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    input_payload=model_input,
-                    temperature=temperature,
-                    run_id=context.run_id,
+
+        def _try_model(model_name: str) -> ModelResponse:
+            client = OpenAI(api_key=self.api_key)
+            if callable(self.on_request_trace):
+                self.on_request_trace(
+                    ProviderRequestTrace(
+                        agent_id=agent_id,
+                        provider_name=provider_name,
+                        model_name=model_name,
+                        input_payload=model_input,
+                        temperature=temperature,
+                        run_id=context.run_id,
+                    )
                 )
+            response = client.responses.create(
+                model=model_name,
+                temperature=temperature,
+                input=model_input,
             )
-        response = client.responses.create(
-            model=model_name,
-            temperature=temperature,
-            input=model_input,
-        )
-        raw_text = response.output_text.strip()
-        if callable(self.on_response_trace):
-            self.on_response_trace(
-                ProviderResponseTrace(
-                    agent_id=agent_id,
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    raw_text=raw_text,
-                    parsed_payload=None,
-                    run_id=context.run_id,
+            raw_text = response.output_text.strip()
+            if callable(self.on_response_trace):
+                self.on_response_trace(
+                    ProviderResponseTrace(
+                        agent_id=agent_id,
+                        provider_name=provider_name,
+                        model_name=model_name,
+                        raw_text=raw_text,
+                        parsed_payload=None,
+                        run_id=context.run_id,
+                    )
                 )
-            )
-        if context.response_mode == "text":
-            return ModelResponse(payload={"kind": "final_message", "message": raw_text}, raw_text=raw_text)
-        normalized_text = _normalize_json_text(raw_text)
-        payload = json.loads(normalized_text)
-        return ModelResponse(payload=payload, raw_text=normalized_text)
+            if context.response_mode == "text":
+                return ModelResponse(payload={"kind": "final_message", "message": raw_text}, raw_text=raw_text)
+            normalized_text = _normalize_json_text(raw_text)
+            payload = json.loads(normalized_text)
+            return ModelResponse(payload=payload, raw_text=normalized_text)
+
+        return self._fallback_decide(model_names, _try_model)
 
     @staticmethod
     def _capability_metadata(
@@ -589,6 +676,7 @@ __all__ = [
     "ProviderResponseTrace",
     "SyncToAsyncAdapter",
     "ToolDefinition",
+    "_FallbackMixin",
     "assemble_system_prompt",
     "build_skills_catalog",
     "get_driver_capabilities",

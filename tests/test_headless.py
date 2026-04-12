@@ -19,7 +19,7 @@ class FakeDriver:
     def __init__(self, response: ModelResponse):
         self._response = response
 
-    def decide(self, *, agent_id, provider_name, model_name, temperature, context):
+    def decide(self, *, agent_id, provider_name, model_names, temperature, context):
         return self._response
 
     def set_trace_callbacks(self, *, on_request=None, on_response=None):
@@ -33,7 +33,7 @@ class FakeAsyncDriver:
         self._responses = list(responses)
         self._call_count = 0
 
-    async def decide(self, *, agent_id, provider_name, model_name, temperature, context):
+    async def decide(self, *, agent_id, provider_name, model_names, temperature, context):
         idx = min(self._call_count, len(self._responses) - 1)
         self._call_count += 1
         return self._responses[idx]
@@ -127,10 +127,10 @@ class TestCreate:
 
     def test_create_with_custom_config(self):
         from pathlib import Path
-        config = HostConfig(default_model="gpt-test")
+        config = HostConfig(default_model=("gpt-test",))
         driver = FakeDriver(ModelResponse(payload={}, raw_text=""))
         host = AgentHost.create(model_driver=driver, config=config)
-        assert host.config.default_model == "gpt-test"
+        assert host.config.default_model == ("gpt-test",)
 
 
 # ---------------------------------------------------------------------------

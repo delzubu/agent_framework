@@ -76,7 +76,7 @@ class Agent:
         user_prompt_template: Template rendered with invocation parameters.
         parameters: Declared invocation contract loaded from frontmatter.
         provider_name: Model provider selected for this agent.
-        model_name: Model identifier selected for this agent.
+        model_names: Ordered model list for this agent (first = highest priority).
         temperature: Sampling temperature passed to the model driver.
         allowed_tools: Tool names this agent may call.
         allowed_child_agents: Child agent ids this agent may invoke.
@@ -104,7 +104,7 @@ class Agent:
     user_prompt_template: str
     parameters: tuple[AgentParameter, ...]
     provider_name: str
-    model_name: str
+    model_names: tuple[str, ...]
     temperature: float = 0.2
     allowed_tools: tuple[str, ...] = ()
     allowed_child_agents: tuple[str, ...] = ()
@@ -132,8 +132,8 @@ class Agent:
         path: str | Path,
         *,
         default_provider: str,
-        default_model: str,
-        model_override: str | None = None,
+        default_model: tuple[str, ...],
+        model_override: tuple[str, ...] | None = None,
     ) -> "Agent":
         """Load an agent definition from the Markdown file format."""
         source_path = Path(path).resolve()
@@ -154,6 +154,16 @@ class Agent:
             for name, spec in parameter_map.items()
         )
         behavior_ids = _parse_behavior_ids(runtime_metadata)
+        if model_override is not None:
+            model_names: tuple[str, ...] = model_override
+        else:
+            raw_model = runtime_metadata.get("model")
+            if raw_model is not None:
+                model_names = tuple(
+                    m.strip() for m in str(raw_model).split(",") if m.strip()
+                ) or default_model
+            else:
+                model_names = default_model
         agent = cls(
             agent_id=str(metadata.get("id", source_path.stem)).strip(),
             role=str(metadata.get("role", source_path.stem)).strip(),
@@ -162,7 +172,7 @@ class Agent:
             user_prompt_template=user_prompt_template.strip(),
             parameters=parameters,
             provider_name=str(runtime_metadata.get("provider", default_provider)).strip(),
-            model_name=model_override or str(runtime_metadata.get("model", default_model)).strip(),
+            model_names=model_names,
             temperature=float(runtime_metadata.get("temperature", 0.2)),
             allowed_tools=_parse_allowed_tool_names(metadata.get("tools", []) or ()),
             allowed_child_agents=tuple(metadata.get("subagents", []) or ()),
@@ -409,7 +419,7 @@ class Agent:
         response = host.get_model_driver(self).decide(
             agent_id=self.agent_id,
             provider_name=self.provider_name,
-            model_name=self.model_name,
+            model_names=self.model_names,
             temperature=self.temperature,
             context=context,
         )
