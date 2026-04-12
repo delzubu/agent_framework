@@ -39,9 +39,20 @@ class ToolDefinition:
     parameters: tuple[ToolParameter, ...] = ()
     source_path: Path | None = None
     documentation: str = ""
+    parameters_schema: dict[str, Any] | None = field(default=None)
+    """When set, use as the full JSON Schema ``parameters`` object for the provider.
+
+    Supersedes the flat ``parameters`` tuple (needed for nested tool argument shapes).
+    """
 
     def to_model_payload(self) -> dict[str, object]:
         """Convert the definition to the model-facing tool shape."""
+        if self.parameters_schema is not None:
+            return {
+                "name": self.tool_id,
+                "description": self.description,
+                "parameters": dict(self.parameters_schema),
+            }
         properties: dict[str, object] = {}
         required: list[str] = []
         for item in self.parameters:

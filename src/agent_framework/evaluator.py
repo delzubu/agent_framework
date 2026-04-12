@@ -592,7 +592,7 @@ class OpenAiConversationEvaluator:
         response = self.host.get_model_driver(agent).decide(
             agent_id=agent.agent_id,
             provider_name=agent.provider_name,
-            model_name=agent.model_name,
+            model_names=agent.model_names,
             temperature=agent.temperature,
             context=ModelContext(
                 system_prompt="",

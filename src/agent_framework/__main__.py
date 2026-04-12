@@ -56,6 +56,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="logs",
         help="Directory used for host-level LLM trace files.",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Override the default model(s) from .env. "
+            "Accepts a comma-separated list for fallback priority "
+            "(e.g. 'gpt-4o,gpt-4o-mini')."
+        ),
+    )
     return parser
 
 
@@ -79,31 +88,35 @@ def main(
         parser.print_help()
         return 2
 
-    host = host_factory(args.env)
+    model_override = args.model or None
+    if model_override is not None:
+        host = AgentHost.from_env_console(args.env, model_override=model_override)
+    else:
+        host = host_factory(args.env)
     if args.llm_trace:
         host.enable_llm_trace_logging(target=args.llm_trace, output_dir=args.llm_trace_dir)
     if args.evaluate is not None:
         judge = OpenAiResultJudge(
             api_key=host.config.openai_api_key,
-            model_name=host.config.default_model,
+            model_name=host.config.default_model[0],
         )
         summary = AgentPromptEvaluator(host=host, judge=judge, agent_id=args.agent).evaluate_file(
             args.evaluate,
             agent_id=args.agent,
         )
-        host.output_writer(summary.to_markdown_table())
+        print(summary.to_markdown_table())
         return 0
     if args.evaluate_openai is not None:
         if not args.agent:
             raise ValueError("--evaluate-openai requires --agent.")
         judge = OpenAiResultJudge(
             api_key=host.config.openai_api_key,
-            model_name=host.config.default_model,
+            model_name=host.config.default_model[0],
         )
         summary = OpenAiConversationEvaluator(host=host, judge=judge, agent_id=args.agent).evaluate_file(
             args.evaluate_openai
         )
-        host.output_writer(summary.to_markdown_table())
+        print(summary.to_markdown_table())
         return 0
 
     if args.instruction is not None:
@@ -112,7 +125,7 @@ def main(
             initial_instruction=instruction
         )
         if result.message:
-            host.output_writer(result.message)
+            print(result.message)
         return 0
 
     host.run_console()
