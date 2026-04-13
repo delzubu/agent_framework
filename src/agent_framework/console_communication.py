@@ -6,6 +6,7 @@ import asyncio
 import sys
 from typing import AsyncIterator
 
+from agent_framework.tracing_bridge import try_publish_trace
 from agent_framework.user_communication import (
     NullUserCommunication,
     PermissionDecision,
@@ -30,6 +31,13 @@ class ConsoleUserCommunication:
         self._session_decisions: dict[tuple[str, str], PermissionDecision] = {}
 
     async def send_message(self, text: str, *, role: str = "assistant") -> None:
+        try_publish_trace(
+            channel="user",
+            kind="user.message_sent",
+            title="Console message",
+            summary=text[:200],
+            payload={"role": role, "text": text[:2000]},
+        )
         await asyncio.to_thread(print, text)
 
     async def ask_question(
@@ -59,8 +67,25 @@ class ConsoleUserCommunication:
 
         # Return remembered decision immediately
         if key in self._session_decisions:
-            return self._session_decisions[key]
+            dec = self._session_decisions[key]
+            try_publish_trace(
+                channel="user",
+                kind="user.permission_resolved",
+                title="Permission remembered",
+                payload={"allowed": dec.allowed, "remembered": True},
+            )
+            return dec
 
+        try_publish_trace(
+            channel="user",
+            kind="user.permission_requested",
+            title=f"Permission: {request.tool_name}",
+            payload={
+                "tool_name": request.tool_name,
+                "action": request.action,
+                "summary": request.summary[:500],
+            },
+        )
         summary_line = f"\n[Permission] {request.summary}"
         detail_line = f"  Tool: {request.tool_name}  Action: {request.action}  Resource: {request.resource}"
         prompt_line = "Allow? [y]es / [n]o / [a]llow-all / [d]eny-all: "
@@ -80,18 +105,49 @@ class ConsoleUserCommunication:
         else:
             decision = PermissionDecision(allowed=False, remember_for_session=False)
 
+        try_publish_trace(
+            channel="user",
+            kind="user.permission_resolved",
+            title="Permission decision",
+            payload={"allowed": decision.allowed},
+        )
         return decision
 
     async def read_user_input(self, prompt: str = "") -> str | None:
+        try_publish_trace(
+            channel="user",
+            kind="user.prompt_requested",
+            title="Console input",
+            summary=prompt[:200],
+            payload={"prompt": prompt[:2000]},
+        )
         try:
             result = await asyncio.to_thread(input, prompt)
+            try_publish_trace(
+                channel="user",
+                kind="user.prompt_answered",
+                title="Console input received",
+                payload={"text": (result or "")[:2000]},
+            )
             return result
         except EOFError:
+            try_publish_trace(
+                channel="user",
+                kind="user.prompt_answered",
+                title="Console EOF",
+                payload={"text": None},
+            )
             return None
 
     async def stream_text(self, chunks: AsyncIterator[str]) -> None:
         parts: list[str] = []
         async for chunk in chunks:
+            try_publish_trace(
+                channel="user",
+                kind="user.stream_chunk",
+                title="Stream chunk",
+                payload={"chunk": chunk[:2000]},
+            )
             parts.append(chunk)
         if parts:
             await self.send_message("".join(parts))

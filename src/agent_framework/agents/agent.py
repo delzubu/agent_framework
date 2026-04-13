@@ -510,6 +510,22 @@ class Agent:
         parameter_name = str(decision.parameters.get("parameter_name", "")).strip()
         spec = self._parameter_spec_by_name().get(parameter_name) if parameter_name else None
         prompt = decision.message or (spec.description if spec is not None else "Please provide more information.")
+        _pub = getattr(host, "publish_trace_event", None)
+        if callable(_pub):
+            from agent_framework.tracing import TraceContext as _TraceContext
+
+            _pub(
+                kind="runtime.callback_requested",
+                title=f"Callback requested ({intent})",
+                payload={
+                    "intent": intent,
+                    "prompt_preview": prompt[:500],
+                    "to_caller": bool(caller_id and caller_id != "host" and self.can_query_caller),
+                },
+                span_id=str(uuid4()),
+                parent_span_id=run.run_id,
+                context=_TraceContext(run_id=run.run_id, agent_id=self.agent_id, caller_id=caller_id),
+            )
         if caller_id and caller_id != "host" and self.can_query_caller:
             context = host.open_context(
                 caller_id=self.agent_id,
@@ -542,6 +558,21 @@ class Agent:
             run.transcript_entries.append(f"<caller_response>{answer}</caller_response>")
             run.conversation_messages.append({"role": "assistant", "content": prompt})
             run.conversation_messages.append({"role": "user", "content": answer})
+            if callable(_pub):
+                from agent_framework.tracing import TraceContext as _TraceContext
+
+                _pub(
+                    kind="runtime.callback_answered",
+                    title=f"Callback answered ({intent})",
+                    payload={
+                        "intent": intent,
+                        "target": f"caller:{caller_id}",
+                        "answer_preview": answer[:500],
+                    },
+                    span_id=str(uuid4()),
+                    parent_span_id=run.run_id,
+                    context=_TraceContext(run_id=run.run_id, agent_id=self.agent_id, caller_id=caller_id),
+                )
         else:
             if not self.can_use_host_interaction:
                 raise ValueError(f"{self.agent_id} cannot request callback intent '{intent}' from host.")
@@ -576,6 +607,21 @@ class Agent:
             run.transcript_entries.append(f"<host_response>{answer}</host_response>")
             run.conversation_messages.append({"role": "assistant", "content": prompt})
             run.conversation_messages.append({"role": "user", "content": answer})
+            if callable(_pub):
+                from agent_framework.tracing import TraceContext as _TraceContext
+
+                _pub(
+                    kind="runtime.callback_answered",
+                    title=f"Callback answered ({intent})",
+                    payload={
+                        "intent": intent,
+                        "target": "host",
+                        "answer_preview": answer[:500],
+                    },
+                    span_id=str(uuid4()),
+                    parent_span_id=run.run_id,
+                    context=_TraceContext(run_id=run.run_id, agent_id=self.agent_id, caller_id=caller_id),
+                )
 
         if intent == "information_request" and parameter_name:
             run.prompt_fragments.append(f"<{parameter_name}>{answer}</{parameter_name}>")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
@@ -26,6 +26,14 @@ from agent_framework.model import (
 from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tool_registry import ToolRegistry
+from agent_framework.tracing import (
+    NullRuntimeTracer,
+    RuntimeTracer,
+    TraceContext,
+    TraceEvent,
+    utc_now_iso,
+)
+from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework.user_communication import NullUserCommunication, UserCommunication
 
 
@@ -61,6 +69,8 @@ class AgentHost:
     onPreModel: SequentialHook = field(default_factory=SequentialHook)
     onPostModel: SequentialHook = field(default_factory=SequentialHook)
     audit_tracer: InMemoryAuditTracer | None = None
+    runtime_tracer: RuntimeTracer = field(default_factory=NullRuntimeTracer)
+    trace_context_overlay: TraceContext | None = None
     skill_registry: SkillRegistry | None = None
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=8))
@@ -592,6 +602,76 @@ class AgentHost:
             prompt_fragments=prompt_fragments,
         )
 
+    def _effective_trace_context(self, extra: TraceContext | None) -> TraceContext:
+        overlay = self.trace_context_overlay
+        if overlay is None:
+            return extra or TraceContext()
+        if extra is None:
+            return overlay
+        updates = {f.name: getattr(extra, f.name) for f in fields(extra) if getattr(extra, f.name) is not None}
+        return overlay.merged(**updates)
+
+    def publish_trace_event(
+        self,
+        *,
+        kind: str,
+        title: str,
+        summary: str = "",
+        payload: dict[str, Any] | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        context: TraceContext | None = None,
+        channel: str = "runtime",
+        level: str = "info",
+    ) -> None:
+        if isinstance(self.runtime_tracer, NullRuntimeTracer):
+            return
+        merged_ctx = self._effective_trace_context(context)
+        event = TraceEvent(
+            event_id=str(uuid4()),
+            parent_event_id=None,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            timestamp=utc_now_iso(),
+            channel=channel,  # type: ignore[arg-type]
+            level=level,  # type: ignore[arg-type]
+            kind=kind,
+            title=title,
+            summary=summary,
+            context=merged_ctx,
+            payload=payload or {},
+        )
+        self.runtime_tracer.publish(event)
+
+    def _agent_with_runtime_tracing(self, agent: Agent) -> Agent:
+        if isinstance(self.runtime_tracer, NullRuntimeTracer):
+            return agent
+        from agent_framework.runtime_trace_behavior import RuntimeTraceBehavior
+
+        def _copy_hook(hook: SequentialHook) -> SequentialHook:
+            nh = SequentialHook()
+            for cb in hook:
+                nh += cb
+            return nh
+
+        cloned = replace(
+            agent,
+            onPreAgent=_copy_hook(agent.onPreAgent),
+            onPostAgent=_copy_hook(agent.onPostAgent),
+            onPreTool=_copy_hook(agent.onPreTool),
+            onPostTool=_copy_hook(agent.onPostTool),
+            onPreSubagent=_copy_hook(agent.onPreSubagent),
+            onPostSubagent=_copy_hook(agent.onPostSubagent),
+            onPreSkill=_copy_hook(agent.onPreSkill),
+            onPostSkill=_copy_hook(agent.onPostSkill),
+            onPreModel=_copy_hook(agent.onPreModel),
+            onPostModel=_copy_hook(agent.onPostModel),
+        )
+        rt_behavior = RuntimeTraceBehavior()
+        wired = replace(cloned, behaviors=cloned.behaviors + (rt_behavior,))
+        rt_behavior.attach(wired)
+        return wired
+
     def run_agent(
         self,
         agent_id: str,
@@ -601,15 +681,16 @@ class AgentHost:
         prompt_fragments: tuple[str, ...] | None = None,
     ) -> AgentResult:
         """Run a specific agent id as a top-level invocation."""
-        agent = self.get_agent(agent_id)
-        return agent.run(
-            host=self,
-            parameters={},
-            caller_id="host",
-            rendered_prompt_override=initial_instruction or "",
-            conversation_messages=conversation_messages,
-            prompt_fragments=prompt_fragments,
-        )
+        agent = self._agent_with_runtime_tracing(self.get_agent(agent_id))
+        with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
+            return agent.run(
+                host=self,
+                parameters={},
+                caller_id="host",
+                rendered_prompt_override=initial_instruction or "",
+                conversation_messages=conversation_messages,
+                prompt_fragments=prompt_fragments,
+            )
 
     def run_console(self) -> AgentResult:
         """Prompt for the initial instruction, run the root agent, and print the result."""
@@ -630,7 +711,7 @@ class AgentHost:
     def call_subagent(self, *, caller: Agent, callee_id: str, parameters: dict[str, Any]) -> AgentResult:
         """Synchronously invoke a child agent from a caller agent."""
         base_dir = caller.source_path.parent if caller.source_path is not None else None
-        callee = self.get_agent(callee_id, base_dir=base_dir)
+        callee = self._agent_with_runtime_tracing(self.get_agent(callee_id, base_dir=base_dir))
         return callee.run(host=self, parameters=parameters, caller_id=caller.agent_id)
 
     def call_subagent_async(

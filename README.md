@@ -14,8 +14,9 @@ Generic markdown-defined agent runtime, orchestration host, tracing, and evaluat
 - **Tool-calling loop** — `run_tool_loop()` async helper with terminal tool support for clarification patterns
 - **Terminal tools** — declare tool names in agent frontmatter that exit the decision loop immediately without executing
 - **Skills** — directory-discovered markdown instruction sets, injected into the model conversation on demand
-- **Tracing & audit** — `InMemoryAuditTracer` (JSONL), `LlmTraceLogger` (console/file), provider request/response callbacks
-- **Evaluation** — XML-based and conversation-based regression evaluation harnesses
+- **Tracing & audit** — unified **`TraceEvent`** pipeline (`tracing.py`, optional JSONL / debugger subscribers), `InMemoryAuditTracer` (JSONL), `LlmTraceLogger` (console/file)
+- **Agent evaluator** — local web UI + WebSocket trace stream (`python -m agent_framework_evaluator`), headless `run` subcommand; see [Using the agent evaluator](docs/guides/using-agent-evaluator.md)
+- **Evaluation** — XML-based and conversation-based regression evaluation harnesses (`python -m agent_framework --evaluate …`)
 - **JSON validation retry** — `validate_and_retry()` utility for typed, validated model output with one automatic retry
 
 ---
@@ -28,6 +29,9 @@ pip install agent_framework
 
 # With DIAL driver (async, OpenAI-compatible chat completions)
 pip install "agent_framework[dial]"
+
+# Web UI / evaluator (FastAPI + Uvicorn)
+pip install "agent_framework[web]"
 
 # Development
 pip install "agent_framework[dev]"
@@ -108,13 +112,25 @@ ROOT_AGENT=root
 
 ## CLI
 
+**Runtime (`agent_framework`):**
+
 ```bash
 python -m agent_framework --console                            # interactive
 python -m agent_framework --instruction "..."                  # one-shot
 python -m agent_framework --agent <id> --instruction "..."    # specific agent
 python -m agent_framework --evaluate path/to/evaluation.xml   # regression eval
-python -m agent_framework --llm-trace console|file|both       # with LLM tracing
+python -m agent_framework --llm-trace console|file|both       # LLM request/response trace
+python -m agent_framework --runtime-trace-jsonl path.jsonl ... # unified TraceEvent JSONL
 ```
+
+**Evaluator (`agent_framework_evaluator`):**
+
+```bash
+python -m agent_framework_evaluator web --env .env --port 8123   # local debugger UI
+python -m agent_framework_evaluator run --env .env --agent root --prompt "..."  # headless
+```
+
+See [Using the agent evaluator](docs/guides/using-agent-evaluator.md) for setup files, trace export, and configuration.
 
 ---
 
@@ -132,3 +148,9 @@ See [`docs/architecture/`](docs/architecture/) for the full reference:
 Developer guides:
 
 - [Using DIAL](docs/guides/using-dial.md) — complete DIAL integration guide
+- [Using the agent evaluator](docs/guides/using-agent-evaluator.md) — web debugger, headless runs, setup modules, trace files
+
+Architecture (evaluator & tracing):
+
+- [Agent Evaluator & Web Runtime](docs/architecture/agent-evaluator-web-runtime.md)
+- [Tracing & Evaluation](docs/architecture/tracing-evaluation.md)

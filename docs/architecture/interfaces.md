@@ -498,15 +498,20 @@ class ToolParameter:
 @dataclass(slots=True)
 class AgentHost:
     config: HostConfig
-    model_driver: ModelDriver | None
-    input_reader: Callable[[str], str]
-    output_writer: Callable[[str], None]
-    agent_registry: dict[str, Agent]
-    tool_registry: dict[str, Tool]
+    model_driver: ModelDriver | AsyncModelDriver | None
+    tool_registry: ToolRegistry
+    agent_registry: AgentRegistry
+    command_registry: CommandRegistry
+    user_comm: UserCommunication | None
+    mcp_manager: McpManager | None
     contexts: dict[str, CallContext]
     onPreModel: SequentialHook
     onPostModel: SequentialHook
     audit_tracer: InMemoryAuditTracer | None
+    runtime_tracer: RuntimeTracer              # default NullRuntimeTracer
+    trace_context_overlay: TraceContext | None
+    skill_registry: SkillRegistry | None
+    conversation_store: ConversationStore | AsyncConversationStore | None
     _executor: ThreadPoolExecutor
 ```
 
@@ -514,32 +519,19 @@ class AgentHost:
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `from_env` | `(env_path, *, model_driver=None, input_reader=input, output_writer=print) -> AgentHost` | Load config, build driver, create tracer. |
-| `from_env_console` | `(env_path, *, model_driver=None) -> AgentHost` | Shorthand with `input`/`print` I/O. |
+| `create` | `(*, model_driver, config=None, user_comm=None, ...) -> AgentHost` | Programmatic construction; optional registries and MCP. |
+| `from_env` | `(env_path, *, model_driver=None, user_comm=None, input_reader=None, output_writer=None) -> AgentHost` | Load config and driver; **`input_reader`/`output_writer` ignored** (deprecated). |
+| `from_env_console` | `(env_path, *, model_driver=None) -> AgentHost` | `from_env` + **`ConsoleUserCommunication`**, then **`start()`** synchronously. |
 
-**Instance Methods:**
+**Tracing-related instance methods:**
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `get_root_agent` | `() -> Agent` | Loads `config.root_agent_id`. |
-| `load_agent` | `(agent_ref: str \| Path) -> Agent` | Load + cache from markdown. |
-| `get_agent` | `(agent_id, *, base_dir=None) -> Agent` | Resolution chain: registry → path → sibling → agent_directory. |
-| `register_tool` | `(tool: Tool) -> None` | Direct tool registration. |
-| `get_tool` | `(tool_name: str) -> Tool` | Lazy-load from `tools_directory`. |
-| `run_root` | `(initial_instruction, *, conversation_messages=None, prompt_fragments=None) -> AgentResult` | Run root agent. |
-| `run_agent` | `(agent_id, initial_instruction, ...) -> AgentResult` | Load and run specific agent. |
-| `run_console` | `() -> None` | Interactive console loop. |
-| `call_subagent` | `(*, caller, callee_id, parameters) -> AgentResult` | Synchronous subagent invocation. |
-| `call_subagent_async` | `(*, caller, callee_id, parameters) -> Future[AgentResult]` | Async subagent on thread pool. |
-| `execute_tool` | `(tool_name, parameters) -> str` | Load and invoke tool. |
-| `request_user_input` | `(prompt: str) -> str` | Console I/O via `output_writer`/`input_reader`. |
-| `resolve_callback` | `(*, caller_id, callee, prompt) -> str` | 3-level resolution: behavior → agent → console. |
-| `open_context` | `(*, caller_id, callee_id, kind) -> CallContext` | Create and store call edge. |
-| `resolve_world_path` | `(raw_path: str) -> Path` | Sandbox path inside `world_directory`. Rejects absolute paths and `..` escapes. |
-| `run_pre_model_hooks` | `(event: ModelStartEvent) -> None` | Fire host `onPreModel`. |
-| `run_post_model_hooks` | `(event: ModelEndEvent) -> None` | Fire host `onPostModel`. |
-| `enable_audit_trace` | `(*, output_dir: Path) -> None` | Create tracer + wire model driver callbacks. |
-| `enable_llm_trace_logging` | `(*, target: str, output_dir: Path) -> None` | Attach `LlmTraceLogger` to model driver. |
+| `publish_trace_event` | `(*, kind, title, summary="", payload=None, span_id=None, parent_span_id=None, context=None, channel="runtime", level="info") -> None` | No-op if **`runtime_tracer`** is **`NullRuntimeTracer`**; merges **`trace_context_overlay`**. |
+| `run_agent` | `(agent_id, initial_instruction, *, conversation_messages=None, prompt_fragments=None) -> AgentResult` | Clones hooks, attaches **`RuntimeTraceBehavior`** when tracer active; **`active_tracer_scope`** for **`run`**. |
+| `call_subagent` | `(*, caller, callee_id, parameters) -> AgentResult` | Same runtime-tracing wrapper for the callee agent. |
+
+**Other instance methods** (unchanged in spirit from earlier docs): **`get_agent`**, **`run_root`**, **`run_console`**, **`execute_tool`**, **`request_user_input`** (via **`user_comm`**), **`resolve_callback`**, **`open_context`**, **`resolve_world_path`**, **`run_pre_model_hooks`**, **`run_post_model_hooks`**, **`enable_audit_trace`**, **`enable_llm_trace_logging`**, **`complete`**, **`complete_async`**, **`run_tool_loop`**, etc. See [Host & Orchestration](./host-orchestration.md).
 
 ---
 
@@ -555,9 +547,9 @@ class HostConfig:
     tools_directory: Path
     world_directory: Path
     root_agent_id: str
-    agent_models: dict[str, str]    # agent_id → model_name
+    agent_models: dict[str, tuple[str, ...]]    # agent_id → fallback model list
 
-    def model_for(self, agent_id: str, fallback: str | None = None) -> str: ...
+    def model_for(self, agent_id: str, fallback: tuple[str, ...] | None = None) -> tuple[str, ...]: ...
     # Returns agent_models[agent_id] or fallback or default_model
 ```
 
@@ -747,6 +739,8 @@ class RecordingAgentHost(AgentHost):
     @classmethod
     def from_host(cls, host: AgentHost) -> "RecordingAgentHost": ...
 ```
+
+Used by **`AgentPromptEvaluator`** / **`OpenAiConversationEvaluator`** to capture tool/subagent/callback/user-input edges. It is **orthogonal** to the unified **`TraceEvent`** pipeline: regression evaluation does not require replacing **`RecordingAgentHost`** with runtime tracing.
 
 ---
 

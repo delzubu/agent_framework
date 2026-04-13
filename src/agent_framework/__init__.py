@@ -34,6 +34,14 @@ from agent_framework.evaluator import (
     PromptScore,
 )
 from agent_framework.host import AgentHost
+from agent_framework.tracing import (
+    CompositeRuntimeTracer,
+    NullRuntimeTracer,
+    TraceContext,
+    TraceEvent,
+)
+from agent_framework.web_communication import WebUserCommunication
+from agent_framework.web_host import create_web_host
 from agent_framework.messages import (
     ChatMessage,
     ContentPart,
@@ -98,6 +106,13 @@ __all__ = [
     "FunctionCall",
     "ImageUrl",
     "ToolCallMessage",
+    # Tracing & web runtime
+    "CompositeRuntimeTracer",
+    "NullRuntimeTracer",
+    "TraceContext",
+    "TraceEvent",
+    "WebUserCommunication",
+    "create_web_host",
     # Model drivers
     "AsyncModelDriver",
     "AsyncToSyncAdapter",

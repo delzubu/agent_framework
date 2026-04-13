@@ -57,6 +57,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory used for host-level LLM trace files.",
     )
     parser.add_argument(
+        "--runtime-trace-jsonl",
+        metavar="PATH",
+        default=None,
+        help="Append unified trace events (runtime, mirrored console trace, user, llm, …) as JSONL to PATH.",
+    )
+    parser.add_argument(
+        "--runtime-trace-python-logs",
+        action="store_true",
+        help="Mirror Python logging into the unified tracer (requires --runtime-trace-jsonl).",
+    )
+    parser.add_argument(
         "--model",
         default=None,
         help=(
@@ -93,6 +104,23 @@ def main(
         host = AgentHost.from_env_console(args.env, model_override=model_override)
     else:
         host = host_factory(args.env)
+    if args.runtime_trace_jsonl:
+        from pathlib import Path
+
+        from agent_framework.tracing import CompositeRuntimeTracer
+        from agent_framework.tracing_subscribers.jsonl_subscriber import JsonlTraceSubscriber
+
+        host.runtime_tracer = CompositeRuntimeTracer(
+            subscribers=[JsonlTraceSubscriber(Path(args.runtime_trace_jsonl))]
+        )
+        if args.runtime_trace_python_logs:
+            import logging
+
+            from agent_framework.tracing_consumers.log_handler import LoggingTraceHandler
+
+            logging.getLogger().addHandler(LoggingTraceHandler(host.runtime_tracer))
+    elif args.runtime_trace_python_logs:
+        parser.error("--runtime-trace-python-logs requires --runtime-trace-jsonl")
     if args.llm_trace:
         host.enable_llm_trace_logging(target=args.llm_trace, output_dir=args.llm_trace_dir)
     if args.evaluate is not None:

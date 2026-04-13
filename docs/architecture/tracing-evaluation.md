@@ -1,13 +1,43 @@
 # Tracing, Audit & Evaluation
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Host & Orchestration](./host-orchestration.md) · [Extension Points](./extension-points.md) · [Interface Specifications](./interfaces.md)
+> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Host & Orchestration](./host-orchestration.md) · [Extension Points](./extension-points.md) · [Interface Specifications](./interfaces.md) · User guide: [Using the agent evaluator](../guides/using-agent-evaluator.md)
 
 ---
 
 ## 1. Overview
 
-The framework provides three complementary observability mechanisms:
+### 1.1 Unified runtime tracing (`tracing.py`)
+
+Structured observability uses **`TraceEvent`** records (channels: `runtime`, `llm`, `system`, `user`) published through a **`RuntimeTracer`**. **`CompositeRuntimeTracer`** fans out to **`TraceSubscriber`** implementations such as **`JsonlTraceSubscriber`**, **`LlmTraceFileSubscriber`**, and evaluator-side **`DebuggerSubscriber`**. Python **`logging`** can be ingested via **`LoggingTraceHandler`**. **`AgentHost.runtime_tracer`** receives LLM trace events when `enable_llm_trace_logging()` / `attach_to_host` is used, in addition to legacy file/console **`LlmTraceLogger`** output.
+
+**Runtime agent loop:** **`RuntimeTraceBehavior`** (`runtime_trace_behavior.py`) subscribes to agent hooks and emits `runtime.*` kinds (agent lifecycle, tool/subagent/skill, decisions, callbacks). **`AgentHost.run_agent`** clones the agent’s hook graph, appends this behavior, sets **`active_tracer_scope(host.runtime_tracer, host.trace_context_overlay)`** for the run, and exposes **`publish_trace_event(...)`** for code paths outside behaviors (for example callback handling in `Agent`).
+
+**User and console ingress without constructor churn:** **`tracing_bridge.py`** holds a contextvar; **`try_publish_trace`** publishes **`user.*`** from **`WebUserCommunication`** / **`ConsoleUserCommunication`** and mirrors **`TraceLoggingBehavior`** lines as **`system.log`** when a tracer is active.
+
+**Main-module CLI (optional artifacts):**
+
+```bash
+python -m agent_framework --runtime-trace-jsonl ./logs/runtime.jsonl --instruction "..."
+python -m agent_framework --runtime-trace-jsonl ./logs/runtime.jsonl --runtime-trace-python-logs --instruction "..."
+```
+
+**Evaluator CLI:**
+
+```bash
+python -m agent_framework_evaluator run --agent root --prompt "hi" --trace-jsonl ./logs/eval.jsonl --trace-llm-dir ./logs/llm
+```
+
+### 1.2 Representative `kind` values (non-exhaustive)
+
+| Channel | Examples | Source |
+|---------|----------|--------|
+| `runtime` | `runtime.agent_started`, `runtime.agent_finished`, `runtime.tool_call_started`, `runtime.tool_call_finished`, `runtime.subagent_call_started`, `runtime.subagent_call_finished`, `runtime.skill_invoked`, `runtime.decision_made`, `runtime.callback_requested`, `runtime.callback_answered` | `RuntimeTraceBehavior`, `AgentHost`, `Agent` |
+| `user` | `user.message_sent`, `user.prompt_requested`, `user.prompt_answered`, `user.permission_requested`, `user.permission_resolved`, `user.stream_chunk` | `WebUserCommunication`, `ConsoleUserCommunication` |
+| `system` | `system.log` | `TraceLoggingBehavior` mirror, `LoggingTraceHandler` |
+| `llm` | `llm.request`, `llm.response`, … | `llm_trace_logging` / provider callbacks |
+
+The framework also provides three complementary **legacy** observability mechanisms (still supported alongside the unified tracer):
 
 | Mechanism | Module | Purpose | Output |
 |-----------|--------|---------|--------|
@@ -122,6 +152,8 @@ host.enable_audit_trace(output_dir=Path("logs"))
 
 Audit tracing is also invoked directly from `Agent.run()` — the agent calls `host.audit_tracer.start_agent_call()` at the beginning and `finish_agent_call()` in the `finally` block.
 
+**Relation to unified tracing:** Audit JSONL remains the **compatibility** format for `trace_viewer.html` and existing workflows. It is **not** automatically populated from **`TraceEvent`**. If a single on-disk stream is required, either add a **`TraceSubscriber`** that writes audit-shaped lines or keep both systems enabled until a migration is explicitly planned.
+
 ---
 
 ## 3. LLM Trace Logging (`llm_trace_logging.py`)
@@ -198,7 +230,7 @@ python -m agent_framework --llm-trace both --instruction "..."
 
 ## 4. Lifecycle Tracing (`trace_logging.py`)
 
-`TraceLoggingBehavior` is a built-in `AgentBehavior` that logs lifecycle events to the console during development. It serves as both a debugging tool and a reference implementation for behaviors that hook into all lifecycle events.
+`TraceLoggingBehavior` is a built-in `AgentBehavior` that logs lifecycle events to the console during development. It serves as both a debugging tool and a reference implementation for behaviors that hook into all lifecycle events. When **`active_tracer_scope`** is active, each console line is also published as a unified **`system.log`** event (same human-readable title) so JSONL subscribers and the evaluator debugger see lifecycle noise alongside **`runtime.*`** events from **`RuntimeTraceBehavior`**.
 
 ```python
 class TraceLoggingBehavior(AgentBehavior):

@@ -21,10 +21,20 @@ dial = [
 mcp = [
     "httpx>=0.24,<1.0",
 ]
+web = [
+    "fastapi>=0.110,<1.0",
+    "uvicorn[standard]>=0.29,<1.0",
+]
 dev = [
     "pytest>=8.3.0,<9.0.0",
     "pytest-asyncio>=0.23,<1.0",
+    "fastapi>=0.110,<1.0",
+    "uvicorn[standard]>=0.29,<1.0",
+    "httpx>=0.24,<1.0",
 ]
+
+[project.scripts]
+agent-eval = "agent_framework_evaluator.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

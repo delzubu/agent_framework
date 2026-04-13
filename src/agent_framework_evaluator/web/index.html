@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Evaluator</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="left-rail">
+      <h1>Agent Evaluator</h1>
+      <label>Agent
+        <input id="agent-select" type="text" list="agent-list" placeholder="agent id" autocomplete="off">
+        <datalist id="agent-list"></datalist>
+      </label>
+      <label>Setup File <input id="setup-path" type="text" placeholder="optional path/to/setup.py"></label>
+      <label>Mode <select id="mode-select"><option>Single Run</option><option>Test Set</option></select></label>
+    </aside>
+    <main id="main-pane">
+      <section id="prompt-pane">
+        <h2>Prompt</h2>
+        <textarea id="prompt-input"></textarea>
+        <button id="run-button" type="button">Run</button>
+      </section>
+      <section id="response-pane">
+        <h2>Response</h2>
+        <div id="response-output"></div>
+      </section>
+    </main>
+    <aside id="trace-pane">
+      <h2>Trace</h2>
+      <div id="trace-tree"></div>
+    </aside>
+  </div>
+  <section id="reserved-testset-pane">
+    <h2>Test Set</h2>
+    <p>Reserved for future batch scoring and result summaries.</p>
+  </section>
+  <script src="/static/app.js"></script>
+</body>
+</html>

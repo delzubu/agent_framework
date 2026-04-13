@@ -27,6 +27,15 @@ class FakeModelDriver:
         pass
 
 
+def test_agent_host_uses_supplied_runtime_tracer(fake_model_driver):
+    from agent_framework.tracing import CompositeRuntimeTracer
+
+    tracer = CompositeRuntimeTracer()
+    host = AgentHost.create(model_driver=fake_model_driver)
+    host.runtime_tracer = tracer
+    assert host.runtime_tracer is tracer
+
+
 def _write_env(env_path: Path) -> None:
     env_path.write_text(
         "OPENAI_API_KEY=test-key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n",

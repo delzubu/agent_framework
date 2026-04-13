@@ -78,3 +78,20 @@ def _emit(label: str, payload: Any) -> None:
     """Write one colored event log to the console."""
     print(f"{_EVENT_COLOR}[{label}]{_RESET}")
     print(f"{_PAYLOAD_COLOR}{payload}{_RESET}")
+    _mirror_console_line_to_tracer(label, payload)
+
+
+def _mirror_console_line_to_tracer(label: str, payload: Any) -> None:
+    """When a unified tracer is active (see ``tracing_bridge``), emit a ``system.log`` event."""
+    from agent_framework.tracing_bridge import try_publish_trace
+
+    text = str(payload)
+    if len(text) > 8000:
+        text = text[:8000] + "…"
+    try_publish_trace(
+        channel="system",
+        kind="system.log",
+        title=label,
+        summary=text[:500],
+        payload={"label": label, "detail": text},
+    )

@@ -1,7 +1,7 @@
 # Host & Orchestration
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Extension Points](./extension-points.md) · [Interface Specifications](./interfaces.md)
+> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Extension Points](./extension-points.md) · [Tracing & Evaluation](./tracing-evaluation.md) · [Interface Specifications](./interfaces.md) · User guide: [Using the agent evaluator](../guides/using-agent-evaluator.md)
 
 ---
 
@@ -16,6 +16,7 @@
 - **MCP manager** (`McpManager`) — optional client-side MCP integration; bridges MCP tools into `ToolRegistry`
 - **Call contexts** — `CallContext` objects tracking active call edges between agents
 - **Audit tracer** — optional `InMemoryAuditTracer` for immutable JSONL audit output
+- **Runtime tracer** — `runtime_tracer` (`RuntimeTracer`, default `NullRuntimeTracer`) for structured `TraceEvent` fan-out; LLM provider hooks also publish `llm.request` / `llm.response` when trace logging is enabled
 - **Thread pool** — `ThreadPoolExecutor` for async subagent parallelism
 - **Host-level hooks** — `onPreModel` and `onPostModel` for cross-cutting model interception
 
@@ -39,6 +40,8 @@ class AgentHost:
     onPreModel: SequentialHook
     onPostModel: SequentialHook
     audit_tracer: InMemoryAuditTracer | None
+    runtime_tracer: RuntimeTracer              # default NullRuntimeTracer
+    trace_context_overlay: TraceContext | None  # merged into published TraceEvent context (e.g. evaluator session_id)
     skill_registry: SkillRegistry | None
     conversation_store: ConversationStore | AsyncConversationStore | None
     _executor: ThreadPoolExecutor            # max_workers=8
@@ -51,6 +54,8 @@ class AgentHost:
 **`AgentHost.create(*, model_driver, config=None, conversation_store=None, user_comm=None, builtin_tools=True, mcp_enabled=True, command_fallback=None) -> AgentHost`**
 
 Preferred programmatic entry point — no `.env` file required. Constructs formal registries from config directories, registers built-in tools when `builtin_tools=True`, loads MCP configs (if available and `mcp_enabled=True`) but does **not** start connections. Returns an unstarted host.
+
+**`create_web_host(...)`** (`web_host.py`) — builds an `AgentHost` via `AgentHost.create(...)` and assigns a supplied `CompositeRuntimeTracer` (or `NullRuntimeTracer`) to `runtime_tracer`, pairing it with a `WebUserCommunication` instance for browser-driven runs.
 
 ```python
 from agent_framework import AgentHost
@@ -182,6 +187,18 @@ This enables relative agent discovery: a parent agent stored at `agents/orchestr
 **`run_agent(agent_id, initial_instruction, *, conversation_messages, prompt_fragments) -> AgentResult`** — loads the agent and calls `agent.run(host=self, parameters={"instruction": initial_instruction}, ...)`.
 
 **`run_console()`** — prompts the user for an instruction, runs the root agent, and prints the result.
+
+### 4.4 Runtime tracing around `run_agent` and subagents
+
+When `runtime_tracer` is not a **`NullRuntimeTracer`**:
+
+- **`_agent_with_runtime_tracing`** clones the resolved agent’s **`SequentialHook`** instances (so the cached registry agent is not mutated), appends **`RuntimeTraceBehavior`**, and calls **`attach()`** so `runtime.*` events are published from the decision loop (tools, subagents, skills, model end / decision, callbacks where wired).
+- **`run_agent`** wraps execution in **`active_tracer_scope(runtime_tracer, trace_context_overlay)`** (`tracing_bridge.py`). That scope lets **`ConsoleUserCommunication`**, **`WebUserCommunication`**, and **`TraceLoggingBehavior`** publish **`user.*`** and mirrored **`system.log`** lines into the same tracer without passing tracers through every constructor.
+- **`trace_context_overlay`** (optional **`TraceContext`**) is merged into each published event’s context via **`publish_trace_event`** and subscriber fan-out. The evaluator’s **`SessionRunner`** sets **`host.trace_context_overlay = TraceContext(session_id=...)`** around **`run_agent`** so browser traces can be keyed by session.
+- **`publish_trace_event(...)`** builds a **`TraceEvent`** and calls **`runtime_tracer.publish`**, no-op when the tracer is null. Used from **`Agent`** callback paths and anywhere else outside behaviors that need a single emission point.
+- **`call_subagent`** also routes through **`_agent_with_runtime_tracing`** so nested runs emit **`runtime.*`** for the callee.
+
+For JSONL or debugger sinks, assign **`host.runtime_tracer = CompositeRuntimeTracer([...])`** before **`run_agent`** (see **`tracing-evaluation.md`** and the main CLI **`--runtime-trace-jsonl`** flag).
 
 ---
 
@@ -322,12 +339,9 @@ If neither level 1 nor level 2 is available, falls back to `request_user_input(p
 
 **`request_user_input(prompt: str) -> str`**
 
-```python
-self.output_writer(prompt)
-return self.input_reader("> ")
-```
+Delegates to **`user_comm.read_user_input(...)`** via the host’s async bridge (same path as the rest of **`UserCommunication`**). If **`user_comm`** is **`None`**, raises **`RuntimeError`** — use **`AgentHost.create(..., user_comm=...)`** or **`from_env_console`** (which wires **`ConsoleUserCommunication`**).
 
-Uses the injected `output_writer` and `input_reader` callables. In the standard console configuration these are `print` and `input`. In tests they can be replaced with mock callables.
+Legacy **`input_reader`** / **`output_writer`** arguments on **`from_env`** are deprecated and ignored.
 
 ---
 

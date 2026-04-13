@@ -6,12 +6,45 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from agent_framework.model import ProviderRequestTrace, ProviderResponseTrace
+from agent_framework.tracing import TraceContext, TraceEvent, utc_now_iso
 
 _EVENT_COLOR = "\033[95m"
 _PAYLOAD_COLOR = "\033[97m"
 _RESET = "\033[0m"
+
+
+def build_llm_trace_event(trace: Any, *, kind: str) -> TraceEvent:
+    payload: dict[str, Any] = {
+        "run_id": getattr(trace, "run_id", None),
+        "agent_id": getattr(trace, "agent_id", None),
+        "provider_name": getattr(trace, "provider_name", None),
+        "model_name": getattr(trace, "model_name", None),
+    }
+    if hasattr(trace, "temperature"):
+        payload["temperature"] = trace.temperature
+    if hasattr(trace, "input_payload"):
+        payload["input_payload"] = trace.input_payload
+    if hasattr(trace, "raw_text"):
+        payload["raw_text"] = trace.raw_text
+    if hasattr(trace, "parsed_payload"):
+        payload["parsed_payload"] = trace.parsed_payload
+    agent_label = trace.agent_id or "host"
+    return TraceEvent(
+        event_id=str(uuid4()),
+        parent_event_id=None,
+        span_id=getattr(trace, "run_id", None),
+        parent_span_id=None,
+        timestamp=utc_now_iso(),
+        channel="llm",
+        level="info",
+        kind=kind,
+        title=f"{agent_label} {kind}",
+        context=TraceContext(run_id=trace.run_id, agent_id=trace.agent_id),
+        payload=payload,
+    )
 
 
 def attach_to_host(host, *, target: str = "file", output_dir: str | Path = "logs") -> None:
@@ -22,16 +55,21 @@ def attach_to_host(host, *, target: str = "file", output_dir: str | Path = "logs
         raise ValueError("Host model driver does not support exact provider I/O tracing.")
     existing_request = getattr(model_driver, "on_request_trace", None)
     existing_response = getattr(model_driver, "on_response_trace", None)
+    runtime_tracer = getattr(host, "runtime_tracer", None)
 
     def on_request(event: ProviderRequestTrace) -> None:
         if callable(existing_request):
             existing_request(event)
         tracer.log_provider_request(event)
+        if runtime_tracer is not None:
+            runtime_tracer.publish(build_llm_trace_event(event, kind="llm.request"))
 
     def on_response(event: ProviderResponseTrace) -> None:
         if callable(existing_response):
             existing_response(event)
         tracer.log_provider_response(event)
+        if runtime_tracer is not None:
+            runtime_tracer.publish(build_llm_trace_event(event, kind="llm.response"))
 
     model_driver.set_trace_callbacks(
         on_request=on_request,

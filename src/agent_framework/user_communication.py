@@ -2,7 +2,10 @@
 
 Defines the async Protocol that all concrete user-communication implementations
 must satisfy, plus data types for permission gating and a no-op implementation
-suitable for headless/test use.
+suitable for headless/test use. For browser-driven runs, see
+:class:`agent_framework.web_communication.WebUserCommunication`, which queues
+outbound UI messages and resolves input asynchronously via
+``submit_user_input``.
 """
 
 from __future__ import annotations

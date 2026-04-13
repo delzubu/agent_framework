@@ -15,6 +15,7 @@ The framework provides four extension mechanisms, ordered from most to least inv
 | `SequentialHook` callbacks (`+=`) | Low — subscribe to existing hooks | Observation and intervention at lifecycle points |
 | Custom `Tool` | None to agent code | New capabilities accessible to agents |
 | Custom `ModelDriver` | None to agent code | New LLM provider support |
+| `RuntimeTracer` / `TraceSubscriber` | Low — subscribe or replace `host.runtime_tracer` | Unified trace pipeline (JSONL, debugger UI, custom sinks) |
 
 All extension points are designed so that agent Markdown definitions and the core loop in `Agent.run()` need not be modified.
 
@@ -174,6 +175,10 @@ class TraceLoggingBehavior(AgentBehavior):
 
     # ... similar for all 6 hooks
 ```
+
+### 2.9 `RuntimeTraceBehavior` (host-attached, not sidecar-loaded)
+
+`RuntimeTraceBehavior` (`runtime_trace_behavior.py`) is **not** registered through an agent’s behaviors list. When **`AgentHost.runtime_tracer`** is not **`NullRuntimeTracer`**, **`run_agent`** / **`call_subagent`** clone the agent’s **`SequentialHook`** instances, append this behavior, and call **`attach()`** so structured **`runtime.*`** **`TraceEvent`** records are published. See [Host & Orchestration](./host-orchestration.md) §4.4 and [Tracing & Evaluation](./tracing-evaluation.md).
 
 ---
 
