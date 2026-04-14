@@ -228,7 +228,7 @@ Assembles the complete model context for one model call. Steps:
 ```python
 system_prompt = apply_runtime_placeholders(self.system_prompt, run.placeholder_values)
 ```
-`apply_runtime_placeholders()` substitutes single-brace `{name}` patterns using `run.placeholder_values`. The result is passed to `assemble_system_prompt(context)` in `model.py` along with the capability metadata.
+`apply_runtime_placeholders()` substitutes single-brace `{name}` patterns using `run.placeholder_values`. The assembled `ModelContext` is then passed through `merge_runtime_system_into_messages()` in `model.py`, which appends shared runtime instructions (`system.md` + response-mode template via `ModelDriverBase`) into the first system message so provider drivers receive a fully merged `messages` list.
 
 **2. Tool definitions:**
 For each name in `self.allowed_tools`:

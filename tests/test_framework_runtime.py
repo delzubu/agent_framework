@@ -603,6 +603,24 @@ def test_skills_catalog_injected_as_conversation_message(tmp_path: Path) -> None
     assert "my-skill" in catalog_message["content"]
 
 
+def test_build_context_merges_runtime_into_system_message(tmp_path: Path) -> None:
+    """First system message includes shared runtime instructions (json_object mode)."""
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    host = AgentHost.from_env(env_path, model_driver=FakeModelDriver([]),
+                               input_reader=lambda _: "", output_writer=lambda _: None)
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
+    )
+    run = agent._create_run({})
+    context = agent.build_context(host=host, run=run)
+    assert "Structured Action Format" in context.system_prompt
+    assert context.messages[0]["role"] == "system"
+    assert "Structured Action Format" in context.messages[0]["content"]
+
+
 def test_no_skills_catalog_message_when_no_skills(tmp_path: Path) -> None:
     """Without skills, messages has only system + user (2 entries)."""
     env_path = tmp_path / ".env"
@@ -901,7 +919,11 @@ def test_build_skills_catalog_passes_max_tokens_from_host_config(tmp_path: Path)
     run = agent._create_run({})
     context = agent.build_context(host=host, run=run)
     # The catalog message should exist and contain only the high-priority skill
-    catalog_messages = [m for m in context.messages if "<available_skills>" in m.get("content", "")]
+    catalog_messages = [
+        m
+        for m in context.messages
+        if "## Skills" in m.get("content", "") and "<available_skills>" in m.get("content", "")
+    ]
     assert len(catalog_messages) == 1
     catalog_content = catalog_messages[0]["content"]
     assert "high-skill" in catalog_content

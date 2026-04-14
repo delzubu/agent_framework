@@ -183,7 +183,7 @@ class ModelContext:
 
 | Field | Description |
 |-------|-------------|
-| `system_prompt` | Fully assembled system prompt. Constructed by `assemble_system_prompt(context)` = agent's own system prompt + capability metadata injected into `system.md` placeholders + response mode template. See Section 6. |
+| `system_prompt` | Fully assembled system prompt after `merge_runtime_system_into_messages(context)`: agent text + `ModelDriverBase._runtime_prompt` ( `system.md` placeholders + response-mode template). See Section 6. |
 | `user_prompt` | Rendered user prompt. Agent's `user_prompt_template` with `{{ param }}` placeholders replaced + `<augmentations>` block containing accumulated prompt fragments. |
 | `messages` | Conversation history as role/content dicts (`[{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]`). Passed directly to the provider's messages array for multi-turn context. |
 | `response_mode` | One of `"decision"`, `"text"`, `"json_object"`. Controls which mode template is appended to the system prompt and how the model output is parsed. See Section 5. |
@@ -393,11 +393,15 @@ class CapabilityDefinition:
 
 ---
 
-## 8. `OpenAiModelDriver` — Reference Implementation
+## 8. `ModelDriverBase` and `OpenAiModelDriver`
+
+Shared runtime assembly lives on **`ModelDriverBase`** (`_capability_metadata`, `_runtime_prompt`, `decision_instructions`, `shared_instructions`). **`OpenAiModelDriver`** and **`DialChatCompletionsDriver`** inherit it so capability JSON and mode templates are not duplicated per provider.
+
+### `OpenAiModelDriver` — Reference Implementation
 
 ```python
 @dataclass(slots=True)
-class OpenAiModelDriver:
+class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
     api_key: str
     on_request_trace: Callable[[ProviderRequestTrace], None] | None = None
     on_response_trace: Callable[[ProviderResponseTrace], None] | None = None
@@ -409,7 +413,7 @@ class OpenAiModelDriver:
 
 2. **`exact_input_payload` bypass:** If `context.exact_input_payload is not None`, the driver sends it directly to `client.responses.create(**context.exact_input_payload)` without any prompt assembly.
 
-3. **Normal assembly path:** Calls `assemble_system_prompt(context)` for the system prompt, uses `context.user_prompt` as the user turn, and `context.messages` for history.
+3. **Normal assembly path:** Uses `context.messages` as the Responses API `input` (already merged by `merge_runtime_system_into_messages` from `Agent.build_context` / `AgentHost.complete`). If `messages` is empty, falls back to `system_prompt` + `user_prompt` fields.
 
 4. **JSON normalization:** `_normalize_json_text(raw_text)` strips markdown code fences (` ```json ... ``` `) from model output before JSON parsing — a common model output artifact.
 

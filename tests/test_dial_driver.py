@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent_framework.errors import ModelDriverError
-from agent_framework.model import DEFAULT_RESPONSE_MODE, DriverCapabilities, ModelContext, ModelResponse
+from agent_framework.model import (
+    DEFAULT_RESPONSE_MODE,
+    DriverCapabilities,
+    ModelContext,
+    ModelResponse,
+    merge_runtime_system_into_messages,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -534,3 +540,35 @@ class TestAcquireClientLoopIsolation:
         c1 = asyncio.run(acquire())
         c2 = asyncio.run(acquire())
         assert c1 is not c2
+
+
+class TestMergedContextWireFormat:
+    def test_request_body_first_message_has_runtime_merge(self) -> None:
+        """DIAL chat body receives merged system text (same as OpenAI path)."""
+        driver = _make_driver()
+        raw = ModelContext(
+            system_prompt="agent-only-line",
+            user_prompt="hi",
+            messages=(
+                {"role": "system", "content": "agent-only-line"},
+                {"role": "user", "content": "hi"},
+            ),
+            response_mode=DEFAULT_RESPONSE_MODE,
+            tools=(),
+            subagents=(),
+            skills=(),
+        )
+        merged = merge_runtime_system_into_messages(raw)
+        body = driver._build_request_body(merged, 0.2, model="gpt-4o")
+        dumped = body["messages"]
+        assert len(dumped) >= 1
+        first = dumped[0]
+        content = first.get("content") if isinstance(first, dict) else getattr(first, "content", None)
+        if isinstance(content, list):
+            text = "".join(
+                p.get("text", "") if isinstance(p, dict) else getattr(p, "text", "")
+                for p in content
+            )
+        else:
+            text = content or ""
+        assert "Structured Action Format" in text

@@ -34,6 +34,7 @@ from agent_framework.model import (
     DEFAULT_RESPONSE_MODE,
     DriverCapabilities,
     ModelContext,
+    ModelDriverBase,
     ModelResponse,
     ProviderRequestTrace,
     ProviderResponseTrace,
@@ -205,7 +206,7 @@ def _build_response_format(response_format: dict[str, Any] | None) -> Any | None
 
 
 @dataclass(slots=True)
-class DialChatCompletionsDriver(_FallbackMixin):
+class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
     """Async driver for DIAL (OpenAI-compatible chat completions).
 
     Uses ``aidial_sdk.chat_completion.request`` types for well-typed request

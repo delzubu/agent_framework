@@ -500,7 +500,7 @@ Implement the `ModelDriver` protocol (structural typing — no inheritance neede
 The key contract points:
 1. `decide(*, agent_id, provider_name, model_name, temperature, context: ModelContext) -> ModelResponse`
 2. `set_trace_callbacks(*, on_request=None, on_response=None) -> None`
-3. Use `assemble_system_prompt(context)` from `model.py` for prompt construction
+3. Use `merge_runtime_system_into_messages` / `assemble_system_prompt` from `model.py` for prompt construction (typically via `Agent.build_context` rather than calling drivers directly)
 4. Handle `context.exact_input_payload` bypass
 5. Handle all three `response_mode` values: `"decision"`, `"text"`, `"json_object"`
 6. Fire trace callbacks before and after the API call

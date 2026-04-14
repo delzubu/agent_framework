@@ -1,7 +1,7 @@
 # Architecture Overview
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Extension Points](./extension-points.md) · [Tracing & Evaluation](./tracing-evaluation.md) · [Interface Specifications](./interfaces.md) · [Agent Evaluator & Web Runtime](./agent-evaluator-web-runtime.md) · User guides: [Using the agent framework](../guides/using-agent-framework.md) · [Using the agent evaluator](../guides/using-agent-evaluator.md)
+> See also: [ADR: Model context & drivers](./adr-model-context-and-drivers.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Extension Points](./extension-points.md) · [Tracing & Evaluation](./tracing-evaluation.md) · [Interface Specifications](./interfaces.md) · [Agent Evaluator & Web Runtime](./agent-evaluator-web-runtime.md) · User guides: [Using the agent framework](../guides/using-agent-framework.md) · [Using the agent evaluator](../guides/using-agent-evaluator.md)
 
 ---
 
@@ -9,7 +9,7 @@
 
 `agent_framework` is a generic, **LLM-agnostic**, markdown-defined agent runtime, orchestration host, tracing, and evaluation toolkit. Its purpose is to decouple agent behavior definitions from provider-specific LLM SDKs, enabling the same agent definitions to run against OpenAI, Anthropic Claude, or any custom provider through a thin `ModelDriver` protocol.
 
-The framework ships with an `OpenAiModelDriver` (synchronous, Responses API) and a `DialChatCompletionsDriver` (async, DIAL/OpenAI-compatible chat completions). Both implement the same `ModelDriver`/`AsyncModelDriver` protocols. Custom provider drivers are first-class extension targets — the architecture is explicitly designed to accommodate them without modifying agent definitions.
+The framework ships with an `OpenAiModelDriver` (synchronous, Responses API) and a `DialChatCompletionsDriver` (async, DIAL/OpenAI-compatible chat completions). Both implement the same `ModelDriver`/`AsyncModelDriver` protocols and inherit a shared **`ModelDriverBase`** for runtime prompt assembly (`system.md` + mode templates). Custom provider drivers are first-class extension targets — the architecture is explicitly designed to accommodate them without modifying agent definitions.
 
 **What it is:**
 - A runtime for executing markdown-defined agents with a structured decision loop
@@ -34,7 +34,7 @@ Agents and tools are defined in Markdown files with YAML frontmatter. The LLM-fa
 
 ### 2.2 Protocol-Based Abstraction
 
-`ModelDriver`, `AsyncModelDriver`, `ConversationStore`, `AsyncConversationStore`, and `AgentHostProtocol` are all `typing.Protocol` classes, not abstract base classes. Any object satisfying the structural method signatures works — enabling dependency injection, test fakes, and provider swapping without inheritance hierarchies. The `OpenAiModelDriver` and the `FakeModelDriver` in tests both satisfy `ModelDriver` without sharing a base class.
+`ModelDriver`, `AsyncModelDriver`, `ConversationStore`, `AsyncConversationStore`, and `AgentHostProtocol` are all `typing.Protocol` classes, not abstract base classes. Any object satisfying the structural method signatures works — enabling dependency injection, test fakes, and provider swapping. Reference drivers (`OpenAiModelDriver`, `DialChatCompletionsDriver`) **inherit `ModelDriverBase`** for shared capability metadata and merge behavior; test **`FakeModelDriver`** implements `ModelDriver` structurally without inheriting `ModelDriverBase`, which is also valid.
 
 ### 2.2b Driver Capabilities
 
@@ -184,7 +184,7 @@ Infrastructure layer — entry points, orchestration, and cross-cutting concerns
 | `agent.py` | Compatibility facade — re-exports everything from `agents/` |
 | `config.py` | Configuration loading — `HostConfig` dataclass, `.env` parser |
 | `host.py` | `AgentHost` — central orchestrator, headless invocation, `run_tool_loop()` |
-| `model.py` | `ModelDriver`/`AsyncModelDriver` protocols, `ModelContext`, `ModelResponse`, `DriverCapabilities`, `OpenAiModelDriver`, adapters, system prompt templates |
+| `model.py` | `ModelDriver`/`AsyncModelDriver` protocols, `ModelContext`, `ModelResponse`, `DriverCapabilities`, `ModelDriverBase`, `merge_runtime_system_into_messages`, `OpenAiModelDriver`, adapters, system prompt templates |
 | `tool.py` | `Tool` base class, `ToolDefinition`, markdown-based tool loading |
 | `errors.py` | `ModelDriverError`, `ConversationNotFoundError` — structured error types |
 | `messages.py` | `ChatMessage`, `ContentPart`, `ImageUrl`, `FunctionCall`, `ToolCallMessage` — typed multimodal message model |

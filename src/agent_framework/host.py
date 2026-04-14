@@ -25,6 +25,7 @@ from agent_framework.model import (
     ModelDriver,
     ModelResponse,
     OpenAiModelDriver,
+    merge_runtime_system_into_messages,
 )
 from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
@@ -431,14 +432,16 @@ class AgentHost:
         resolved_model_names = _normalize_model_names(model_names, self.config.default_model)
         all_messages = self._load_conversation(conversation_id, messages)
         run_id = str(uuid4())
-        context = ModelContext(
-            system_prompt="",
-            user_prompt="",
-            messages=tuple(all_messages),
-            response_mode=response_mode,
-            response_format=response_format,
-            tools=tuple(tools or []),
-            run_id=run_id,
+        context = merge_runtime_system_into_messages(
+            ModelContext(
+                system_prompt="",
+                user_prompt="",
+                messages=tuple(all_messages),
+                response_mode=response_mode,
+                response_format=response_format,
+                tools=tuple(tools or []),
+                run_id=run_id,
+            )
         )
         driver = self.get_model_driver_raw()
         if asyncio.iscoroutinefunction(getattr(driver, "decide", None)):
@@ -474,14 +477,16 @@ class AgentHost:
         resolved_model_names = _normalize_model_names(model_names, self.config.default_model)
         all_messages = await self._load_conversation_async(conversation_id, messages)
         run_id = str(uuid4())
-        context = ModelContext(
-            system_prompt="",
-            user_prompt="",
-            messages=tuple(all_messages),
-            response_mode=response_mode,
-            response_format=response_format,
-            tools=tuple(tools or []),
-            run_id=run_id,
+        context = merge_runtime_system_into_messages(
+            ModelContext(
+                system_prompt="",
+                user_prompt="",
+                messages=tuple(all_messages),
+                response_mode=response_mode,
+                response_format=response_format,
+                tools=tuple(tools or []),
+                run_id=run_id,
+            )
         )
         driver = self.get_model_driver_raw()
         if asyncio.iscoroutinefunction(getattr(driver, "decide", None)):

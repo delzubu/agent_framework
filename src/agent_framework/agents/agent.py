@@ -23,8 +23,8 @@ from agent_framework.model import (
     ModelContext,
     ModelDriver,
     ModelResponse,
-    assemble_system_prompt as _assemble_system_prompt,
     build_skills_catalog as _build_skills_catalog,
+    merge_runtime_system_into_messages as _merge_runtime_system_into_messages,
     runtime_prompt_source_paths as _runtime_prompt_source_paths,
 )
 
@@ -316,7 +316,7 @@ class Agent:
             parent_run_id=parent_run_id,
             caller_id=caller_id,
             agent_name=self.agent_id,
-            system_prompt=_assemble_system_prompt(initial_context),
+            system_prompt=initial_context.system_prompt,
             system_prompt_sources=tuple(system_sources),
             user_prompt=initial_context.user_prompt,
             user_prompt_sources=user_sources,
@@ -429,7 +429,7 @@ class Agent:
             ),
             *run.conversation_messages,
         ]
-        return ModelContext(
+        ctx = ModelContext(
             system_prompt=system_prompt,
             user_prompt=prompt,
             messages=tuple(message_history),
@@ -439,6 +439,7 @@ class Agent:
             skills=skills,
             run_id=run.run_id,
         )
+        return _merge_runtime_system_into_messages(ctx)
 
     def decide(self, *, host: "AgentHostProtocol", run: AgentRun, context: ModelContext) -> AgentDecision:
         """Request and normalize the next decision from the configured model."""

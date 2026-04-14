@@ -53,6 +53,7 @@ Recent releases tighten validation (fail fast instead of swallowing malformed ou
 ## Documentation for users
 
 - **[Using the agent framework](docs/guides/using-agent-framework.md)** — authoring agents (Markdown + JSON), behaviors, host modes, tools, skills, MCP, configuration, tracing, and embedding in your apps.
+- **[ADR: Model context & driver layering](docs/architecture/adr-model-context-and-drivers.md)** — how `ModelContext` is merged before providers, `ModelDriverBase` vs derived drivers, conversation store vs host, and future tool-callback bridging.
 
 ## Quick Start
 

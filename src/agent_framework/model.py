@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, ClassVar, Final, Protocol
 
@@ -249,13 +249,157 @@ def runtime_prompt_source_paths(response_mode: str) -> tuple[Path, ...]:
     return (_SYSTEM_TEMPLATE_PATH, mode_map.get(response_mode, _SYSTEM_JSON_OBJECT_TEMPLATE_PATH))
 
 
+class ModelDriverBase:
+    """Shared agent-agnostic runtime prompt assembly for concrete model drivers.
+
+    Holds capability metadata, mode templates, and merge helpers so derived
+    drivers only implement transport.  Not abstract — subclass or use mixins.
+
+    **Conversation store:** loading and persisting history for
+    :meth:`agent_framework.host.AgentHost.complete` remains on the host
+    (``conversation_id`` + store).  Optional driver-base hooks for other
+    persistence shapes are a future extension (see architecture ADR).
+
+    **Native tool callbacks:** when a provider executes tools inside its SDK,
+    the runtime should delegate to the agent loop via an injectable bridge
+    (planned extension; see ADR) rather than synthetic chat messages.
+    """
+
+    @staticmethod
+    def _capability_metadata(
+        tools: tuple[ToolDefinition, ...],
+        subagents: tuple[CapabilityDefinition, ...],
+        skills: tuple[CapabilityDefinition, ...],
+    ) -> dict[str, str]:
+        """Build shared capability metadata payloads for prompt injection."""
+        tools_json = json.dumps(
+            [
+                {
+                    "id": tool.tool_id,
+                    "description": tool.description,
+                    "parameters": [
+                        {
+                            "name": parameter.name,
+                            "type": parameter.value_type,
+                            "required": parameter.required,
+                            "description": parameter.description,
+                        }
+                        for parameter in tool.parameters
+                    ],
+                }
+                for tool in tools
+            ],
+            indent=2,
+        )
+        subagents_json = json.dumps(
+            [
+                {
+                    "id": item.capability_id,
+                    "description": item.description,
+                    "parameters": [
+                        {
+                            "name": parameter.name,
+                            "type": parameter.value_type,
+                            "required": parameter.required,
+                            "description": parameter.description,
+                        }
+                        for parameter in item.parameters
+                    ],
+                }
+                for item in subagents
+            ],
+            indent=2,
+        )
+        return {
+            "tools_json": tools_json,
+            "subagents_json": subagents_json,
+        }
+
+    @classmethod
+    def _runtime_prompt(cls, context: ModelContext) -> str:
+        """Build the shared and mode-specific runtime prompt block."""
+        metadata = cls._capability_metadata(context.tools, context.subagents, context.skills)
+        shared_prompt = _SYSTEM_TEMPLATE.format(**metadata).strip()
+        mode_templates = {
+            "decision": _SYSTEM_DECISION_TEMPLATE,
+            "text": _SYSTEM_TEXT_TEMPLATE,
+            DEFAULT_RESPONSE_MODE: _SYSTEM_JSON_OBJECT_TEMPLATE,
+        }
+        mode_prompt = mode_templates.get(context.response_mode, _SYSTEM_JSON_OBJECT_TEMPLATE).strip()
+        return f"{shared_prompt}\n\n{mode_prompt}".strip()
+
+    @classmethod
+    def decision_instructions(
+        cls,
+        tools: tuple[ToolDefinition, ...],
+        subagents: tuple[CapabilityDefinition, ...],
+        skills: tuple[CapabilityDefinition, ...],
+    ) -> str:
+        """Return the generic decision envelope instructions as text."""
+        return cls._runtime_prompt(
+            ModelContext(
+                system_prompt="",
+                user_prompt="",
+                tools=tools,
+                subagents=subagents,
+                skills=skills,
+                run_id=None,
+            )
+        )
+
+    @classmethod
+    def _capability_prompt(cls, context: ModelContext) -> str:
+        """Return the provider-side injected capability and mode guidance."""
+        return cls._runtime_prompt(context)
+
+    @classmethod
+    def shared_instructions(
+        cls,
+        tools: tuple[ToolDefinition, ...],
+        subagents: tuple[CapabilityDefinition, ...],
+        skills: tuple[CapabilityDefinition, ...],
+    ) -> str:
+        """Return the shared runtime capability block without a mode suffix."""
+        metadata = cls._capability_metadata(tools, subagents, skills)
+        return _SYSTEM_TEMPLATE.format(**metadata)
+
+
 def assemble_system_prompt(context: "ModelContext") -> str:
     """Return the full system prompt assembled for a provider call."""
-    capability_message = OpenAiModelDriver._capability_prompt(context)
+    capability_message = ModelDriverBase._capability_prompt(context)
     combined_system_prompt = context.system_prompt.strip()
     if capability_message:
         combined_system_prompt = f"{combined_system_prompt}\n\n{capability_message.strip()}".strip()
     return combined_system_prompt
+
+
+def merge_runtime_system_into_messages(context: "ModelContext") -> "ModelContext":
+    """Merge runtime templates into the first system message and align ``system_prompt``.
+
+    Call from :meth:`Agent.build_context` and :meth:`AgentHost.complete` so every
+    driver receives identical ``ModelContext.messages`` (unless
+    ``exact_input_payload`` bypasses normal assembly in :meth:`decide`).
+    """
+    combined = assemble_system_prompt(context)
+    if context.messages:
+        model_input = [dict(m) for m in context.messages]
+        if model_input and model_input[0].get("role") == "system":
+            model_input[0] = {"role": "system", "content": combined}
+        else:
+            model_input.insert(0, {"role": "system", "content": combined})
+        return replace(
+            context,
+            system_prompt=combined,
+            messages=tuple(model_input),
+        )
+    return replace(
+        context,
+        system_prompt=combined,
+        messages=(
+            {"role": "system", "content": combined},
+            {"role": "user", "content": context.user_prompt},
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +444,10 @@ class ModelContext:
     """Model-facing prompt payload assembled for a single decision step.
 
     Attributes:
-        system_prompt: Stable role instructions owned by the agent definition.
+        system_prompt: After :func:`merge_runtime_system_into_messages`, the full
+            assembled system text (agent block plus runtime templates). Before
+            merge, agent flows use the agent definition only; headless
+            ``complete()`` may use ``""`` until merge runs.
         user_prompt: Rendered invocation prompt plus dynamic augmentations.
         messages: Structured conversation history for providers that support
             message-array inputs.
@@ -564,7 +711,7 @@ class AsyncToSyncAdapter:
 
 
 @dataclass(slots=True)
-class OpenAiModelDriver(_FallbackMixin):
+class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
     """OpenAI-backed model driver for the first draft runtime.
 
     Attributes:
@@ -617,19 +764,13 @@ class OpenAiModelDriver(_FallbackMixin):
 
         if context.exact_input_payload is not None:
             model_input = context.exact_input_payload
+        elif context.messages:
+            model_input = list(context.messages)
         else:
-            combined_system_prompt = assemble_system_prompt(context)
-            if context.messages:
-                model_input = list(context.messages)
-                if model_input and model_input[0].get("role") == "system":
-                    model_input[0] = {"role": "system", "content": combined_system_prompt}
-                else:
-                    model_input.insert(0, {"role": "system", "content": combined_system_prompt})
-            else:
-                model_input = [
-                    {"role": "system", "content": combined_system_prompt},
-                    {"role": "user", "content": context.user_prompt},
-                ]
+            model_input = [
+                {"role": "system", "content": context.system_prompt},
+                {"role": "user", "content": context.user_prompt},
+            ]
 
         def _try_model(model_name: str) -> ModelResponse:
             client = OpenAI(api_key=self.api_key)
@@ -790,6 +931,8 @@ __all__ = [
     "DEFAULT_RESPONSE_MODE",
     "DriverCapabilities",
     "ModelContext",
+    "ModelDriverBase",
+    "merge_runtime_system_into_messages",
     "openai_responses_text_format_field",
     "ModelDriver",
     "ModelResponse",

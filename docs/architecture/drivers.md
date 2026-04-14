@@ -181,13 +181,12 @@ finally:
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Callable
 from agent_framework.model import (
-    ModelContext, ModelResponse, DriverCapabilities,
+    ModelContext, ModelResponse, DriverCapabilities, ModelDriverBase,
     ProviderRequestTrace, ProviderResponseTrace,
-    assemble_system_prompt,
 )
 
 @dataclass(slots=True)
-class MyDriver:
+class MyDriver(ModelDriverBase):
     api_key: str
     on_request_trace: Callable | None = field(default=None, repr=False)
     on_response_trace: Callable | None = field(default=None, repr=False)
@@ -201,8 +200,8 @@ class MyDriver:
         self.on_response_trace = on_response
 
     def decide(self, *, agent_id, provider_name, model_name, temperature, context: ModelContext) -> ModelResponse:
-        # 1. Assemble prompt
-        system_prompt = assemble_system_prompt(context)
+        # 1. Use context.messages (pre-merged by Agent.build_context / merge_runtime_system_into_messages)
+        #    or map ModelDriverBase helpers if building messages inside the driver.
 
         # 2. Fire request trace
         if self.on_request_trace:
@@ -213,7 +212,7 @@ class MyDriver:
             ))
 
         # 3. Call your provider API
-        raw_text = call_my_api(system_prompt, context.user_prompt, ...)
+        raw_text = call_my_api(context.messages, ...)
 
         # 4. Parse based on response_mode
         import json

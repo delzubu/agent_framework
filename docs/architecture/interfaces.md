@@ -35,7 +35,7 @@ class ModelDriver(Protocol):
 
 | Method | Semantics |
 |--------|-----------|
-| `decide(...)` | Synchronous model call. Receives fully assembled prompt context; returns parsed response. Must handle `context.exact_input_payload` bypass and all three `response_mode` values. |
+| `decide(...)` | Synchronous model call. Receives `ModelContext` whose `messages` are already merged (`merge_runtime_system_into_messages`) when coming from `Agent.build_context` or `AgentHost.complete`; returns parsed response. Must handle `context.exact_input_payload` bypass and all three `response_mode` values. |
 | `set_trace_callbacks(...)` | Called once at host setup. Implementors store and fire callbacks from `decide()`. Both callbacks are optional; treat `None` as no-op. |
 
 ---
@@ -420,7 +420,9 @@ class OpenAiModelDriver:
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `assemble_system_prompt` | `(context: ModelContext) -> str` | Combines `context.system_prompt` with `_runtime_prompt(context)`. Called by drivers. |
+| `assemble_system_prompt` | `(context: ModelContext) -> str` | Combines agent `context.system_prompt` with `ModelDriverBase._runtime_prompt` (shared `system.md` + mode template). |
+| `merge_runtime_system_into_messages` | `(context: ModelContext) -> ModelContext` | Merges runtime templates into the first `system` message; used by `Agent.build_context` and `AgentHost.complete` so all drivers receive the same `ModelContext.messages`. |
+| `ModelDriverBase` | class | Shared capability metadata and runtime prompt assembly; `OpenAiModelDriver` and `DialChatCompletionsDriver` inherit it. |
 | `runtime_prompt_source_paths` | `(response_mode: str) -> list[Path]` | Returns template file paths for a given mode. Used by audit tracer. |
 | `build_skills_catalog` | `(skills: tuple[CapabilityDefinition, ...], max_tokens: int = 2000) -> str` | Builds a formatted skills catalog with priority-based truncation for conversation injection. Returns empty string if no skills. |
 

@@ -37,6 +37,8 @@ python -m agent_framework --llm-trace console|file|both       # with LLM tracing
 
 This is a **markdown-defined agent runtime**. Agents and tools are defined in Markdown files with YAML frontmatter — their behavior is controlled by the prompts in those files, not just Python code.
 
+Model/LLM layering (merged `ModelContext`, `ModelDriverBase`, ADR): see [`docs/architecture/adr-model-context-and-drivers.md`](docs/architecture/adr-model-context-and-drivers.md).
+
 ### Core Concepts
 
 **Agents** (`src/agent_framework/agents/`): Each agent is a `.md` file with:
