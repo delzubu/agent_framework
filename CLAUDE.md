@@ -105,6 +105,7 @@ AGENT_MODELS=agent1=m1,m2|agent2=m3   # | separates agents, , separates models p
 SKILLS_DIRECTORY=path/to/skills        # single skills directory
 SKILLS_DIRECTORIES=path/a,path/b       # multiple skills directories
 SKILLS_CATALOG_MAX_TOKENS=2000         # max tokens for skills catalog injected into conversation
+MISSING_TOOL_POLICY=graceful            # graceful = skip unloadable tools + trace; strict = fail run
 
 # Commands
 COMMANDS_DIRECTORY=path/to/commands    # single commands directory

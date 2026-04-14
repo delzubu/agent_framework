@@ -9,10 +9,23 @@ from typing import Any, TYPE_CHECKING
 
 import yaml
 
+from agent_framework.agents.helpers import SECTION_PATTERN
+
 if TYPE_CHECKING:
     from agent_framework.agents.agent import Agent
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def normalize_agent_id(agent_ref: str) -> str:
+    """Turn ``deck-review-agent.md`` into ``deck-review-agent`` for catalog lookup."""
+    text = (agent_ref or "").strip()
+    if not text:
+        return text
+    p = Path(text)
+    if p.suffix.lower() == ".md":
+        return p.stem
+    return text
 
 
 @dataclass(slots=True)
@@ -49,13 +62,24 @@ class AgentRegistry:
         """
         catalog: dict[str, Path] = {}
         for directory in self.directories:
-            if not Path(directory).is_dir():
+            dpath = Path(directory)
+            if not dpath.is_dir():
+                _LOGGER.debug("agent discover: skip missing directory %s", dpath)
                 continue
-            for md_path in sorted(Path(directory).glob("*.md")):
+            for md_path in sorted(dpath.glob("*.md")):
                 agent_id = _extract_agent_id(md_path)
-                if agent_id and agent_id not in catalog:
+                if not agent_id:
+                    continue
+                if agent_id not in catalog:
                     catalog[agent_id] = md_path.resolve()
+                else:
+                    _LOGGER.debug(
+                        "agent discover: skip duplicate id %r (%s wins)",
+                        agent_id,
+                        catalog[agent_id],
+                    )
         self._catalog = catalog
+        _LOGGER.debug("agent discover: %d catalog entries", len(self._catalog))
 
     def get(self, agent_id: str, *, base_dir: Path | None = None) -> "Agent":
         """Resolve an agent by id, path, sibling, catalog, or default directory.
@@ -76,24 +100,29 @@ class AgentRegistry:
         if path_candidate.exists():
             return self._load_and_cache(path_candidate)
 
+        nid = normalize_agent_id(agent_id)
+        if nid in self._cache:
+            return self._cache[nid]
+
         # Sibling path
         if base_dir is not None:
-            sibling = (base_dir / f"{agent_id}.md").resolve()
+            sibling = (base_dir / f"{nid}.md").resolve()
             if sibling.exists():
                 return self._load_and_cache(sibling)
 
         # Catalog
-        if agent_id in self._catalog:
-            return self._load_and_cache(self._catalog[agent_id])
+        if nid in self._catalog:
+            return self._load_and_cache(self._catalog[nid])
 
         # Default directory fallback
         if self.config is not None:
             agent_dir = getattr(self.config, "agent_directory", None)
             if agent_dir:
-                default_candidate = (Path(agent_dir) / f"{agent_id}.md").resolve()
+                default_candidate = (Path(agent_dir) / f"{nid}.md").resolve()
                 if default_candidate.exists():
                     return self._load_and_cache(default_candidate)
 
+        _LOGGER.warning("unknown agent %r (not in catalog or on disk)", agent_id)
         raise KeyError(f"Unknown agent: {agent_id!r}")
 
     def list_names(self) -> tuple[str, ...]:
@@ -114,11 +143,15 @@ class AgentRegistry:
         default_provider = getattr(cfg, "default_provider", "openai") if cfg else "openai"
         default_model = getattr(cfg, "default_model", ("gpt-4o-mini",)) if cfg else ("gpt-4o-mini",)
 
-        agent = Agent.from_markdown(
-            source_path,
-            default_provider=default_provider,
-            default_model=default_model,
-        )
+        try:
+            agent = Agent.from_markdown(
+                source_path,
+                default_provider=default_provider,
+                default_model=default_model,
+            )
+        except Exception:
+            _LOGGER.error("failed to load agent markdown %s", source_path, exc_info=True)
+            raise
 
         # Apply per-agent model overrides
         if cfg is not None:
@@ -132,23 +165,37 @@ class AgentRegistry:
         self._cache[agent.agent_id] = agent
         if agent.source_path is not None:
             self._cache[str(agent.source_path)] = agent
+        _LOGGER.debug("loaded agent %r from %s", agent.agent_id, source_path)
         return agent
 
 
 def _extract_agent_id(md_path: Path) -> str | None:
-    """Extract the agent id from frontmatter, falling back to stem."""
+    """Extract the agent id from frontmatter, falling back to stem.
+
+    Supports the same layouts as ``split_markdown_sections``: classic ``---``-wrapped YAML,
+    or YAML lines before the first ``---`` (no opening fence).
+    """
     try:
         raw = md_path.read_text(encoding="utf-8")
         if raw.startswith("---"):
             parts = raw.split("---", 2)
             if len(parts) >= 2:
                 meta = yaml.safe_load(parts[1]) or {}
-                agent_id = str(meta.get("id", "")).strip()
-                if agent_id:
-                    return agent_id
+                if isinstance(meta, dict):
+                    agent_id = str(meta.get("id", "") or meta.get("name", "")).strip()
+                    if agent_id:
+                        return agent_id
+        else:
+            m = SECTION_PATTERN.search(raw)
+            if m is not None:
+                meta = yaml.safe_load(raw[: m.start()]) or {}
+                if isinstance(meta, dict):
+                    agent_id = str(meta.get("id", "") or meta.get("name", "")).strip()
+                    if agent_id:
+                        return agent_id
         return md_path.stem
     except Exception:  # noqa: BLE001
         return md_path.stem
 
 
-__all__ = ["AgentRegistry"]
+__all__ = ["AgentRegistry", "normalize_agent_id"]

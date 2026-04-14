@@ -39,6 +39,10 @@ pip install "agent_framework[dev]"
 
 ---
 
+## Documentation for users
+
+- **[Using the agent framework](docs/guides/using-agent-framework.md)** — authoring agents (Markdown + JSON), behaviors, host modes, tools, skills, MCP, configuration, tracing, and embedding in your apps.
+
 ## Quick Start
 
 ### Markdown agent (existing workflow)
@@ -147,6 +151,7 @@ See [`docs/architecture/`](docs/architecture/) for the full reference:
 
 Developer guides:
 
+- [Using the agent framework](docs/guides/using-agent-framework.md) — end-to-end user guide (agents, tools, skills, MCP, config, tracing, projects)
 - [Using DIAL](docs/guides/using-dial.md) — complete DIAL integration guide
 - [Using the agent evaluator](docs/guides/using-agent-evaluator.md) — web debugger, headless runs, setup modules, trace files
 

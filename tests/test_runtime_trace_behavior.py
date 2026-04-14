@@ -73,6 +73,7 @@ def test_run_agent_emits_runtime_lifecycle_and_decision_events(tiny_root_agent_t
     assert result.message == "done"
     kinds = [e.kind for e in recorder.events]
     assert "runtime.agent_started" in kinds
+    assert "runtime.model_call_started" in kinds
     assert "runtime.decision_made" in kinds
     assert "runtime.agent_finished" in kinds
     assert any(e.context.session_id == "sess-test" for e in recorder.events)

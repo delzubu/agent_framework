@@ -7,8 +7,12 @@ environment strings.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,9 +27,10 @@ class HostConfig:
             that do not declare their own model and have no override in
             ``agent_models``.  The first reachable model wins.
         agent_directory: Directory containing Markdown-defined agents.
-        tools_directory: Directory containing Markdown-defined tools.
-        world_directory: Sandboxed root for world file tools such as
-            `read_file` and `write_file`.
+            From ``AGENT_DIRECTORY`` or, if set, ``AGENTS_LOCAL_PATH`` (same
+            resolution rules; the ``*_LOCAL_PATH`` vars are optional overrides).
+        tools_directory: From ``TOOLS_DIRECTORY`` or ``TOOLS_LOCAL_PATH``.
+        world_directory: From ``WORLD_DIRECTORY`` or ``WORLD_LOCAL_PATH``.
         root_agent_id: Logical name of the root agent. The runtime resolves it
             against `agent_directory` and infers the `.md` extension.
         agent_models: Optional per-agent model overrides keyed by agent id or
@@ -39,6 +44,11 @@ class HostConfig:
             to ``~/.agent_framework/mcp.json`` (user). Loaded from ``MCP_CONFIG_PATH``.
         mcp_enabled: Whether to start and use MCP server connections.
             Loaded from ``MCP_ENABLED`` (default: true).
+        missing_tool_policy: When an agent lists a tool in frontmatter that cannot
+            be loaded (missing files, unknown name, import error). ``graceful``
+            skips that tool for the model API and prompt metadata but logs and
+            emits a trace event; ``strict`` fails the run when resolving tools.
+            Loaded from ``MISSING_TOOL_POLICY`` (default: graceful).
     """
 
     openai_api_key: str = ""
@@ -58,6 +68,7 @@ class HostConfig:
     commands_directories: tuple[Path, ...] = field(default_factory=tuple)
     mcp_config_path: Path | None = None
     mcp_enabled: bool = True
+    missing_tool_policy: Literal["graceful", "strict"] = "graceful"
 
     def model_for(self, agent_id: str, fallback: tuple[str, ...] | None = None) -> tuple[str, ...]:
         """Return the configured model list for an agent.
@@ -88,17 +99,33 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
     """
     env_file = Path(env_path)
     values = _parse_env_file(env_file)
+    if env_file.exists():
+        _LOGGER.debug("loaded host config from %s", env_file.resolve())
+    else:
+        _LOGGER.debug("env file not found at %s, using defaults", env_file.resolve())
     default_provider = values.get("DEFAULT_PROVIDER", "openai")
     raw_default_model = values.get("DEFAULT_MODEL", "gpt-4o-mini")
     default_model: tuple[str, ...] = tuple(
         m.strip() for m in raw_default_model.split(",") if m.strip()
     ) or ("gpt-4o-mini",)
-    agent_directory = (env_file.parent / values.get("AGENT_DIRECTORY", "agents")).resolve()
-    tools_directory = (env_file.parent / values.get("TOOLS_DIRECTORY", "tools")).resolve()
-    world_directory = (env_file.parent / values.get("WORLD_DIRECTORY", "world")).resolve()
+    agent_directory = _resolve_config_path(
+        env_file,
+        values.get("AGENTS_LOCAL_PATH", "").strip() or values.get("AGENT_DIRECTORY", "").strip(),
+        default_relative="agents",
+    )
+    tools_directory = _resolve_config_path(
+        env_file,
+        values.get("TOOLS_LOCAL_PATH", "").strip() or values.get("TOOLS_DIRECTORY", "").strip(),
+        default_relative="tools",
+    )
+    world_directory = _resolve_config_path(
+        env_file,
+        values.get("WORLD_LOCAL_PATH", "").strip() or values.get("WORLD_DIRECTORY", "").strip(),
+        default_relative="world",
+    )
     root_agent_id = values.get("ROOT_AGENT", "root").strip()
-    raw_multi = values.get("SKILLS_DIRECTORIES", "")
-    raw_single = values.get("SKILLS_DIRECTORY", "")
+    raw_multi = values.get("SKILLS_DIRECTORIES", "").strip() or values.get("SKILLS_LOCAL_DIRECTORIES", "").strip()
+    raw_single = values.get("SKILLS_DIRECTORY", "").strip() or values.get("SKILLS_LOCAL_PATH", "").strip()
     if raw_multi:
         skills_directories: tuple[Path, ...] = tuple(
             (env_file.parent / p.strip()).resolve()
@@ -130,6 +157,11 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
     raw_mcp_config_path = values.get("MCP_CONFIG_PATH", "").strip()
     mcp_config_path: Path | None = (env_file.parent / raw_mcp_config_path).resolve() if raw_mcp_config_path else None
     mcp_enabled = values.get("MCP_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+    raw_missing_tool = values.get("MISSING_TOOL_POLICY", "graceful").strip().lower()
+    if raw_missing_tool in ("strict", "fail", "error"):
+        missing_tool_policy: Literal["graceful", "strict"] = "strict"
+    else:
+        missing_tool_policy = "graceful"
     return HostConfig(
         openai_api_key=values.get("OPENAI_API_KEY", ""),
         default_provider=default_provider,
@@ -147,7 +179,17 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         commands_directories=commands_directories,
         mcp_config_path=mcp_config_path,
         mcp_enabled=mcp_enabled,
+        missing_tool_policy=missing_tool_policy,
     )
+
+
+def _resolve_config_path(env_file: Path, raw: str, *, default_relative: str) -> Path:
+    """Resolve a path from ``.env``: absolute paths as-is, else relative to the env file's parent."""
+    text = (raw or "").strip() or default_relative
+    candidate = Path(text)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (env_file.parent / candidate).resolve()
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:

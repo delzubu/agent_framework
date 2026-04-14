@@ -151,8 +151,8 @@ def build_behavior() -> AgentBehavior:
 
 For an agent at `agents/my_agent.md` with `behavior: my_behavior` in its sidecar JSON:
 
-1. `agents/my_behavior.py` — agent-local (colocated with agent)
-2. `agents/behaviors/my_behavior.py` — shared behavior library
+1. `agents/my_behavior.py` — agent-local (same directory as the `.md` file)
+2. `behaviors/my_behavior.py` — shared library at the **parent of the agent directory** (e.g. project root when agents live under `agents/`)
 
 Multiple behaviors are loaded in declaration order and receive lifecycle calls in that order.
 

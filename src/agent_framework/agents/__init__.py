@@ -1,6 +1,7 @@
 """Public agent-runtime classes organized as one class per file."""
 
 from .agent import Agent
+from .helpers import AgentMarkdownError
 from .agent_behavior import AgentBehavior
 from .agent_decision import AgentDecision
 from .agent_end_event import AgentEndEvent
@@ -27,6 +28,7 @@ from .tool_start_event import ToolStartEvent
 
 __all__ = [
     "Agent",
+    "AgentMarkdownError",
     "AgentBehavior",
     "AgentDecision",
     "AgentEndEvent",

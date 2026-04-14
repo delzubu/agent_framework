@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -11,7 +12,8 @@ from uuid import uuid4
 
 from agent_framework.agent import Agent, AgentResult, CallContext, ModelEndEvent, ModelStartEvent, SequentialHook
 from agent_framework.agent_registry import AgentRegistry
-from agent_framework.audit_trace import InMemoryAuditTracer
+from agent_framework.agent_event_publisher import agent_events
+from agent_framework.audit_trace import AuditTraceSubscriber, InMemoryAuditTracer
 from agent_framework.command import CommandDefinition, CommandRegistry, render as render_command
 from agent_framework.config import HostConfig, load_host_config
 from agent_framework.model import (
@@ -20,21 +22,22 @@ from agent_framework.model import (
     ModelDriver,
     ModelResponse,
     OpenAiModelDriver,
-    ProviderRequestTrace,
-    ProviderResponseTrace,
 )
 from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tool_registry import ToolRegistry
+from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
 from agent_framework.tracing import (
+    CompositeRuntimeTracer,
     NullRuntimeTracer,
     RuntimeTracer,
     TraceContext,
-    TraceEvent,
-    utc_now_iso,
+    make_trace_event,
 )
 from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework.user_communication import NullUserCommunication, UserCommunication
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -68,14 +71,21 @@ class AgentHost:
     contexts: dict[str, CallContext] = field(default_factory=dict)
     onPreModel: SequentialHook = field(default_factory=SequentialHook)
     onPostModel: SequentialHook = field(default_factory=SequentialHook)
-    audit_tracer: InMemoryAuditTracer | None = None
     runtime_tracer: RuntimeTracer = field(default_factory=NullRuntimeTracer)
     trace_context_overlay: TraceContext | None = None
+    _audit_jsonl: InMemoryAuditTracer | None = field(default=None, repr=False)
+    _audit_trace_subscriber: AuditTraceSubscriber | None = field(default=None, repr=False)
+    _llm_traces_wired: bool = field(default=False, repr=False)
     skill_registry: SkillRegistry | None = None
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=8))
     _command_fallback: Any = None  # Callable[[str, str], Awaitable[str | None]] | None
     _started: bool = False
+
+    @property
+    def audit_tracer(self) -> InMemoryAuditTracer | None:
+        """JSONL audit store when :meth:`enable_audit_trace` is used (read-only)."""
+        return self._audit_jsonl
 
     # ------------------------------------------------------------------
     # Construction
@@ -256,6 +266,7 @@ class AgentHost:
     async def start(self) -> None:
         """Discover all registries and start MCP servers.  Idempotent."""
         if self._started:
+            _LOGGER.debug("start() skipped: host already started")
             return
         self.tool_registry.discover()
         self.agent_registry.discover()
@@ -267,20 +278,28 @@ class AgentHost:
             errors = await self.mcp_manager.start_all()
             for name, err in errors.items():
                 if err is not None:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        "MCP server %r failed to connect: %s", name, err
-                    )
+                    _LOGGER.warning("MCP server %r failed to connect: %s", name, err)
             # Bridge MCP tools into tool registry
             from agent_framework.mcp.tools import bridge_mcp_tools
             bridge_mcp_tools(self.mcp_manager, self.tool_registry, self._run_user_comm_coro)
-        # Wrap user_comm with tracing decorator if audit_tracer is set
-        if self.audit_tracer is not None and self.user_comm is not None:
-            self.user_comm = _TracingUserCommunication(self.user_comm, self.audit_tracer)
+        # Wrap user_comm with tracing decorator when JSONL audit is enabled
+        if self._audit_jsonl is not None and self.user_comm is not None:
+            self.user_comm = _TracingUserCommunication(self.user_comm, self._audit_jsonl)
+        if not isinstance(self.runtime_tracer, NullRuntimeTracer):
+            wire_llm_traces_to_runtime_tracer(self)
+            agent_events.attach_log_sources()
         self._started = True
+        _LOGGER.info(
+            "host started (tools=%s, agents=%s, commands=%s, mcp=%s)",
+            len(self.tool_registry.list_names()),
+            len(self.agent_registry.list_names()),
+            len(self.command_registry.get_all()),
+            self.mcp_manager is not None,
+        )
 
     async def aclose(self) -> None:
         """Shut down MCP connections and close async driver if applicable."""
+        _LOGGER.debug("aclose: shutting down MCP and model driver")
         if self.mcp_manager is not None:
             await self.mcp_manager.stop_all()
         driver = self.model_driver
@@ -537,31 +556,24 @@ class AgentHost:
     # ------------------------------------------------------------------
 
     def enable_audit_trace(self, *, output_dir: str | Path = "logs") -> InMemoryAuditTracer:
-        """Enable immutable in-memory audit tracing plus JSONL dumping."""
-        tracer = InMemoryAuditTracer(Path(output_dir))
-        self.audit_tracer = tracer
-        if self.model_driver is None:
-            return tracer
-        driver = self.model_driver
-        if hasattr(driver, "set_trace_callbacks"):
-            existing_request = getattr(driver, "on_request_trace", None)
-            existing_response = getattr(driver, "on_response_trace", None)
+        """Enable immutable in-memory audit tracing plus JSONL dumping.
 
-            def on_request(event: ProviderRequestTrace) -> None:
-                if callable(existing_request):
-                    existing_request(event)
-                if tracer is not None and event.run_id is not None:
-                    tracer.record_llm_request(run_id=event.run_id, payload=event.input_payload)
-
-            def on_response(event: ProviderResponseTrace) -> None:
-                if callable(existing_response):
-                    existing_response(event)
-                if tracer is not None and event.run_id is not None:
-                    parsed_payload = None if event.parsed_payload is None else dict(event.parsed_payload)
-                    tracer.record_llm_response(run_id=event.run_id, raw_text=event.raw_text, parsed_payload=parsed_payload)
-
-            driver.set_trace_callbacks(on_request=on_request, on_response=on_response)
-        return tracer
+        Subscribes :class:`AuditTraceSubscriber` to :attr:`runtime_tracer`. If the tracer
+        was :class:`NullRuntimeTracer`, it is replaced with a :class:`CompositeRuntimeTracer`.
+        LLM request/response rows are recorded from ``llm.*`` events (see :func:`wire_llm_traces_to_runtime_tracer`).
+        """
+        store = InMemoryAuditTracer(Path(output_dir))
+        self._audit_jsonl = store
+        _LOGGER.info("audit trace enabled (JSONL under %s)", output_dir)
+        subscriber = AuditTraceSubscriber(store)
+        if self._audit_trace_subscriber is not None:
+            self.runtime_tracer.unsubscribe(self._audit_trace_subscriber)
+        self._audit_trace_subscriber = subscriber
+        if isinstance(self.runtime_tracer, NullRuntimeTracer):
+            self.runtime_tracer = CompositeRuntimeTracer()
+        self.runtime_tracer.subscribe(subscriber)
+        self._llm_traces_wired = False
+        return store
 
     def get_skill_registry(self) -> SkillRegistry:
         """Lazy-initialize and return the host-level skill registry."""
@@ -577,6 +589,52 @@ class AgentHost:
     def get_tool(self, tool_name: str) -> Tool:
         """Return a loaded tool by name."""
         return self.tool_registry.get(tool_name)
+
+    def resolve_model_tool_definitions(
+        self,
+        tool_names: tuple[str, ...],
+        *,
+        agent_id: str | None = None,
+        run_id: str | None = None,
+    ) -> tuple[ToolDefinition, ...]:
+        """Resolve agent ``allowed_tools`` into provider ``ToolDefinition`` objects.
+
+        Logs and emits ``runtime.tool_unavailable`` when a tool cannot be loaded.
+        With ``HostConfig.missing_tool_policy == \"graceful\"`` (default), missing
+        tools are omitted and the run continues. With ``\"strict\"``, the first
+        failure is re-raised after logging/tracing.
+        """
+        definitions: list[ToolDefinition] = []
+        policy = self.config.missing_tool_policy
+        for name in tool_names:
+            try:
+                definitions.append(self.get_tool(name).model_definition())
+            except Exception as exc:
+                _LOGGER.error(
+                    "Tool %r could not be loaded for agent %r: %s",
+                    name,
+                    agent_id,
+                    exc,
+                    exc_info=True,
+                )
+                trace_ctx = TraceContext(run_id=run_id, agent_id=agent_id, tool_name=name)
+                self.publish_trace_event(
+                    kind="runtime.tool_unavailable",
+                    title=f"Tool not loaded: {name}",
+                    summary=str(exc),
+                    payload={
+                        "tool_name": name,
+                        "agent_id": agent_id,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "missing_tool_policy": policy,
+                    },
+                    context=trace_ctx,
+                    level="error",
+                )
+                if policy == "strict":
+                    raise
+        return tuple(definitions)
 
     def load_agent(self, agent_ref: str | Path) -> Agent:
         """Load and cache an agent definition from Markdown."""
@@ -627,17 +685,14 @@ class AgentHost:
         if isinstance(self.runtime_tracer, NullRuntimeTracer):
             return
         merged_ctx = self._effective_trace_context(context)
-        event = TraceEvent(
-            event_id=str(uuid4()),
-            parent_event_id=None,
-            span_id=span_id,
-            parent_span_id=parent_span_id,
-            timestamp=utc_now_iso(),
-            channel=channel,  # type: ignore[arg-type]
-            level=level,  # type: ignore[arg-type]
+        event = make_trace_event(
             kind=kind,
             title=title,
             summary=summary,
+            channel=channel,  # type: ignore[arg-type]
+            level=level,  # type: ignore[arg-type]
+            span_id=span_id,
+            parent_span_id=parent_span_id,
             context=merged_ctx,
             payload=payload or {},
         )
@@ -712,7 +767,8 @@ class AgentHost:
         """Synchronously invoke a child agent from a caller agent."""
         base_dir = caller.source_path.parent if caller.source_path is not None else None
         callee = self._agent_with_runtime_tracing(self.get_agent(callee_id, base_dir=base_dir))
-        return callee.run(host=self, parameters=parameters, caller_id=caller.agent_id)
+        with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
+            return callee.run(host=self, parameters=parameters, caller_id=caller.agent_id)
 
     def call_subagent_async(
         self,

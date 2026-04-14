@@ -32,7 +32,7 @@ python -m agent_framework_evaluator run --agent root --prompt "hi" --trace-jsonl
 
 | Channel | Examples | Source |
 |---------|----------|--------|
-| `runtime` | `runtime.agent_started`, `runtime.agent_finished`, `runtime.tool_call_started`, `runtime.tool_call_finished`, `runtime.subagent_call_started`, `runtime.subagent_call_finished`, `runtime.skill_invoked`, `runtime.decision_made`, `runtime.callback_requested`, `runtime.callback_answered` | `RuntimeTraceBehavior`, `AgentHost`, `Agent` |
+| `runtime` | `runtime.agent_started`, `runtime.agent_finished`, `runtime.tool_call_started`, `runtime.tool_call_finished`, `runtime.tool_unavailable` (tool listed but not loadable), `runtime.tool_execution_failed` (exception during `invoke`), `runtime.subagent_call_started`, `runtime.subagent_call_finished`, `runtime.skill_invoked`, `runtime.decision_made`, `runtime.callback_requested`, `runtime.callback_answered` | `RuntimeTraceBehavior`, `AgentHost`, `Agent` |
 | `user` | `user.message_sent`, `user.prompt_requested`, `user.prompt_answered`, `user.permission_requested`, `user.permission_resolved`, `user.stream_chunk` | `WebUserCommunication`, `ConsoleUserCommunication` |
 | `system` | `system.log` | `TraceLoggingBehavior` mirror, `LoggingTraceHandler` |
 | `llm` | `llm.request`, `llm.response`, … | `llm_trace_logging` / provider callbacks |

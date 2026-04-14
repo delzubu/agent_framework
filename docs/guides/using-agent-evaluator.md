@@ -1,6 +1,6 @@
 # Using the agent evaluator
 
-This guide is for **interactive debugging and headless runs** using the **`agent_framework_evaluator`** package shipped alongside `agent_framework`. It complements the architecture reference ([Agent Evaluator & Web Runtime](../architecture/agent-evaluator-web-runtime.md)) with practical commands and configuration.
+This guide is for **interactive debugging and headless runs** using the **`agent_framework_evaluator`** package shipped alongside `agent_framework`. For authoring agents, tools, and `.env` setup, start with **[Using the agent framework](using-agent-framework.md)**. Architecture reference: [Agent Evaluator & Web Runtime](../architecture/agent-evaluator-web-runtime.md).
 
 ---
 
@@ -43,6 +43,7 @@ The evaluator uses the **same** `HostConfig` / `.env` as the core runtime ([Host
 | `WORLD_DIRECTORY` | Sandboxed file root for tools |
 | `ROOT_AGENT` | Default root agent id |
 | `OPENAI_API_KEY` / `DEFAULT_PROVIDER` / `DEFAULT_MODEL` | Or DIAL variables if using DIAL |
+| `MISSING_TOOL_POLICY` | `graceful` (default) or `strict` — see [Host & Orchestration](../architecture/host-orchestration.md#3-configuration-hostconfig) |
 
 Paths in `.env` are resolved **relative to the directory containing the env file**.
 

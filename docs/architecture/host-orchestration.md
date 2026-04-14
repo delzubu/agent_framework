@@ -136,6 +136,7 @@ All fields have defaults — `HostConfig()` with no arguments is valid.
 | `COMMANDS_DIRECTORIES` | Multiple commands directories (comma-separated) | — |
 | `MCP_CONFIG_PATH` | Explicit `.mcp.json` path (overrides auto-discovery) | — |
 | `MCP_ENABLED` | Set `false` to disable MCP entirely | `true` |
+| `MISSING_TOOL_POLICY` | `graceful` (default) — omit unloadable tools from the model API and continue; `strict` — fail the run when a listed tool cannot be loaded | `graceful` |
 
 Directory paths in `.env` are relative to the env file's parent directory and are resolved to absolute `Path` objects by `load_host_config()`.
 

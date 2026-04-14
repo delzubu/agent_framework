@@ -80,15 +80,15 @@ def test_null_runtime_tracer_is_safe_noop() -> None:
             span_id=None,
             parent_span_id=None,
             timestamp="2026-04-13T00:00:00+00:00",
-            channel="system",
+            channel="log",
             level="debug",
-            kind="system.log",
+            kind="log.record",
             title="Debug line",
         )
     )
 
 
-def test_logging_trace_handler_emits_system_log_event() -> None:
+def test_logging_trace_handler_emits_log_channel_event() -> None:
     recorder = _Recorder()
     tracer = CompositeRuntimeTracer(subscribers=[recorder])
     logger = logging.getLogger("tests.runtime_tracing.handler")
@@ -101,9 +101,9 @@ def test_logging_trace_handler_emits_system_log_event() -> None:
 
     assert len(recorder.events) == 1
     event = recorder.events[0]
-    assert event.channel == "system"
+    assert event.channel == "log"
     assert event.level == "warning"
-    assert event.kind == "system.log"
+    assert event.kind == "log.record"
     assert event.payload["message"] == "hello from logger"
 
 
@@ -138,9 +138,9 @@ def test_llm_trace_file_subscriber_filters_to_llm_channel(tmp_path: Path) -> Non
             span_id=None,
             parent_span_id=None,
             timestamp="2026-04-13T00:00:00+00:00",
-            channel="system",
+            channel="log",
             level="info",
-            kind="system.log",
+            kind="log.record",
             title="Skip me",
         )
     )
@@ -161,6 +161,51 @@ def test_llm_trace_file_subscriber_filters_to_llm_channel(tmp_path: Path) -> Non
     log_file = out_dir / "root.log"
     assert log_file.exists()
     assert "llm.request" in log_file.read_text(encoding="utf-8")
+
+
+class _RuntimeChannelOnly:
+    trace_channels = frozenset({"runtime"})
+
+    def __init__(self) -> None:
+        self.events: list[TraceEvent] = []
+
+    def consume(self, event: TraceEvent) -> None:
+        self.events.append(event)
+
+
+def test_composite_skips_subscribers_that_exclude_event_channel() -> None:
+    filtered = _RuntimeChannelOnly()
+    all_rec = _Recorder()
+    tracer = CompositeRuntimeTracer(subscribers=[filtered, all_rec])
+    tracer.publish(
+        TraceEvent(
+            event_id="e-log",
+            parent_event_id=None,
+            span_id=None,
+            parent_span_id=None,
+            timestamp="2026-04-13T00:00:00+00:00",
+            channel="log",
+            level="info",
+            kind="log.record",
+            title="log line",
+        )
+    )
+    tracer.publish(
+        TraceEvent(
+            event_id="e-run",
+            parent_event_id=None,
+            span_id="s",
+            parent_span_id=None,
+            timestamp="2026-04-13T00:00:00+00:00",
+            channel="runtime",
+            level="info",
+            kind="runtime.agent_started",
+            title="Agent started",
+        )
+    )
+    assert len(filtered.events) == 1
+    assert filtered.events[0].channel == "runtime"
+    assert len(all_rec.events) == 2
 
 
 def test_build_llm_trace_event_maps_provider_request() -> None:

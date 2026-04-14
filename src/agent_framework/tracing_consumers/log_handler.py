@@ -1,11 +1,11 @@
-"""Python logging.Handler that publishes LogRecord events into RuntimeTracer."""
+"""Python logging.Handler that publishes log records into a fixed RuntimeTracer."""
 
 from __future__ import annotations
 
 import logging
-from uuid import uuid4
+import traceback
 
-from agent_framework.tracing import RuntimeTracer, TraceEvent, utc_now_iso
+from agent_framework.tracing import RuntimeTracer, TraceContext, make_trace_event
 
 _LEVEL_MAP = {
     logging.DEBUG: "debug",
@@ -17,6 +17,8 @@ _LEVEL_MAP = {
 
 
 class LoggingTraceHandler(logging.Handler):
+    """Publish :class:`logging.LogRecord` as ``channel="log"`` events to one tracer (tests, ad-hoc wiring)."""
+
     def __init__(self, tracer: RuntimeTracer) -> None:
         super().__init__()
         self._tracer = tracer
@@ -25,25 +27,27 @@ class LoggingTraceHandler(logging.Handler):
         try:
             exc_text = None
             if record.exc_info:
-                exc_text = self.format(record)
-            event = TraceEvent(
-                event_id=str(uuid4()),
-                parent_event_id=None,
-                span_id=None,
-                parent_span_id=None,
-                timestamp=utc_now_iso(),
-                channel="system",
-                level=_LEVEL_MAP.get(record.levelno, "info"),
-                kind="system.log",
+                exc_text = "".join(traceback.format_exception(*record.exc_info))
+            payload = {
+                "logger_name": record.name,
+                "module": record.module,
+                "pathname": record.pathname,
+                "lineno": record.lineno,
+                "message": record.getMessage(),
+                "exc_text": exc_text,
+                "funcName": record.funcName,
+            }
+            level = _LEVEL_MAP.get(record.levelno, "info")
+            event = make_trace_event(
+                channel="log",
+                level=level,  # type: ignore[arg-type]
+                kind="log.record",
                 title=f"{record.name} {record.levelname}",
                 summary=record.getMessage(),
-                payload={
-                    "logger_name": record.name,
-                    "pathname": record.pathname,
-                    "lineno": record.lineno,
-                    "message": record.getMessage(),
-                    "exc_info": exc_text if record.exc_info else None,
-                },
+                span_id=None,
+                parent_span_id=None,
+                context=TraceContext(),
+                payload=payload,
             )
             self._tracer.publish(event)
         except Exception:

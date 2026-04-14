@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
@@ -11,8 +12,10 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from agent_framework.agent_registry import AgentRegistry
+from agent_framework.agents.helpers import AgentMarkdownError
 from agent_framework.config import load_host_config
-from agent_framework.host import AgentHost
+from agent_framework.tracing import TraceContext, make_trace_event
 from agent_framework_evaluator.runtime.session_runner import SessionRunner
 from agent_framework_evaluator.runtime.setup_loader import load_setup_module
 from agent_framework_evaluator.session_manager import session_manager
@@ -47,6 +50,59 @@ def _finalize_session_record(rec: Any) -> None:
         pass
 
 
+def _error_payload_for_evaluator(exc: BaseException) -> dict[str, Any]:
+    """WebSocket JSON body for failures; agent markdown issues stay readable (no traceback wall)."""
+    if isinstance(exc, AgentMarkdownError):
+        return {
+            "type": "error",
+            "error_type": "AgentMarkdownError",
+            "message": exc.detail,
+            "path": str(exc.source_path),
+            "detail": exc.detail,
+            "hint": exc.hint,
+        }
+    return {
+        "type": "error",
+        "error_type": type(exc).__name__,
+        "message": str(exc),
+    }
+
+
+def _publish_evaluator_run_failure(tracer: Any, session_id: str, exc: BaseException) -> None:
+    """Emit a trace event and rely on WebSocket subscribers to show it in the UI."""
+    if tracer is None:
+        return
+    if isinstance(exc, AgentMarkdownError):
+        title = "Invalid agent markdown"
+        summary = exc.detail
+        payload: dict[str, Any] = {
+            "error_type": "AgentMarkdownError",
+            "path": str(exc.source_path),
+            "detail": exc.detail,
+            "hint": exc.hint,
+        }
+    else:
+        title = f"Run failed: {type(exc).__name__}"
+        summary = str(exc)
+        payload = {
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+    tracer.publish(
+        make_trace_event(
+            channel="runtime",
+            level="error",
+            kind="runtime.run_failed",
+            title=title,
+            summary=summary,
+            span_id=session_id,
+            context=TraceContext(session_id=session_id),
+            payload=payload,
+        )
+    )
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Agent Evaluator")
 
@@ -67,25 +123,19 @@ def create_app() -> FastAPI:
 
     @app.post("/api/sessions/{session_id}/close")
     def close_session(session_id: str) -> dict[str, str]:
+        """Idempotent: browsers may send duplicate beforeunload closes; unknown id is OK."""
         rec = session_manager.pop(session_id)
-        if rec is None:
-            raise HTTPException(status_code=404, detail="unknown session")
-        _finalize_session_record(rec)
-        return {"status": "closed"}
+        if rec is not None:
+            _finalize_session_record(rec)
+            return {"status": "closed"}
+        return {"status": "already_closed"}
 
     @app.get("/api/agents")
     def list_agents(env_path: str = ".env") -> dict[str, list[str]]:
-        class _DiscoveredDriver:
-            def decide(self, **kwargs: Any) -> None:
-                raise RuntimeError("catalog probe only")
-
-            def set_trace_callbacks(self, **kwargs: Any) -> None:
-                pass
-
         cfg = load_host_config(env_path)
-        host = AgentHost.create(model_driver=_DiscoveredDriver(), config=cfg, mcp_enabled=False)
-        host.agent_registry.discover()
-        return {"agents": sorted(host.agent_registry.list_names())}
+        registry = AgentRegistry.from_config(cfg)
+        registry.discover()
+        return {"agents": sorted(registry.list_names())}
 
     @app.get("/api/setup-template")
     def setup_template(path: str) -> dict[str, Any]:
@@ -119,18 +169,42 @@ def create_app() -> FastAPI:
         async def pump_outbox_and_traces() -> None:
             while not stop.is_set():
                 try:
-                    ev = await asyncio.wait_for(trace_queue.get(), timeout=0.1)
-                    await websocket.send_text(json.dumps({"type": "trace", "event": ev}))
-                except asyncio.TimeoutError:
-                    pass
-                for item in rec.comm.drain_outbox():
-                    await websocket.send_text(json.dumps({"type": "outbox", "item": item}))
+                    try:
+                        ev = await asyncio.wait_for(trace_queue.get(), timeout=0.1)
+                        await websocket.send_text(json.dumps({"type": "trace", "event": ev}))
+                    except asyncio.TimeoutError:
+                        pass
+                    except (OSError, RuntimeError):
+                        return
+                    for item in rec.comm.drain_outbox():
+                        try:
+                            await websocket.send_text(json.dumps({"type": "outbox", "item": item}))
+                        except (OSError, RuntimeError):
+                            return
+                except (OSError, RuntimeError):
+                    return
 
         pumper = asyncio.create_task(pump_outbox_and_traces())
         try:
             while True:
-                raw = await websocket.receive_text()
-                msg = json.loads(raw)
+                try:
+                    raw = await websocket.receive_text()
+                except WebSocketDisconnect:
+                    break
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "error_type": "JSONDecodeError",
+                                "message": "Invalid JSON in WebSocket message.",
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    continue
                 if msg.get("type") == "user_input":
                     rec.comm.submit_user_input(msg.get("text"))
                 elif msg.get("type") == "run":
@@ -146,8 +220,20 @@ def create_app() -> FastAPI:
                             session_id=session_id,
                         )
 
-                    result = await asyncio.get_running_loop().run_in_executor(_executor, work)
-                    await websocket.send_text(json.dumps({"type": "result", "payload": result}))
+                    try:
+                        result = await asyncio.get_running_loop().run_in_executor(_executor, work)
+                    except Exception as exc:
+                        _publish_evaluator_run_failure(rec.tracer, session_id, exc)
+                        await websocket.send_text(
+                            json.dumps(_error_payload_for_evaluator(exc), ensure_ascii=False)
+                        )
+                        continue
+                    try:
+                        await websocket.send_text(
+                            json.dumps({"type": "result", "payload": result}, ensure_ascii=False)
+                        )
+                    except (OSError, RuntimeError):
+                        break
         except WebSocketDisconnect:
             pass
         finally:

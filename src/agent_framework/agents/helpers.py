@@ -18,16 +18,65 @@ if TYPE_CHECKING:
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 SECTION_PATTERN = re.compile(r"^---\s*$", re.MULTILINE)
 
+_AGENT_MD_LAYOUT_HINT = (
+    "Use three lines containing only '---': YAML between the first and second delimiter, system prompt "
+    "between the second and third, user template after the third. "
+    "Alternatively, put YAML at the very top with no leading '---', then '---', system prompt, '---', user template "
+    "(two delimiters split the file into three parts)."
+)
 
-def split_markdown_sections(raw_text: str) -> tuple[str, str, str]:
-    """Split the Markdown file into frontmatter, system prompt, and template."""
+
+class AgentMarkdownError(ValueError):
+    """Raised when an agent ``.md`` file does not match the required three-section layout."""
+
+    def __init__(
+        self,
+        source_path: Path,
+        detail: str,
+        *,
+        hint: str = _AGENT_MD_LAYOUT_HINT,
+    ) -> None:
+        self.source_path = Path(source_path).resolve()
+        self.detail = detail
+        self.hint = hint
+        super().__init__(f"{self.source_path}: {detail}")
+
+
+def split_markdown_sections(raw_text: str, *, source_path: Path) -> tuple[str, str, str]:
+    """Split the Markdown file into frontmatter, system prompt, and user template.
+
+    Supported layouts:
+
+    * **Three delimiters** (classic): ``---`` / YAML / ``---`` / system / ``---`` / user.
+    * **Two delimiters**: YAML from the start of the file (no leading ``---``), then ``---``,
+      system prompt, ``---``, user template. Two separator lines still produce three regions.
+    """
     matches = list(SECTION_PATTERN.finditer(raw_text))
-    if len(matches) < 3:
-        raise ValueError("Agent markdown must contain frontmatter, system prompt, and user prompt template.")
-    frontmatter = raw_text[matches[0].end():matches[1].start()]
-    system_prompt = raw_text[matches[1].end():matches[2].start()]
-    user_prompt_template = raw_text[matches[2].end():]
-    return frontmatter, system_prompt, user_prompt_template
+    if len(matches) >= 3:
+        frontmatter = raw_text[matches[0].end() : matches[1].start()]
+        system_prompt = raw_text[matches[1].end() : matches[2].start()]
+        user_prompt_template = raw_text[matches[2].end() :]
+        return frontmatter, system_prompt, user_prompt_template
+
+    if len(matches) == 2:
+        head = raw_text[: matches[0].start()]
+        if head.strip():
+            frontmatter = head.rstrip("\n")
+            system_prompt = raw_text[matches[0].end() : matches[1].start()]
+            user_prompt_template = raw_text[matches[1].end() :]
+            return frontmatter, system_prompt, user_prompt_template
+        raise AgentMarkdownError(
+            source_path,
+            "Found two '---' lines but nothing before the first '---' (file starts with a delimiter). "
+            "Add a third '---' after the system prompt (YAML between delimiters 1 and 2, system between 2 and 3, "
+            "user after 3), or put YAML at the top without a leading '---', then '---', system, '---', user.",
+        )
+
+    raise AgentMarkdownError(
+        source_path,
+        f"Need at least two '---' section delimiters; found {len(matches)}. "
+        "Expected YAML, system prompt, and user prompt template (see agent .md layout).",
+    )
 
 
 def optional_text(value: object) -> str | None:

@@ -15,6 +15,7 @@ from jsonschema import ValidationError as JsonSchemaValidationError
 from jsonschema import validate as validate_json_schema
 import yaml
 
+from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
     CapabilityDefinition,
     CapabilityParameter,
@@ -63,6 +64,21 @@ from .tool_hook_decision import ToolHookDecision
 from .tool_start_event import ToolStartEvent
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _emit_context_updated(
+    agent: "Agent", host: "AgentHostProtocol", run: AgentRun, message: dict[str, str], source: str
+) -> None:
+    from agent_framework.agent_event_publisher import agent_events
+
+    agent_events.on_context_updated(
+        host=host,
+        run_id=run.run_id,
+        agent_id=agent.agent_id,
+        message=dict(message),
+        source=source,
+    )
+
 
 @dataclass(slots=True)
 class Agent:
@@ -138,7 +154,9 @@ class Agent:
         """Load an agent definition from the Markdown file format."""
         source_path = Path(path).resolve()
         raw_text = source_path.read_text(encoding="utf-8")
-        frontmatter, system_prompt, user_prompt_template = _split_markdown_sections(raw_text)
+        frontmatter, system_prompt, user_prompt_template = _split_markdown_sections(
+            raw_text, source_path=source_path
+        )
         metadata = yaml.safe_load(frontmatter) or {}
         runtime_metadata = _load_runtime_metadata(source_path)
         parameter_map = metadata.get("parameters", {}) or {}
@@ -165,7 +183,7 @@ class Agent:
             else:
                 model_names = default_model
         agent = cls(
-            agent_id=str(metadata.get("id", source_path.stem)).strip(),
+            agent_id=str(metadata.get("id") or metadata.get("name") or source_path.stem).strip(),
             role=str(metadata.get("role", source_path.stem)).strip(),
             description=str(metadata.get("description", "")).strip(),
             system_prompt=system_prompt.strip(),
@@ -280,23 +298,24 @@ class Agent:
         # pre-agent hook executes. Those hooks act as gatekeepers and need access
         # to resolved parameters, missing required fields, and invalid values.
         self.refresh_parameter_state(run)
-        audit_tracer = getattr(host, "audit_tracer", None)
-        if audit_tracer is not None:
-            initial_context = self.build_context(host=host, run=run)
-            system_sources: list[str] = []
-            if self.source_path is not None:
-                system_sources.append(str(self.source_path))
-            system_sources.extend(str(path) for path in _runtime_prompt_source_paths(initial_context.response_mode))
-            user_sources = (str(self.source_path),) if self.source_path is not None else ()
-            audit_tracer.start_agent_call(
-                run_id=run.run_id,
-                caller_id=caller_id,
-                agent_name=self.agent_id,
-                system_prompt=_assemble_system_prompt(initial_context),
-                system_prompt_sources=tuple(system_sources),
-                user_prompt=initial_context.user_prompt,
-                user_prompt_sources=user_sources,
-            )
+        from agent_framework.agent_event_publisher import agent_events
+
+        initial_context = self.build_context(host=host, run=run)
+        system_sources: list[str] = []
+        if self.source_path is not None:
+            system_sources.append(str(self.source_path))
+        system_sources.extend(str(path) for path in _runtime_prompt_source_paths(initial_context.response_mode))
+        user_sources = (str(self.source_path),) if self.source_path is not None else ()
+        agent_events.audit_agent_call_started(
+            host=host,
+            run_id=run.run_id,
+            caller_id=caller_id,
+            agent_name=self.agent_id,
+            system_prompt=_assemble_system_prompt(initial_context),
+            system_prompt_sources=tuple(system_sources),
+            user_prompt=initial_context.user_prompt,
+            user_prompt_sources=user_sources,
+        )
         try:
             early_result = self._run_pre_agent_hooks(host=host, run=run, caller_id=caller_id)
             if early_result is not None:
@@ -333,9 +352,7 @@ class Agent:
                 result=self.complete_without_result(run),
             )[0]
         finally:
-            audit_tracer = getattr(host, "audit_tracer", None)
-            if audit_tracer is not None:
-                audit_tracer.finish_agent_call(run_id=run.run_id)
+            agent_events.audit_agent_call_finished(host=host, run_id=run.run_id)
 
     def should_continue(self, run: AgentRun) -> bool:
         """Return whether another loop iteration should execute."""
@@ -358,7 +375,15 @@ class Agent:
             # System and helper augmentations stay outside the original template
             # and are appended separately from the transcript.
             prompt = f"{prompt}\n\n<augmentations>\n" + "\n".join(run.prompt_fragments) + "\n</augmentations>"
-        tools = tuple(host.get_tool(name).model_definition() for name in self.allowed_tools)
+        resolve = getattr(host, "resolve_model_tool_definitions", None)
+        if callable(resolve):
+            tools = resolve(
+                self.allowed_tools,
+                agent_id=self.agent_id,
+                run_id=run.run_id,
+            )
+        else:
+            tools = tuple(host.get_tool(name).model_definition() for name in self.allowed_tools)
         if hasattr(host, "get_agent"):
             subagents = tuple(
                 _agent_to_capability_definition(
@@ -416,13 +441,29 @@ class Agent:
         pre_model_hooks = getattr(host, "run_pre_model_hooks", None)
         if callable(pre_model_hooks):
             pre_model_hooks(ModelStartEvent(invocation=self._hook_invocation(run, None), context=context))
-        response = host.get_model_driver(self).decide(
-            agent_id=self.agent_id,
-            provider_name=self.provider_name,
-            model_names=self.model_names,
-            temperature=self.temperature,
-            context=context,
-        )
+        try:
+            response = host.get_model_driver(self).decide(
+                agent_id=self.agent_id,
+                provider_name=self.provider_name,
+                model_names=self.model_names,
+                temperature=self.temperature,
+                context=context,
+            )
+        except BaseException as exc:
+            from agent_framework.agent_event_publisher import agent_events
+
+            sc = exc.status_code if isinstance(exc, ModelDriverError) else None
+            ub = exc.upstream_body if isinstance(exc, ModelDriverError) else None
+            agent_events.on_model_call_failed(
+                host=host,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                caller_id=None,
+                exc=exc,
+                status_code=sc,
+                upstream_body=ub,
+            )
+            raise
         self._run_post_model_hooks(run=run, caller_id=None, context=context, response=response)
         post_model_hooks = getattr(host, "run_post_model_hooks", None)
         if callable(post_model_hooks):
@@ -432,13 +473,6 @@ class Agent:
                     context=context,
                     response=response,
                 )
-            )
-        audit_tracer = getattr(host, "audit_tracer", None)
-        if audit_tracer is not None:
-            audit_tracer.record_llm_response(
-                run_id=run.run_id,
-                raw_text=response.raw_text,
-                parsed_payload=dict(response.payload),
             )
         return AgentDecision.from_model_response(response)
 
@@ -452,9 +486,9 @@ class Agent:
     ) -> AgentResult | None:
         """Dispatch a normalized decision to the appropriate handler."""
         decision = self._normalize_decision_capabilities(decision)
-        audit_tracer = getattr(host, "audit_tracer", None)
-        if audit_tracer is not None:
-            audit_tracer.record_decision(run_id=run.run_id, decision=decision)
+        from agent_framework.agent_event_publisher import agent_events
+
+        agent_events.audit_decision(host=host, run_id=run.run_id, agent_id=self.agent_id, decision=decision)
         handlers = {
             "final_message": self.handle_final_message,
             "callback": self.handle_callback,
@@ -470,6 +504,13 @@ class Agent:
         )
         run.conversation_messages.append(
             {"role": "assistant", "content": _stringify_parameter_value(_decision_to_dict(decision))}
+        )
+        _emit_context_updated(
+            self,
+            host,
+            run,
+            run.conversation_messages[-1],
+            "assistant_decision",
         )
         return handler(host=host, run=run, decision=decision, caller_id=caller_id)
 
@@ -510,22 +551,18 @@ class Agent:
         parameter_name = str(decision.parameters.get("parameter_name", "")).strip()
         spec = self._parameter_spec_by_name().get(parameter_name) if parameter_name else None
         prompt = decision.message or (spec.description if spec is not None else "Please provide more information.")
-        _pub = getattr(host, "publish_trace_event", None)
-        if callable(_pub):
-            from agent_framework.tracing import TraceContext as _TraceContext
+        from agent_framework.agent_event_publisher import agent_events
 
-            _pub(
-                kind="runtime.callback_requested",
-                title=f"Callback requested ({intent})",
-                payload={
-                    "intent": intent,
-                    "prompt_preview": prompt[:500],
-                    "to_caller": bool(caller_id and caller_id != "host" and self.can_query_caller),
-                },
-                span_id=str(uuid4()),
-                parent_span_id=run.run_id,
-                context=_TraceContext(run_id=run.run_id, agent_id=self.agent_id, caller_id=caller_id),
-            )
+        agent_events.on_callback_requested(
+            host=host,
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            caller_id=caller_id,
+            intent=intent,
+            prompt=prompt,
+            to_caller=bool(caller_id and caller_id != "host" and self.can_query_caller),
+        )
+        answer = ""
         if caller_id and caller_id != "host" and self.can_query_caller:
             context = host.open_context(
                 caller_id=self.agent_id,
@@ -535,44 +572,38 @@ class Agent:
             run.contexts.append(context)
             answer = host.resolve_callback(caller_id=caller_id, callee=self, prompt=prompt)
             context.status = "resolved"
-            audit_tracer = getattr(host, "audit_tracer", None)
-            if audit_tracer is not None:
-                audit_tracer.record_callback(
-                    run_id=run.run_id,
-                    intent=intent,
-                    prompt=prompt,
-                    target=f"caller:{caller_id}",
-                    response=answer,
-                )
-                audit_tracer.record_event(
-                    run_id=run.run_id,
-                    event={
-                        "type": "callback",
-                        "intent": intent,
-                        "target": f"caller:{caller_id}",
-                        "prompt": prompt,
-                        "response": answer,
-                    },
-                )
+            cb_event = {
+                "type": "callback",
+                "intent": intent,
+                "target": f"caller:{caller_id}",
+                "prompt": prompt,
+                "response": answer,
+            }
+            agent_events.audit_callback(
+                host=host,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                intent=intent,
+                prompt=prompt,
+                target=f"caller:{caller_id}",
+                response=answer,
+                event_dict=cb_event,
+            )
             run.transcript_entries.append(f"<caller_request intent=\"{intent}\">{prompt}</caller_request>")
             run.transcript_entries.append(f"<caller_response>{answer}</caller_response>")
             run.conversation_messages.append({"role": "assistant", "content": prompt})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "callback_prompt")
             run.conversation_messages.append({"role": "user", "content": answer})
-            if callable(_pub):
-                from agent_framework.tracing import TraceContext as _TraceContext
-
-                _pub(
-                    kind="runtime.callback_answered",
-                    title=f"Callback answered ({intent})",
-                    payload={
-                        "intent": intent,
-                        "target": f"caller:{caller_id}",
-                        "answer_preview": answer[:500],
-                    },
-                    span_id=str(uuid4()),
-                    parent_span_id=run.run_id,
-                    context=_TraceContext(run_id=run.run_id, agent_id=self.agent_id, caller_id=caller_id),
-                )
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "callback_answer")
+            agent_events.on_callback_answered(
+                host=host,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                caller_id=caller_id,
+                intent=intent,
+                target=f"caller:{caller_id}",
+                answer=answer,
+            )
         else:
             if not self.can_use_host_interaction:
                 raise ValueError(f"{self.agent_id} cannot request callback intent '{intent}' from host.")
@@ -584,44 +615,38 @@ class Agent:
             run.contexts.append(context)
             answer = host.request_user_input(prompt)
             context.status = "resolved"
-            audit_tracer = getattr(host, "audit_tracer", None)
-            if audit_tracer is not None:
-                audit_tracer.record_callback(
-                    run_id=run.run_id,
-                    intent=intent,
-                    prompt=prompt,
-                    target="host",
-                    response=answer,
-                )
-                audit_tracer.record_event(
-                    run_id=run.run_id,
-                    event={
-                        "type": "callback",
-                        "intent": intent,
-                        "target": "host",
-                        "prompt": prompt,
-                        "response": answer,
-                    },
-                )
+            cb_event = {
+                "type": "callback",
+                "intent": intent,
+                "target": "host",
+                "prompt": prompt,
+                "response": answer,
+            }
+            agent_events.audit_callback(
+                host=host,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                intent=intent,
+                prompt=prompt,
+                target="host",
+                response=answer,
+                event_dict=cb_event,
+            )
             run.transcript_entries.append(f"<host_request intent=\"{intent}\">{prompt}</host_request>")
             run.transcript_entries.append(f"<host_response>{answer}</host_response>")
             run.conversation_messages.append({"role": "assistant", "content": prompt})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "callback_prompt")
             run.conversation_messages.append({"role": "user", "content": answer})
-            if callable(_pub):
-                from agent_framework.tracing import TraceContext as _TraceContext
-
-                _pub(
-                    kind="runtime.callback_answered",
-                    title=f"Callback answered ({intent})",
-                    payload={
-                        "intent": intent,
-                        "target": "host",
-                        "answer_preview": answer[:500],
-                    },
-                    span_id=str(uuid4()),
-                    parent_span_id=run.run_id,
-                    context=_TraceContext(run_id=run.run_id, agent_id=self.agent_id, caller_id=caller_id),
-                )
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "callback_answer")
+            agent_events.on_callback_answered(
+                host=host,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                caller_id=caller_id,
+                intent=intent,
+                target="host",
+                answer=answer,
+            )
 
         if intent == "information_request" and parameter_name:
             run.prompt_fragments.append(f"<{parameter_name}>{answer}</{parameter_name}>")
@@ -646,6 +671,7 @@ class Agent:
             run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
             run.transcript_entries.append(f"<subagent_error>{error_text}</subagent_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
             return None
         if decision.subagent_id not in self.allowed_child_agents:
             error_text = (
@@ -655,6 +681,7 @@ class Agent:
             run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
             run.transcript_entries.append(f"<subagent_error>{error_text}</subagent_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
             return None
 
         subagent_call_id = str(uuid4())
@@ -678,16 +705,18 @@ class Agent:
 
         subagent_id = pre_decision.updated_subagent_id or event.subagent_id
         subagent_input = pre_decision.updated_subagent_input or dict(event.subagent_input)
-        audit_tracer = getattr(host, "audit_tracer", None)
-        if audit_tracer is not None:
-            audit_tracer.record_event(
-                run_id=run.run_id,
-                event={
-                    "type": "subagent_call",
-                    "subagent_id": subagent_id,
-                    "parameters": dict(subagent_input),
-                },
-            )
+        from agent_framework.agent_event_publisher import agent_events
+
+        agent_events.audit_named_event(
+            host=host,
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={
+                "type": "subagent_call",
+                "subagent_id": subagent_id,
+                "parameters": dict(subagent_input),
+            },
+        )
         run.transcript_entries.append(
             f"<subagent_call id=\"{subagent_id}\">{_stringify_parameter_value(subagent_input)}</subagent_call>"
         )
@@ -697,19 +726,21 @@ class Agent:
                 "content": f"Subagent call {subagent_id}: {_stringify_parameter_value(subagent_input)}",
             }
         )
+        _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_call")
         try:
             result = host.call_subagent(caller=self, callee_id=subagent_id, parameters=subagent_input)
         except Exception as exc:
-            if audit_tracer is not None:
-                audit_tracer.record_event(
-                    run_id=run.run_id,
-                    event={
-                        "type": "subagent_error",
-                        "subagent_id": subagent_id,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                )
+            agent_events.audit_named_event(
+                host=host,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                event={
+                    "type": "subagent_error",
+                    "subagent_id": subagent_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
             if pre_decision.system_message:
                 run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
             run.prompt_fragments.append(
@@ -721,6 +752,7 @@ class Agent:
             run.conversation_messages.append(
                 {"role": "user", "content": f"Subagent error {subagent_id}: {type(exc).__name__}: {exc}"}
             )
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
             return None
         self._run_post_subagent_hooks(
             host=host,
@@ -736,16 +768,17 @@ class Agent:
         )
         if pre_decision.system_message:
             run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
-        if audit_tracer is not None:
-            audit_tracer.record_event(
-                run_id=run.run_id,
-                event={
-                    "type": "subagent_result",
-                    "subagent_id": subagent_id,
-                    "result": result.message,
-                    "status": result.status,
-                },
-            )
+        agent_events.audit_named_event(
+            host=host,
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={
+                "type": "subagent_result",
+                "subagent_id": subagent_id,
+                "result": result.message,
+                "status": result.status,
+            },
+        )
         run.transcript_entries.append(
             f"<subagent_result id=\"{subagent_id}\">{result.message}</subagent_result>"
         )
@@ -779,12 +812,14 @@ class Agent:
         except KeyError:
             error_text = f"Unknown skill: {skill_name!r}. Check available skills in <available_skills>."
             run.conversation_messages.append({"role": "user", "content": f"<skill_error>{error_text}</skill_error>"})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "skill_error")
             return None
 
         # 2. Validate allowed
         if self.allowed_skills and skill_def.name not in self.allowed_skills:
             error_text = f"Skill {skill_name!r} is not in this agent's allowed skills: {sorted(self.allowed_skills)}."
             run.conversation_messages.append({"role": "user", "content": f"<skill_error>{error_text}</skill_error>"})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "skill_error")
             return None
 
         # 3. Pre-skill hook
@@ -816,18 +851,20 @@ class Agent:
 
         # 6. Inject skill content as a user message (dispatch already added the assistant message)
         run.conversation_messages.append({"role": "user", "content": skill_fragment})
+        _emit_context_updated(self, host, run, run.conversation_messages[-1], "skill_injection")
 
-        # 7. Audit trace
-        audit_tracer = getattr(host, "audit_tracer", None)
-        if audit_tracer is not None and hasattr(audit_tracer, "record_skill_invocation"):
-            audit_tracer.record_skill_invocation(
-                run_id=run.run_id,
-                skill_name=skill_def.name,
-                parameters=dict(decision.parameters),
-                inventory=[r.relative_path for r in content.inventory],
-            )
+        from agent_framework.agent_event_publisher import agent_events
 
-        # 8. Post-skill hook
+        agent_events.audit_skill_invocation(
+            host=host,
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            skill_name=skill_def.name,
+            parameters=dict(decision.parameters),
+            inventory=[r.relative_path for r in content.inventory],
+        )
+
+        # 7. Post-skill hook
         self._run_post_skill_hooks(
             run=run,
             event=SkillEndEvent(
@@ -854,6 +891,7 @@ class Agent:
             run.prompt_fragments.append(f"<tool_error>{error_text}</tool_error>")
             run.transcript_entries.append(f"<tool_error>{error_text}</tool_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_validation_error")
             return None
         if decision.tool_name not in self.allowed_tools:
             error_text = (
@@ -863,6 +901,7 @@ class Agent:
             run.prompt_fragments.append(f"<tool_error>{error_text}</tool_error>")
             run.transcript_entries.append(f"<tool_error>{error_text}</tool_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_validation_error")
             return None
 
         # Terminal tool check — exit loop immediately without executing the tool
@@ -894,35 +933,46 @@ class Agent:
             return AgentResult(status="stopped", message="", prompt=run.rendered_prompt)
 
         tool_input = pre_decision.updated_tool_input or dict(event.tool_input)
-        audit_tracer = getattr(host, "audit_tracer", None)
-        if audit_tracer is not None:
-            audit_tracer.record_event(
-                run_id=run.run_id,
-                event={
-                    "type": "tool_call",
-                    "tool_name": event.tool_name,
-                    "parameters": dict(tool_input),
-                },
-            )
+        from agent_framework.agent_event_publisher import agent_events
+
+        agent_events.audit_named_event(
+            host=host,
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={
+                "type": "tool_call",
+                "tool_name": event.tool_name,
+                "parameters": dict(tool_input),
+            },
+        )
         run.transcript_entries.append(
             f"<tool_call name=\"{event.tool_name}\">{_stringify_parameter_value(tool_input)}</tool_call>"
         )
         run.conversation_messages.append(
             {"role": "assistant", "content": f"Tool call {event.tool_name}: {_stringify_parameter_value(tool_input)}"}
         )
+        _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_call")
         try:
             result = host.execute_tool(event.tool_name, tool_input)
         except Exception as exc:
-            if audit_tracer is not None:
-                audit_tracer.record_event(
-                    run_id=run.run_id,
-                    event={
-                        "type": "tool_error",
-                        "tool_name": event.tool_name,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                )
+            agent_events.on_tool_execution_failed(
+                host=host,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                tool_name=event.tool_name,
+                exc=exc,
+            )
+            agent_events.audit_named_event(
+                host=host,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                event={
+                    "type": "tool_error",
+                    "tool_name": event.tool_name,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
             if pre_decision.system_message:
                 run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
             run.prompt_fragments.append(
@@ -934,6 +984,7 @@ class Agent:
             run.conversation_messages.append(
                 {"role": "user", "content": f"Tool error {event.tool_name}: {type(exc).__name__}: {exc}"}
             )
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_error")
             return None
         self._run_post_tool_hooks(
             host=host,
@@ -949,17 +1000,19 @@ class Agent:
         )
         if pre_decision.system_message:
             run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
-        if audit_tracer is not None:
-            audit_tracer.record_event(
-                run_id=run.run_id,
-                event={
-                    "type": "tool_result",
-                    "tool_name": event.tool_name,
-                    "result": result,
-                },
-            )
+        agent_events.audit_named_event(
+            host=host,
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={
+                "type": "tool_result",
+                "tool_name": event.tool_name,
+                "result": result,
+            },
+        )
         run.transcript_entries.append(f"<tool_result name=\"{event.tool_name}\">{result}</tool_result>")
         run.conversation_messages.append({"role": "user", "content": f"Tool result {event.tool_name}: {result}"})
+        _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_result")
         run.prompt_fragments.append(f"<tool_result name=\"{event.tool_name}\">{result}</tool_result>")
         return None
 

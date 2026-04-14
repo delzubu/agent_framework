@@ -11,9 +11,12 @@ import json
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent_framework.agents.agent_decision import AgentDecision
+
+if TYPE_CHECKING:
+    from agent_framework.tracing import TraceEvent
 
 _TRACE_SESSION_FILENAME = f"trace-{datetime.now().strftime('%y%m%d_%H%M%S')}.jsonl"
 
@@ -283,7 +286,97 @@ class InMemoryAuditTracer:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+class AuditTraceSubscriber:
+    """Maps unified ``TraceEvent`` stream to :class:`InMemoryAuditTracer` JSONL records.
+
+    Subscribes only to ``runtime`` and ``llm`` channels (ignores ``log`` and ``user``).
+    """
+
+    trace_channels = frozenset({"runtime", "llm"})
+
+    def __init__(self, store: InMemoryAuditTracer) -> None:
+        self._store = store
+
+    def consume(self, event: "TraceEvent") -> None:
+        from agent_framework.tracing import TraceEvent as _TE
+
+        if not isinstance(event, _TE):
+            return
+        kind = event.kind
+        ctx = event.context
+        run_id = ctx.run_id
+        payload = event.payload
+
+        if kind == "runtime.audit.agent_call_started":
+            self._store.start_agent_call(
+                run_id=str(payload["run_id"]),
+                caller_id=payload.get("caller_id"),
+                agent_name=str(payload["agent_name"]),
+                system_prompt=str(payload["system_prompt"]),
+                system_prompt_sources=tuple(payload["system_prompt_sources"]),
+                user_prompt=str(payload["user_prompt"]),
+                user_prompt_sources=tuple(payload["user_prompt_sources"]),
+            )
+            return
+        if kind == "runtime.audit.agent_call_finished":
+            self._store.finish_agent_call(run_id=str(payload["run_id"]))
+            return
+        if kind == "runtime.audit.decision" and run_id:
+            d = payload.get("decision") or {}
+            decision = AgentDecision(
+                kind=str(d["kind"]),
+                message=str(d.get("message", "")),
+                parameters=dict(d.get("parameters") or {}),
+                subagent_id=d.get("subagent_id"),
+                tool_name=d.get("tool_name"),
+                callback_intent=d.get("callback_intent"),
+                skill_name=d.get("skill_name"),
+            )
+            self._store.record_decision(run_id=run_id, decision=decision)
+            return
+        if kind == "runtime.audit.callback" and run_id:
+            self._store.record_callback(
+                run_id=run_id,
+                intent=str(payload["intent"]),
+                prompt=str(payload["prompt"]),
+                target=str(payload["target"]),
+                response=payload.get("response"),
+            )
+            self._store.record_event(run_id=run_id, event=dict(payload.get("event") or {}))
+            return
+        if kind == "runtime.audit.named_event" and run_id:
+            ev = dict(payload.get("event") or {})
+            self._store.record_event(run_id=run_id, event=ev)
+            return
+        if kind == "runtime.audit.skill_invocation" and run_id:
+            self._store.record_skill_invocation(
+                run_id=run_id,
+                skill_name=str(payload["skill_name"]),
+                parameters=dict(payload.get("parameters") or {}),
+                inventory=list(payload.get("inventory") or []),
+            )
+            return
+        if kind == "llm.request":
+            rid = payload.get("run_id") or run_id
+            if rid and payload.get("input_payload") is not None:
+                self._store.record_llm_request(run_id=str(rid), payload=payload["input_payload"])
+            return
+        if kind in ("llm.response", "llm.error"):
+            rid = payload.get("run_id") or run_id
+            if rid:
+                raw = str(payload.get("raw_text") or "")
+                parsed = payload.get("parsed_payload")
+                parsed_dict = None if parsed is None else dict(parsed)
+                self._store.record_llm_response(
+                    run_id=str(rid),
+                    raw_text=raw,
+                    parsed_payload=parsed_dict,
+                )
+            return
+
+
 __all__ = [
+    "AuditTraceSubscriber",
     "CallbackAuditRecord",
     "SkillInvocationRecord",
     "UserOutputRecord",

@@ -6,17 +6,16 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from agent_framework.model import ProviderRequestTrace, ProviderResponseTrace
-from agent_framework.tracing import TraceContext, TraceEvent, utc_now_iso
+from agent_framework.tracing import TraceContext, TraceEvent, make_trace_event
 
 _EVENT_COLOR = "\033[95m"
 _PAYLOAD_COLOR = "\033[97m"
 _RESET = "\033[0m"
 
 
-def build_llm_trace_event(trace: Any, *, kind: str) -> TraceEvent:
+def build_llm_trace_event(trace: Any, *, kind: str, level: str = "info") -> TraceEvent:
     payload: dict[str, Any] = {
         "run_id": getattr(trace, "run_id", None),
         "agent_id": getattr(trace, "agent_id", None),
@@ -32,19 +31,58 @@ def build_llm_trace_event(trace: Any, *, kind: str) -> TraceEvent:
     if hasattr(trace, "parsed_payload"):
         payload["parsed_payload"] = trace.parsed_payload
     agent_label = trace.agent_id or "host"
-    return TraceEvent(
-        event_id=str(uuid4()),
-        parent_event_id=None,
-        span_id=getattr(trace, "run_id", None),
-        parent_span_id=None,
-        timestamp=utc_now_iso(),
+    return make_trace_event(
         channel="llm",
-        level="info",
+        level=level,  # type: ignore[arg-type]
         kind=kind,
         title=f"{agent_label} {kind}",
+        span_id=getattr(trace, "run_id", None),
         context=TraceContext(run_id=trace.run_id, agent_id=trace.agent_id),
         payload=payload,
     )
+
+
+def _llm_response_trace_kind_level(event: ProviderResponseTrace) -> tuple[str, str]:
+    """Map provider response trace to unified trace kind/level (HTTP errors use ``llm.error``)."""
+    if event.parsed_payload and event.parsed_payload.get("error"):
+        return "llm.error", "error"
+    return "llm.response", "info"
+
+
+def wire_llm_traces_to_runtime_tracer(host: Any) -> None:
+    """Chain driver I/O callbacks so ``llm.request`` / ``llm.response`` / ``llm.error`` reach ``host.runtime_tracer``.
+
+    Preserves existing callbacks (e.g. audit trace from ``enable_audit_trace``). Safe to call when
+    ``runtime_tracer`` is null or ``NullRuntimeTracer`` (no-op).
+    Idempotent per host instance unless ``host._llm_traces_wired`` is cleared (e.g. after replacing
+    ``runtime_tracer``).
+    """
+    from agent_framework.tracing import NullRuntimeTracer
+
+    if getattr(host, "_llm_traces_wired", False):
+        return
+    runtime_tracer = getattr(host, "runtime_tracer", None)
+    if runtime_tracer is None or isinstance(runtime_tracer, NullRuntimeTracer):
+        return
+    driver = getattr(host, "model_driver", None)
+    if driver is None or not hasattr(driver, "set_trace_callbacks"):
+        return
+    existing_request = getattr(driver, "on_request_trace", None)
+    existing_response = getattr(driver, "on_response_trace", None)
+
+    def on_request(event: ProviderRequestTrace) -> None:
+        if callable(existing_request):
+            existing_request(event)
+        runtime_tracer.publish(build_llm_trace_event(event, kind="llm.request"))
+
+    def on_response(event: ProviderResponseTrace) -> None:
+        if callable(existing_response):
+            existing_response(event)
+        kind, level = _llm_response_trace_kind_level(event)
+        runtime_tracer.publish(build_llm_trace_event(event, kind=kind, level=level))
+
+    driver.set_trace_callbacks(on_request=on_request, on_response=on_response)
+    host._llm_traces_wired = True
 
 
 def attach_to_host(host, *, target: str = "file", output_dir: str | Path = "logs") -> None:
@@ -69,7 +107,8 @@ def attach_to_host(host, *, target: str = "file", output_dir: str | Path = "logs
             existing_response(event)
         tracer.log_provider_response(event)
         if runtime_tracer is not None:
-            runtime_tracer.publish(build_llm_trace_event(event, kind="llm.response"))
+            kind, level = _llm_response_trace_kind_level(event)
+            runtime_tracer.publish(build_llm_trace_event(event, kind=kind, level=level))
 
     model_driver.set_trace_callbacks(
         on_request=on_request,

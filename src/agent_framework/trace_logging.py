@@ -89,8 +89,8 @@ def _mirror_console_line_to_tracer(label: str, payload: Any) -> None:
     if len(text) > 8000:
         text = text[:8000] + "…"
     try_publish_trace(
-        channel="system",
-        kind="system.log",
+        channel="log",
+        kind="log.record",
         title=label,
         summary=text[:500],
         payload={"label": label, "detail": text},

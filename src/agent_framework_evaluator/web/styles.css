@@ -21,7 +21,7 @@ body {
 
 #app {
   display: grid;
-  grid-template-columns: 240px 1fr 320px;
+  grid-template-columns: 240px 1fr minmax(380px, 520px);
   min-height: 100vh;
   gap: 0;
 }
@@ -37,6 +37,156 @@ body {
 
 #trace-pane {
   border-width: 0 0 0 1px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+}
+
+.trace-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.trace-control-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.trace-controls select {
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.channel-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+}
+
+.channel-toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  color: var(--text);
+}
+
+#trace-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.trace-span-section,
+.trace-log-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+}
+
+.trace-span-section h3,
+.trace-log-section h3 {
+  margin: 0;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+#trace-tree {
+  overflow: auto;
+  flex: 1;
+  max-height: min(60vh, calc(100vh - 14rem));
+  padding-right: 0.25rem;
+}
+
+#log-strip {
+  overflow: auto;
+  flex: 1;
+  max-height: min(60vh, calc(100vh - 14rem));
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  padding: 0.35rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.log-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.5rem;
+  padding: 0.2rem 0.15rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-line:last-child {
+  border-bottom: none;
+}
+
+.log-badge {
+  flex-shrink: 0;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.log-badge.log-debug {
+  background: #2d3a4d;
+  color: #9ab;
+}
+
+.log-badge.log-info {
+  background: #1a3d52;
+  color: #7ec8e3;
+}
+
+.log-badge.log-warning {
+  background: #52401a;
+  color: #e8c547;
+}
+
+.log-badge.log-error {
+  background: #521a1a;
+  color: #f08080;
+}
+
+.log-logger {
+  flex-shrink: 0;
+  color: var(--accent);
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-msg {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  word-break: break-word;
+}
+
+@media (max-width: 1100px) {
+  #trace-split {
+    grid-template-columns: 1fr;
+  }
 }
 
 #main-pane {
@@ -109,6 +259,37 @@ body {
 #trace-tree summary {
   cursor: pointer;
   font-size: 0.9rem;
+}
+
+.trace-level-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.trace-level-debug {
+  background: #2d3a4d;
+  color: #9ab;
+}
+
+.trace-level-info {
+  background: #1a3d52;
+  color: #7ec8e3;
+}
+
+.trace-level-warning {
+  background: #52401a;
+  color: #e8c547;
+}
+
+.trace-level-error {
+  background: #521a1a;
+  color: #f08080;
 }
 
 #trace-tree pre {

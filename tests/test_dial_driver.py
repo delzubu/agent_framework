@@ -294,6 +294,37 @@ class TestDecideErrors:
         assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
+    async def test_http_error_emits_response_trace_before_raise(self):
+        """Provider response callback runs for HTTP failures so unified tracers see llm.error."""
+        driver = _make_driver()
+        ctx = _make_context()
+        seen: list = []
+
+        def on_response(event):
+            seen.append(event)
+
+        driver.set_trace_callbacks(on_response=on_response)
+
+        mock_resp = _mock_httpx_response(404, '{"error":"no deployment"}')
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        driver._client = mock_client
+
+        with pytest.raises(ModelDriverError):
+            await driver.decide(
+                agent_id="a1",
+                provider_name="dial",
+                model_names=("gpt-4o",),
+                temperature=0.2,
+                context=ctx,
+            )
+
+        assert len(seen) == 1
+        assert seen[0].parsed_payload is not None
+        assert seen[0].parsed_payload.get("error") is True
+        assert seen[0].parsed_payload.get("status_code") == 404
+
+    @pytest.mark.asyncio
     async def test_transport_error_raises_502(self):
         import httpx
 

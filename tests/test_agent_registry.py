@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent_framework.agent_registry import AgentRegistry
+from agent_framework.agents.helpers import AgentMarkdownError
 
 
 # ---------------------------------------------------------------------------
@@ -206,3 +207,44 @@ class TestAgentRegistryReload:
         # After reload, new instance loaded
         assert agent2.agent_id == "theta"
         assert agent1 is not agent2
+
+
+class TestAgentMarkdownLayout:
+    def test_get_raises_agent_markdown_error_when_only_two_delimiters_and_leading_fence(self, tmp_path: Path) -> None:
+        """Two '---' with YAML between fences 1–2 needs a third '---' before user template."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        bad = agents_dir / "broken.md"
+        bad.write_text(
+            "---\nid: broken\nrole: x\n---\nSystem only — missing third --- and user template.\n",
+            encoding="utf-8",
+        )
+        registry = AgentRegistry(directories=(agents_dir,), config=None)
+        registry.discover()
+        with pytest.raises(AgentMarkdownError) as excinfo:
+            registry.get("broken")
+        err = excinfo.value
+        assert err.source_path.name == "broken.md"
+        assert "third" in err.detail.lower() or "leading" in err.detail.lower()
+        assert err.hint
+
+    def test_get_loads_two_delimiter_layout_yaml_before_first_fence(self, tmp_path: Path) -> None:
+        """YAML at BOF (no opening ---), then --- / system / --- / user — valid three-part split."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        ok = agents_dir / "implicit-yaml.md"
+        ok.write_text(
+            "id: implicit\nrole: r\ndescription: d\n"
+            "parameters:\n"
+            "  instruction:\n"
+            "    description: i\n"
+            "    required: true\n"
+            "---\nSystem line\n"
+            "---\nUser {{instruction}}\n",
+            encoding="utf-8",
+        )
+        registry = AgentRegistry(directories=(agents_dir,), config=None)
+        registry.discover()
+        agent = registry.get("implicit")
+        assert agent.system_prompt.strip() == "System line"
+        assert "{{instruction}}" in agent.user_prompt_template

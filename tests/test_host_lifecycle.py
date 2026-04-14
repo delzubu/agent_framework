@@ -118,11 +118,10 @@ class TestAgentHostStart:
 
     @pytest.mark.asyncio
     async def test_start_wraps_user_comm_with_tracing_when_audit_enabled(self, tmp_path: Path):
-        from agent_framework.audit_trace import InMemoryAuditTracer
         from agent_framework.user_communication import NullUserCommunication
 
         host = AgentHost.create(model_driver=FakeModelDriver(), mcp_enabled=False)
-        host.audit_tracer = InMemoryAuditTracer(output_dir=tmp_path)
+        host.enable_audit_trace(output_dir=tmp_path)
         host.user_comm = NullUserCommunication()
         await host.start()
         # user_comm should be wrapped in _TracingUserCommunication
@@ -135,7 +134,6 @@ class TestAgentHostStart:
         from agent_framework.host import _TracingUserCommunication
 
         host = AgentHost.create(model_driver=FakeModelDriver(), mcp_enabled=False)
-        host.audit_tracer = None
         await host.start()
         assert not isinstance(host.user_comm, _TracingUserCommunication)
 

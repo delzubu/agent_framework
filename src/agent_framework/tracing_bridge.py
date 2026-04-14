@@ -36,9 +36,7 @@ def try_publish_trace(
     payload: dict[str, Any] | None = None,
 ) -> None:
     """Publish a trace event if an active non-null tracer is bound (no-op otherwise)."""
-    from uuid import uuid4
-
-    from agent_framework.tracing import NullRuntimeTracer, TraceContext, TraceEvent, utc_now_iso
+    from agent_framework.tracing import NullRuntimeTracer, TraceContext, make_trace_event
 
     pair = get_active_tracer()
     if not pair:
@@ -48,14 +46,8 @@ def try_publish_trace(
         return
     ctx: TraceContext = overlay if isinstance(overlay, TraceContext) else TraceContext()
     tracer.publish(
-        TraceEvent(
-            event_id=str(uuid4()),
-            parent_event_id=None,
-            span_id=None,
-            parent_span_id=None,
-            timestamp=utc_now_iso(),
+        make_trace_event(
             channel=channel,  # type: ignore[arg-type]
-            level="info",
             kind=kind,
             title=title,
             summary=summary,

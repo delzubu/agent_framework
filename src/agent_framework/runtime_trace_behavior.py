@@ -239,6 +239,40 @@ class RuntimeTraceBehavior(AgentBehavior):
         return None
 
     def _on_pre_model(self, event: ModelStartEvent) -> None:
+        h = self._tracing_host()
+        if h is None:
+            return None
+        inv = event.invocation
+        model_names: tuple[str, ...] = ()
+        provider_name = ""
+        temperature = 0.0
+        if hasattr(h, "get_agent"):
+            try:
+                agent = h.get_agent(inv.agent_id)
+                model_names = tuple(agent.model_names)
+                provider_name = str(agent.provider_name)
+                temperature = float(agent.temperature)
+            except Exception:
+                pass
+        summary = ", ".join(model_names) if model_names else ""
+        h.publish_trace_event(
+            kind="runtime.model_call_started",
+            title=f"Model call ({inv.agent_id})",
+            summary=summary,
+            span_id=f"{inv.run_id}:model",
+            parent_span_id=inv.run_id,
+            payload={
+                "model_names": list(model_names),
+                "provider_name": provider_name,
+                "temperature": temperature,
+            },
+            context=_merge_context(
+                h,
+                run_id=inv.run_id,
+                agent_id=inv.agent_id,
+                caller_id=inv.caller_id,
+            ),
+        )
         return None
 
     def _on_post_model(self, event: ModelEndEvent) -> None:

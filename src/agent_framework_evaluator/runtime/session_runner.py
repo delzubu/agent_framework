@@ -5,8 +5,9 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from agent_framework.agent import AgentResult
+from agent_framework.agent_registry import normalize_agent_id
 from agent_framework.host import AgentHost
-from agent_framework.tracing import TraceContext, TraceEvent, utc_now_iso
+from agent_framework.tracing import TraceContext, make_trace_event
 
 from agent_framework_evaluator.models import SessionContext
 from agent_framework_evaluator.runtime.setup_loader import load_setup_module
@@ -45,8 +46,11 @@ class SessionRunner:
                 runtime_tracer=runtime_tracer,
             )
         host = AgentHost.from_env(str(self.env_path), user_comm=user_comm)
+        audit_sub = host._audit_trace_subscriber
         if runtime_tracer is not None:
             host.runtime_tracer = runtime_tracer
+            if audit_sub is not None:
+                host.runtime_tracer.subscribe(audit_sub)
         return host
 
     def run_once(
@@ -61,9 +65,10 @@ class SessionRunner:
     ) -> dict[str, object]:
         self._suite_teardown_done = False
         sid = session_id or self._new_session_id()
+        resolved_agent_id = normalize_agent_id(agent_id)
         session_context = SessionContext(
             session_id=sid,
-            agent_id=agent_id,
+            agent_id=resolved_agent_id,
             env_path=self.env_path.resolve(),
             setup_path=setup_path,
         )
@@ -76,19 +81,15 @@ class SessionRunner:
 
         if runtime_tracer is not None:
             runtime_tracer.publish(
-                TraceEvent(
-                    event_id=str(uuid4()),
-                    parent_event_id=None,
-                    span_id=sid,
-                    parent_span_id=None,
-                    timestamp=utc_now_iso(),
+                make_trace_event(
                     channel="runtime",
                     level="info",
                     kind="runtime.session_started",
                     title="Session started",
+                    span_id=sid,
                     context=TraceContext(
                         session_id=session_context.session_id,
-                        agent_id=agent_id,
+                        agent_id=resolved_agent_id,
                     ),
                 )
             )
@@ -98,6 +99,13 @@ class SessionRunner:
             user_comm=user_comm,
             runtime_tracer=runtime_tracer,
         )
+        if runtime_tracer is not None:
+            from agent_framework.agent_event_publisher import agent_events
+            from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
+
+            host._llm_traces_wired = False
+            wire_llm_traces_to_runtime_tracer(host)
+            agent_events.attach_log_sources()
         if setup_module and hasattr(setup_module, "register"):
             setup_module.register(host, session_context)
         if setup_module and hasattr(setup_module, "suite_setup"):
@@ -107,26 +115,22 @@ class SessionRunner:
         prev_overlay = host.trace_context_overlay
         host.trace_context_overlay = TraceContext(session_id=sid)
         try:
-            result: AgentResult = host.run_agent(agent_id, initial_instruction=prompt)
+            result: AgentResult = host.run_agent(resolved_agent_id, initial_instruction=prompt)
         finally:
             host.trace_context_overlay = prev_overlay
         if setup_module and hasattr(setup_module, "test_teardown"):
             setup_module.test_teardown({"prompt": prompt}, session_context)
         if runtime_tracer is not None:
             runtime_tracer.publish(
-                TraceEvent(
-                    event_id=str(uuid4()),
-                    parent_event_id=None,
-                    span_id=sid,
-                    parent_span_id=None,
-                    timestamp=utc_now_iso(),
+                make_trace_event(
                     channel="runtime",
                     level="info",
                     kind="runtime.session_finished",
                     title="Session finished",
+                    span_id=sid,
                     context=TraceContext(
                         session_id=session_context.session_id,
-                        agent_id=agent_id,
+                        agent_id=resolved_agent_id,
                     ),
                     payload={"status": result.status},
                 )

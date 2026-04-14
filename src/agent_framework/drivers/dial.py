@@ -24,6 +24,7 @@ This installs ``httpx`` and ``aidial-sdk`` as additional dependencies.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -38,6 +39,8 @@ from agent_framework.model import (
 )
 from agent_framework.tool import ToolDefinition
 from agent_framework.validation import _normalize_json_text
+
+_LOGGER = logging.getLogger(__name__)
 
 # aidial-sdk types — installed via agent_framework[dial]
 try:
@@ -246,6 +249,34 @@ class DialChatCompletionsDriver(_FallbackMixin):
     _client: Any | None = field(default=None, repr=False)
     _fallback_state: dict[tuple[str, ...], int] = field(default_factory=dict, repr=False)
 
+    def _emit_provider_response_error_trace(
+        self,
+        *,
+        agent_id: str | None,
+        provider_name: str,
+        model_name: str,
+        context: ModelContext,
+        exc: ModelDriverError,
+    ) -> None:
+        """Invoke ``on_response_trace`` for failed HTTP/transport outcomes (mirrors success path)."""
+        if not callable(self.on_response_trace):
+            return
+        raw = exc.upstream_body if exc.upstream_body else str(exc)
+        self.on_response_trace(
+            ProviderResponseTrace(
+                agent_id=agent_id,
+                provider_name=provider_name,
+                model_name=model_name,
+                raw_text=raw[:8000] + ("…" if len(raw) > 8000 else ""),
+                parsed_payload={
+                    "error": True,
+                    "status_code": exc.status_code,
+                    "message": str(exc),
+                },
+                run_id=context.run_id,
+            )
+        )
+
     async def decide(
         self,
         *,
@@ -282,11 +313,32 @@ class DialChatCompletionsDriver(_FallbackMixin):
                     )
                 )
 
-            response_data = await self._post(endpoint, body)
+            try:
+                response_data = await self._post(endpoint, body)
+            except ModelDriverError as exc:
+                self._emit_provider_response_error_trace(
+                    agent_id=agent_id,
+                    provider_name=provider_name,
+                    model_name=model,
+                    context=context,
+                    exc=exc,
+                )
+                raise
+
             if response_data is None:
                 # HTTP 400 with response_format — retry without it
                 body_no_fmt = {k: v for k, v in body.items() if k != "response_format"}
-                response_data = await self._post(endpoint, body_no_fmt, allow_retry=False)
+                try:
+                    response_data = await self._post(endpoint, body_no_fmt, allow_retry=False)
+                except ModelDriverError as exc:
+                    self._emit_provider_response_error_trace(
+                        agent_id=agent_id,
+                        provider_name=provider_name,
+                        model_name=model,
+                        context=context,
+                        exc=exc,
+                    )
+                    raise
 
             result = self._parse_response(response_data, context)
 
@@ -321,6 +373,7 @@ class DialChatCompletionsDriver(_FallbackMixin):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+            _LOGGER.debug("DIAL httpx client closed")
 
     def _get_client(self) -> Any:
         """Lazy-init and return the ``httpx.AsyncClient``."""
@@ -383,6 +436,7 @@ class DialChatCompletionsDriver(_FallbackMixin):
         try:
             resp = await client.post(endpoint, json=body)
         except httpx.TransportError as exc:
+            _LOGGER.error("DIAL transport error for %s: %s", self.base_url, exc)
             raise ModelDriverError(
                 f"Cannot reach DIAL at {self.base_url!r}: {exc}. "
                 "Check network connectivity and VPN access to the DIAL endpoint.",
@@ -391,11 +445,20 @@ class DialChatCompletionsDriver(_FallbackMixin):
             ) from exc
 
         if resp.status_code == 400 and "response_format" in body and allow_retry and self.retry_without_response_format:
-            # Signal to retry without response_format
+            _LOGGER.warning(
+                "DIAL HTTP 400 with response_format on %s; retrying without response_format",
+                endpoint,
+            )
             return None
 
         if resp.status_code >= 400:
             upstream = resp.text[:2000] if resp.text else None
+            _LOGGER.warning(
+                "DIAL HTTP %s %s: %s",
+                resp.status_code,
+                endpoint,
+                (upstream or "")[:500],
+            )
             raise ModelDriverError(
                 f"DIAL returned HTTP {resp.status_code}",
                 status_code=resp.status_code,

@@ -1,17 +1,119 @@
 const traceTree = document.getElementById("trace-tree");
+const logStrip = document.getElementById("log-strip");
 const responseOutput = document.getElementById("response-output");
 const runButton = document.getElementById("run-button");
 const promptInput = document.getElementById("prompt-input");
 const agentInput = document.getElementById("agent-select");
 const setupPathInput = document.getElementById("setup-path");
 const agentList = document.getElementById("agent-list");
+const minLevelSelect = document.getElementById("trace-min-level");
+const channelToggles = document.getElementById("channel-toggles");
+
+const LEVEL_ORDER = { debug: 0, info: 1, warning: 2, error: 3 };
 
 const bySpan = new Map();
+
+/** @type {{ el: HTMLElement, event: Record<string, unknown> }[]} */
+const treeEntries = [];
+/** @type {{ el: HTMLElement, event: Record<string, unknown> }[]} */
+const logEntries = [];
+
+function channelEnabled(channel) {
+  const id = `ch-${channel}`;
+  const box = document.getElementById(id);
+  return box ? box.checked : true;
+}
+
+function minLevelThreshold() {
+  const v = minLevelSelect?.value || "warning";
+  return LEVEL_ORDER[v] ?? LEVEL_ORDER.warning;
+}
+
+function eventLevelOrder(event) {
+  const lv = typeof event.level === "string" ? event.level : "info";
+  return LEVEL_ORDER[lv] ?? LEVEL_ORDER.info;
+}
+
+function passesFilters(event) {
+  const ch = typeof event.channel === "string" ? event.channel : "runtime";
+  if (!channelEnabled(ch)) {
+    return false;
+  }
+  return eventLevelOrder(event) >= minLevelThreshold();
+}
+
+function setEntryVisible(entry) {
+  entry.el.style.display = passesFilters(entry.event) ? "" : "none";
+}
+
+function reapplyFilters() {
+  for (const e of treeEntries) {
+    setEntryVisible(e);
+  }
+  for (const e of logEntries) {
+    setEntryVisible(e);
+  }
+}
+
+function clearTraceUi() {
+  traceTree.innerHTML = "";
+  logStrip.innerHTML = "";
+  bySpan.clear();
+  treeEntries.length = 0;
+  logEntries.length = 0;
+}
+
+function appendLogLine(event) {
+  const row = document.createElement("div");
+  row.className = "log-line";
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  const loggerName =
+    typeof payload.logger_name === "string" ? payload.logger_name : "";
+  const message =
+    typeof payload.message === "string"
+      ? payload.message
+      : typeof event.title === "string"
+        ? event.title
+        : "";
+  const lvl = typeof event.level === "string" ? event.level : "info";
+
+  const badge = document.createElement("span");
+  badge.className = `log-badge log-${lvl}`;
+  badge.textContent = lvl;
+
+  const logger = document.createElement("span");
+  logger.className = "log-logger";
+  logger.textContent = loggerName;
+  logger.title = loggerName;
+
+  const msg = document.createElement("span");
+  msg.className = "log-msg";
+  msg.textContent = message;
+
+  row.appendChild(badge);
+  row.appendChild(logger);
+  row.appendChild(msg);
+
+  logStrip.appendChild(row);
+  const entry = { el: row, event };
+  logEntries.push(entry);
+  setEntryVisible(entry);
+  logStrip.scrollTop = logStrip.scrollHeight;
+}
 
 function appendTraceNode(event) {
   const node = document.createElement("details");
   const summary = document.createElement("summary");
-  summary.textContent = `${event.kind}: ${event.title}`;
+  const ch = typeof event.channel === "string" ? event.channel : "";
+  const lvl = typeof event.level === "string" ? event.level : "";
+  summary.textContent = `${ch ? `[${ch}] ` : ""}${event.kind}: ${event.title}`;
+  if (lvl) {
+    const badge = document.createElement("span");
+    badge.className = `trace-level-badge trace-level-${lvl}`;
+    badge.textContent = lvl;
+    summary.appendChild(document.createTextNode(" "));
+    summary.appendChild(badge);
+  }
   const pre = document.createElement("pre");
   pre.textContent = JSON.stringify(event.payload ?? {}, null, 2);
   node.appendChild(summary);
@@ -26,7 +128,22 @@ function appendTraceNode(event) {
   } else {
     traceTree.appendChild(node);
   }
+  const entry = { el: node, event };
+  treeEntries.push(entry);
+  setEntryVisible(entry);
 }
+
+function routeTraceEvent(event) {
+  const channel = typeof event.channel === "string" ? event.channel : "runtime";
+  if (channel === "log") {
+    appendLogLine(event);
+  } else {
+    appendTraceNode(event);
+  }
+}
+
+minLevelSelect?.addEventListener("change", reapplyFilters);
+channelToggles?.addEventListener("change", reapplyFilters);
 
 let socket = null;
 let sessionId = null;
@@ -83,10 +200,22 @@ async function initSession() {
   socket.addEventListener("message", (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "trace" && msg.event) {
-      appendTraceNode(msg.event);
+      routeTraceEvent(msg.event);
     }
     if (msg.type === "result" && msg.payload) {
       responseOutput.textContent = JSON.stringify(msg.payload, null, 2);
+      runButton.disabled = false;
+    }
+    if (msg.type === "error") {
+      const et = msg.error_type || "Error";
+      const lines = [`[${et}] ${msg.message || ""}`];
+      if (msg.path) {
+        lines.push(`File: ${msg.path}`);
+      }
+      if (msg.hint) {
+        lines.push(msg.hint);
+      }
+      responseOutput.textContent = lines.join("\n\n");
       runButton.disabled = false;
     }
     if (msg.type === "outbox" && msg.item && msg.item.kind === "prompt") {
@@ -105,6 +234,7 @@ runButton.addEventListener("click", () => {
   const agentId = agentInput.value.trim() || "root";
   const setupPath = setupPathInput.value.trim();
   runButton.disabled = true;
+  clearTraceUi();
   responseOutput.textContent = "Running…";
   socket.send(
     JSON.stringify({

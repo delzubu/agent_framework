@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from agent_framework.agent_registry import normalize_agent_id
 from agent_framework.evaluator import AgentPromptEvaluator, OpenAiConversationEvaluator, OpenAiResultJudge
 from agent_framework.host import AgentHost
 
@@ -128,9 +129,10 @@ def main(
             api_key=host.config.openai_api_key,
             model_name=host.config.default_model[0],
         )
-        summary = AgentPromptEvaluator(host=host, judge=judge, agent_id=args.agent).evaluate_file(
+        eval_agent = normalize_agent_id(args.agent) if args.agent else args.agent
+        summary = AgentPromptEvaluator(host=host, judge=judge, agent_id=eval_agent).evaluate_file(
             args.evaluate,
-            agent_id=args.agent,
+            agent_id=eval_agent,
         )
         print(summary.to_markdown_table())
         return 0
@@ -141,7 +143,9 @@ def main(
             api_key=host.config.openai_api_key,
             model_name=host.config.default_model[0],
         )
-        summary = OpenAiConversationEvaluator(host=host, judge=judge, agent_id=args.agent).evaluate_file(
+        summary = OpenAiConversationEvaluator(
+            host=host, judge=judge, agent_id=normalize_agent_id(args.agent)
+        ).evaluate_file(
             args.evaluate_openai
         )
         print(summary.to_markdown_table())
@@ -149,8 +153,10 @@ def main(
 
     if args.instruction is not None:
         instruction = _resolve_instruction_argument(args.instruction)
-        result = host.run_agent(args.agent, initial_instruction=instruction) if args.agent else host.run_root(
-            initial_instruction=instruction
+        result = (
+            host.run_agent(normalize_agent_id(args.agent), initial_instruction=instruction)
+            if args.agent
+            else host.run_root(initial_instruction=instruction)
         )
         if result.message:
             print(result.message)

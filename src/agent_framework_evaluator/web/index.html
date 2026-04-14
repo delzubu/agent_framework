@@ -30,7 +30,32 @@
     </main>
     <aside id="trace-pane">
       <h2>Trace</h2>
-      <div id="trace-tree"></div>
+      <div id="trace-controls" class="trace-controls">
+        <label class="trace-control-label">Min level
+          <select id="trace-min-level">
+            <option value="debug">Debug</option>
+            <option value="info">Info</option>
+            <option value="warning" selected>Warning</option>
+            <option value="error">Error</option>
+          </select>
+        </label>
+        <div class="channel-toggles" id="channel-toggles">
+          <label><input type="checkbox" id="ch-runtime" data-channel="runtime" checked> runtime</label>
+          <label><input type="checkbox" id="ch-llm" data-channel="llm" checked> llm</label>
+          <label><input type="checkbox" id="ch-log" data-channel="log" checked> log</label>
+          <label><input type="checkbox" id="ch-user" data-channel="user" checked> user</label>
+        </div>
+      </div>
+      <div id="trace-split">
+        <section class="trace-span-section">
+          <h3>Spans</h3>
+          <div id="trace-tree"></div>
+        </section>
+        <section class="trace-log-section">
+          <h3>Logs</h3>
+          <div id="log-strip" aria-live="polite"></div>
+        </section>
+      </div>
     </aside>
   </div>
   <section id="reserved-testset-pane">
