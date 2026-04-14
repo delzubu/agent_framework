@@ -39,6 +39,17 @@ pip install "agent_framework[dev]"
 
 ---
 
+## Breaking changes (structured model output)
+
+Recent releases tighten validation (fail fast instead of swallowing malformed output):
+
+- **Structured model output (`response_mode` not `text`):** For every provider driver (e.g. **OpenAI**, **DIAL**), assistant text must parse to a single JSON **object** after fence stripping. Otherwise **`ModelDriverError`** is raised (no empty payload, no prose-as-JSON).
+- **Markdown agent decisions:** `AgentDecision.from_model_response` requires a top-level **`kind`** in the parsed JSON; missing `kind` raises **`ValueError`** (no silent `final_message` from raw text).
+- **Decisions:** Setting both **`subagent_id`** and **`tool_name`** in the same JSON object raises **`ValueError`**.
+- **`run_tool_loop`:** Invalid JSON in a tool call’s **`arguments`** string logs an error and raises **`ValueError`** (no empty-args fallback).
+
+---
+
 ## Documentation for users
 
 - **[Using the agent framework](docs/guides/using-agent-framework.md)** — authoring agents (Markdown + JSON), behaviors, host modes, tools, skills, MCP, configuration, tracing, and embedding in your apps.

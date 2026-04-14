@@ -203,6 +203,25 @@ class TestRunToolLoop:
         assert executed == [("search", {"q": "python"})]
 
     @pytest.mark.asyncio
+    async def test_invalid_tool_arguments_raise(self):
+        tool_call = {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "search", "arguments": "not-json"},
+        }
+        tool_response = ModelResponse(
+            payload={}, raw_text="", tool_calls=(tool_call,), finish_reason="tool_calls"
+        )
+        host = _make_host(FakeAsyncDriver([tool_response]))
+        with pytest.raises(ValueError, match="valid JSON"):
+            await run_tool_loop(
+                host,
+                messages=[{"role": "user", "content": "search"}],
+                tools=[],
+                tool_executor=lambda n, a: "x",
+            )
+
+    @pytest.mark.asyncio
     async def test_raises_on_max_iterations(self):
         always_tool = ModelResponse(
             payload={},

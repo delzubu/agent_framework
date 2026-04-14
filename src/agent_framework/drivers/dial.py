@@ -23,6 +23,7 @@ This installs ``httpx`` and ``aidial-sdk`` as additional dependencies.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -30,15 +31,17 @@ from typing import Any, ClassVar
 
 from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
+    DEFAULT_RESPONSE_MODE,
     DriverCapabilities,
     ModelContext,
     ModelResponse,
     ProviderRequestTrace,
     ProviderResponseTrace,
     _FallbackMixin,
+    parse_json_object_model_output,
+    resolved_response_format_dict,
 )
 from agent_framework.tool import ToolDefinition
-from agent_framework.validation import _normalize_json_text
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -247,6 +250,7 @@ class DialChatCompletionsDriver(_FallbackMixin):
     on_request_trace: Any | None = None
     on_response_trace: Any | None = None
     _client: Any | None = field(default=None, repr=False)
+    _httpx_loop: Any | None = field(default=None, repr=False)
     _fallback_state: dict[tuple[str, ...], int] = field(default_factory=dict, repr=False)
 
     def _emit_provider_response_error_trace(
@@ -371,12 +375,30 @@ class DialChatCompletionsDriver(_FallbackMixin):
     async def aclose(self) -> None:
         """Release the underlying ``httpx.AsyncClient``."""
         if self._client is not None:
-            await self._client.aclose()
+            try:
+                await self._client.aclose()
+            except Exception:
+                _LOGGER.debug("DIAL httpx client aclose failed", exc_info=True)
             self._client = None
+            self._httpx_loop = None
             _LOGGER.debug("DIAL httpx client closed")
 
-    def _get_client(self) -> Any:
-        """Lazy-init and return the ``httpx.AsyncClient``."""
+    async def _acquire_client(self) -> Any:
+        """Return an ``httpx.AsyncClient`` bound to the *current* running event loop.
+
+        ``AsyncToSyncAdapter`` uses ``asyncio.run()`` per call, which creates and
+        then closes a fresh loop each time. A cached client from a previous loop
+        must not be reused — it triggers ``RuntimeError: Event loop is closed``
+        during connection teardown.
+        """
+        _require_dial()
+        cur = asyncio.get_running_loop()
+        if self._client is not None:
+            if self._httpx_loop is None:
+                self._httpx_loop = cur
+            elif self._httpx_loop is not cur or self._httpx_loop.is_closed():
+                self._client = None
+                self._httpx_loop = None
         if self._client is None:
             headers: dict[str, str] = {}
             if self.api_key:
@@ -386,13 +408,14 @@ class DialChatCompletionsDriver(_FallbackMixin):
                 headers=headers,
                 timeout=self.timeout,
             )
+            self._httpx_loop = cur
         return self._client
 
     def _build_request_body(self, context: ModelContext, temperature: float, *, model: str) -> dict[str, Any]:
         """Assemble the DIAL chat completions request body for the given model."""
         messages = _build_messages(context.messages)
         tools = _build_tools(context.tools)
-        response_format = _build_response_format(context.response_format)
+        response_format = _build_response_format(resolved_response_format_dict(context))
 
         from aidial_sdk.chat_completion.request import (
             ChatCompletionRequest,
@@ -432,7 +455,7 @@ class DialChatCompletionsDriver(_FallbackMixin):
         Raises:
             ModelDriverError: On HTTP error or transport failure.
         """
-        client = self._get_client()
+        client = await self._acquire_client()
         try:
             resp = await client.post(endpoint, json=body)
         except httpx.TransportError as exc:
@@ -495,14 +518,10 @@ class DialChatCompletionsDriver(_FallbackMixin):
             usage = {k: v for k, v in raw_usage.items() if isinstance(v, int)}
 
         # Build payload
-        if context.response_mode == "json_object":
-            try:
-                normalized = _normalize_json_text(raw_content)
-                payload: dict[str, Any] = json.loads(normalized)
-                raw_text = normalized
-            except (json.JSONDecodeError, ValueError):
-                payload = {}
-                raw_text = raw_content
+        if context.response_mode == DEFAULT_RESPONSE_MODE:
+            payload, raw_text = parse_json_object_model_output(
+                raw_content, provider_label="DIAL"
+            )
         else:
             payload = {"kind": "final_message", "message": raw_content}
             raw_text = raw_content

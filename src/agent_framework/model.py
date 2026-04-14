@@ -12,13 +12,57 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, ClassVar, Protocol
+from typing import Any, Awaitable, Callable, ClassVar, Final, Protocol
 
 from openai import OpenAI
 
+from agent_framework.errors import ModelDriverError
 from agent_framework.tool import ToolDefinition
 
 _LOGGER = logging.getLogger(__name__)
+
+# Default structured-output contract for agents and headless ``complete()`` calls.
+DEFAULT_RESPONSE_MODE: Final[str] = "json_object"
+
+
+def parse_json_object_model_output(
+    raw_text: str,
+    *,
+    provider_label: str,
+) -> tuple[dict[str, Any], str]:
+    """Parse assistant text as one JSON object for structured / ``json_object`` modes.
+
+    Used by **all** model drivers: applies fence stripping (via
+    ``agent_framework.validation._normalize_json_text``), :func:`json.loads`, and
+    requires a JSON **object** at the top level. Invalid text or non-objects
+    raise :class:`~agent_framework.errors.ModelDriverError` with a short preview
+    and an ``upstream_body`` excerpt for tracing.
+
+    ``response_mode == \"text\"`` bypasses this at the call site and does not
+    invoke this function.
+    """
+    from agent_framework.validation import _normalize_json_text as _norm
+
+    preview = (
+        (raw_text[:400] + ("…" if len(raw_text) > 400 else "")) if raw_text else ""
+    )
+    excerpt = raw_text[:2000] if len(raw_text) > 2000 else raw_text
+    try:
+        normalized = _norm(raw_text)
+        value: Any = json.loads(normalized)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ModelDriverError(
+            f"{provider_label} structured response is not valid JSON: {exc}. Preview: {preview!r}",
+            status_code=None,
+            upstream_body=excerpt,
+        ) from exc
+    if not isinstance(value, dict):
+        raise ModelDriverError(
+            f"{provider_label} structured response must be a JSON object at the top level.",
+            status_code=None,
+            upstream_body=excerpt,
+        )
+    return value, normalized
 
 # ---------------------------------------------------------------------------
 # Shared model fallback base
@@ -36,9 +80,21 @@ class _FallbackMixin:
     successfully used model.  Subsequent calls start from that index, skipping
     known-bad models.  Call ``reset_model_fallback()`` to restart from the
     beginning of the list.
+
+    For JSON / structured output defaults shared across drivers, use
+    :meth:`resolved_response_format_dict` (delegates to the module-level
+    function of the same name, defined after :class:`ModelContext`).
     """
 
     __slots__ = ()
+
+    @staticmethod
+    def resolved_response_format_dict(context: "ModelContext") -> dict[str, Any] | None:
+        """Effective chat-completions-style ``response_format`` dict for *context*.
+
+        Same as the module-level :func:`resolved_response_format_dict`.
+        """
+        return resolved_response_format_dict(context)
 
     def reset_model_fallback(self) -> None:
         """Reset fallback memory so the next call starts from the first model."""
@@ -188,7 +244,7 @@ def runtime_prompt_source_paths(response_mode: str) -> tuple[Path, ...]:
     mode_map = {
         "decision": _SYSTEM_DECISION_TEMPLATE_PATH,
         "text": _SYSTEM_TEXT_TEMPLATE_PATH,
-        "json_object": _SYSTEM_JSON_OBJECT_TEMPLATE_PATH,
+        DEFAULT_RESPONSE_MODE: _SYSTEM_JSON_OBJECT_TEMPLATE_PATH,
     }
     return (_SYSTEM_TEMPLATE_PATH, mode_map.get(response_mode, _SYSTEM_JSON_OBJECT_TEMPLATE_PATH))
 
@@ -248,7 +304,8 @@ class ModelContext:
         user_prompt: Rendered invocation prompt plus dynamic augmentations.
         messages: Structured conversation history for providers that support
             message-array inputs.
-        response_mode: Runtime-level response contract for this model call.
+        response_mode: Runtime-level response contract for this model call
+            (default: :data:`DEFAULT_RESPONSE_MODE`).
         exact_input_payload: Exact provider-native input payload. When present,
             the adapter must forward it unchanged instead of composing prompt
             messages from the other context fields.
@@ -260,13 +317,65 @@ class ModelContext:
     system_prompt: str
     user_prompt: str
     messages: tuple[dict[str, Any], ...] = ()
-    response_mode: str = "json_object"
+    response_mode: str = DEFAULT_RESPONSE_MODE
     exact_input_payload: Any | None = None
     tools: tuple[ToolDefinition, ...] = ()
     subagents: tuple[CapabilityDefinition, ...] = ()
     skills: tuple[CapabilityDefinition, ...] = ()
     run_id: str | None = None
     response_format: dict[str, Any] | None = None
+
+
+def resolved_response_format_dict(context: ModelContext) -> dict[str, Any] | None:
+    """Return the effective chat-completions-style ``response_format`` dict.
+
+    Drivers should use this (or :meth:`_FallbackMixin.resolved_response_format_dict`)
+    to populate provider-native JSON mode when the caller omitted
+    ``context.response_format``.
+
+    * ``response_mode == \"text\"`` → ``None`` (plain text at the API).
+    * Explicit ``context.response_format`` → shallow copy (non-text modes only;
+      text mode still forces ``None``).
+    * ``response_mode == DEFAULT_RESPONSE_MODE`` with no explicit format →
+      ``{\"type\": \"json_object\"}``.
+    * Other modes (e.g. ``\"decision\"``) → ``None`` unless the caller set
+      ``response_format``.
+    """
+    if context.response_mode == "text":
+        return None
+    if context.response_format is not None:
+        return dict(context.response_format)
+    if context.response_mode == DEFAULT_RESPONSE_MODE:
+        return {"type": "json_object"}
+    return None
+
+
+def openai_responses_text_format_field(fmt: dict[str, Any]) -> dict[str, Any]:
+    """Map a chat-completions-style ``response_format`` dict to OpenAI Responses ``text.format``.
+
+    Accepts ``{\"type\": \"json_object\"}`` or nested ``json_schema`` payloads
+    (same shape as :func:`resolved_response_format_dict` / DIAL). Unknown shapes
+    are shallow-copied.
+    """
+    t = fmt.get("type")
+    if t == "json_object":
+        return {"type": "json_object"}
+    if t == "json_schema":
+        inner = fmt.get("json_schema")
+        if not isinstance(inner, dict):
+            inner = {}
+        out: dict[str, Any] = {
+            "type": "json_schema",
+            "name": str(inner.get("name", "response")),
+            "schema": dict(inner.get("schema", {})),
+        }
+        desc = inner.get("description")
+        if desc is not None:
+            out["description"] = desc
+        if "strict" in inner:
+            out["strict"] = inner["strict"]
+        return out
+    return dict(fmt)
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,7 +577,7 @@ class OpenAiModelDriver(_FallbackMixin):
     capabilities: ClassVar[DriverCapabilities] = DriverCapabilities(
         is_async=False,
         supports_multimodal=False,
-        supports_response_format=False,
+        supports_response_format=True,
         supports_tools=False,
     )
 
@@ -524,22 +633,34 @@ class OpenAiModelDriver(_FallbackMixin):
 
         def _try_model(model_name: str) -> ModelResponse:
             client = OpenAI(api_key=self.api_key)
+            fmt_dict = resolved_response_format_dict(context)
+            request_trace_payload: Any = model_input
+            if fmt_dict is not None:
+                request_trace_payload = {
+                    "input": model_input,
+                    "text": {"format": openai_responses_text_format_field(fmt_dict)},
+                }
             if callable(self.on_request_trace):
                 self.on_request_trace(
                     ProviderRequestTrace(
                         agent_id=agent_id,
                         provider_name=provider_name,
                         model_name=model_name,
-                        input_payload=model_input,
+                        input_payload=request_trace_payload,
                         temperature=temperature,
                         run_id=context.run_id,
                     )
                 )
-            response = client.responses.create(
-                model=model_name,
-                temperature=temperature,
-                input=model_input,
-            )
+            create_kwargs: dict[str, Any] = {
+                "model": model_name,
+                "temperature": temperature,
+                "input": model_input,
+            }
+            if fmt_dict is not None:
+                create_kwargs["text"] = {
+                    "format": openai_responses_text_format_field(fmt_dict),
+                }
+            response = client.responses.create(**create_kwargs)
             raw_text = response.output_text.strip()
             if callable(self.on_response_trace):
                 self.on_response_trace(
@@ -621,7 +742,7 @@ class OpenAiModelDriver(_FallbackMixin):
         mode_templates = {
             "decision": _SYSTEM_DECISION_TEMPLATE,
             "text": _SYSTEM_TEXT_TEMPLATE,
-            "json_object": _SYSTEM_JSON_OBJECT_TEMPLATE,
+            DEFAULT_RESPONSE_MODE: _SYSTEM_JSON_OBJECT_TEMPLATE,
         }
         mode_prompt = mode_templates.get(context.response_mode, _SYSTEM_JSON_OBJECT_TEMPLATE).strip()
         return f"{shared_prompt}\n\n{mode_prompt}".strip()
@@ -638,7 +759,6 @@ class OpenAiModelDriver(_FallbackMixin):
             ModelContext(
                 system_prompt="",
                 user_prompt="",
-                response_mode="json_object",
                 tools=tools,
                 subagents=subagents,
                 skills=skills,
@@ -667,11 +787,15 @@ __all__ = [
     "AsyncToSyncAdapter",
     "CapabilityDefinition",
     "CapabilityParameter",
+    "DEFAULT_RESPONSE_MODE",
     "DriverCapabilities",
     "ModelContext",
+    "openai_responses_text_format_field",
     "ModelDriver",
     "ModelResponse",
     "OpenAiModelDriver",
+    "parse_json_object_model_output",
+    "resolved_response_format_dict",
     "ProviderRequestTrace",
     "ProviderResponseTrace",
     "SyncToAsyncAdapter",

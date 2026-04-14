@@ -609,7 +609,6 @@ class OpenAiConversationEvaluator:
             context=ModelContext(
                 system_prompt="",
                 user_prompt="",
-                response_mode="json_object",
                 exact_input_payload=provider_input,
             ),
         )

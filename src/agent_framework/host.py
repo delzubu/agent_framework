@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
@@ -18,6 +20,7 @@ from agent_framework.command import CommandDefinition, CommandRegistry, render a
 from agent_framework.config import HostConfig, load_host_config
 from agent_framework.model import (
     AsyncToSyncAdapter,
+    DEFAULT_RESPONSE_MODE,
     ModelContext,
     ModelDriver,
     ModelResponse,
@@ -38,6 +41,14 @@ from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework.user_communication import NullUserCommunication, UserCommunication
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _agent_host_receive_log_enabled_from_env() -> bool:
+    """Default on; set ``AGENT_HOST_RECEIVE_LOG=0`` / ``false`` / ``no`` / ``off`` to disable."""
+    raw = os.environ.get("AGENT_HOST_RECEIVE_LOG")
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass(slots=True)
@@ -81,11 +92,18 @@ class AgentHost:
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=8))
     _command_fallback: Any = None  # Callable[[str, str], Awaitable[str | None]] | None
     _started: bool = False
+    _host_receive_log_subscriber: Any | None = field(default=None, repr=False)
+    _host_receive_log_path: Path | None = field(default=None, repr=False)
 
     @property
     def audit_tracer(self) -> InMemoryAuditTracer | None:
         """JSONL audit store when :meth:`enable_audit_trace` is used (read-only)."""
         return self._audit_jsonl
+
+    @property
+    def host_receive_log_path(self) -> Path | None:
+        """Path of the unified trace JSONL file when :meth:`enable_host_receive_log` is active."""
+        return self._host_receive_log_path
 
     # ------------------------------------------------------------------
     # Construction
@@ -146,6 +164,11 @@ class AgentHost:
             user_comm=user_comm,
         )
         host.enable_audit_trace(output_dir="logs")
+        if _agent_host_receive_log_enabled_from_env():
+            try:
+                host.enable_host_receive_log(output_dir="logs")
+            except OSError as exc:
+                _LOGGER.warning("host receive log not started (%s)", exc)
         # Eagerly run synchronous registry discovery so disk-backed tools/agents
         # are resolvable without requiring the caller to await start().  MCP
         # startup still only happens in start().
@@ -373,7 +396,7 @@ class AgentHost:
         model_names: str | tuple[str, ...] | None = None,
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
-        response_mode: str = "json_object",
+        response_mode: str = DEFAULT_RESPONSE_MODE,
         tools: Sequence[ToolDefinition] | None = None,
         conversation_id: str | None = None,
     ) -> ModelResponse:
@@ -437,7 +460,7 @@ class AgentHost:
         model_names: str | tuple[str, ...] | None = None,
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
-        response_mode: str = "json_object",
+        response_mode: str = DEFAULT_RESPONSE_MODE,
         tools: Sequence[ToolDefinition] | None = None,
         conversation_id: str | None = None,
     ) -> ModelResponse:
@@ -574,6 +597,41 @@ class AgentHost:
         self.runtime_tracer.subscribe(subscriber)
         self._llm_traces_wired = False
         return store
+
+    def enable_host_receive_log(self, *, output_dir: str | Path = "logs") -> Path:
+        """Append every :class:`TraceEvent` the host tracer receives to a timestamped JSONL file.
+
+        File name: ``logs/agent-host-YYYYMMDD-HHMMSS.jsonl`` (under ``output_dir``).
+
+        Called automatically from :meth:`from_env` unless ``AGENT_HOST_RECEIVE_LOG`` is disabled.
+
+        If another component replaces :attr:`runtime_tracer` (e.g. the evaluator session
+        tracer), it must re-subscribe the same subscriber — see
+        ``agent_framework_evaluator.runtime.session_runner``.
+        """
+        from agent_framework.tracing_subscribers.jsonl_subscriber import JsonlTraceSubscriber
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"agent-host-{datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl"
+
+        prev = self._host_receive_log_subscriber
+        if prev is not None:
+            try:
+                self.runtime_tracer.unsubscribe(prev)
+            except Exception:
+                pass
+
+        subscriber = JsonlTraceSubscriber(path)
+        self._host_receive_log_subscriber = subscriber
+        self._host_receive_log_path = path
+
+        if isinstance(self.runtime_tracer, NullRuntimeTracer):
+            self.runtime_tracer = CompositeRuntimeTracer()
+        self.runtime_tracer.subscribe(subscriber)
+        self._llm_traces_wired = False
+        _LOGGER.info("host receive log: %s", path.resolve())
+        return path
 
     def get_skill_registry(self) -> SkillRegistry:
         """Lazy-initialize and return the host-level skill registry."""
@@ -913,7 +971,7 @@ async def run_tool_loop(
     model_names: str | tuple[str, ...] | None = None,
     temperature: float = 0.2,
     response_format: dict[str, Any] | None = None,
-    response_mode: str = "json_object",
+    response_mode: str = DEFAULT_RESPONSE_MODE,
 ) -> ModelResponse:
     """Run a multi-turn tool-calling loop using ``complete_async()``.
 
@@ -1007,8 +1065,16 @@ async def run_tool_loop(
             raw_args = fn.get("arguments", "{}")
             try:
                 args = _json.loads(raw_args) if raw_args else {}
-            except _json.JSONDecodeError:
-                args = {}
+            except _json.JSONDecodeError as exc:
+                _LOGGER.error(
+                    "run_tool_loop: tool %r arguments are not valid JSON (fragment=%r): %s",
+                    name,
+                    raw_args if len(str(raw_args)) <= 500 else str(raw_args)[:500] + "…",
+                    exc,
+                )
+                raise ValueError(
+                    f"Tool {name!r} arguments must be valid JSON; decode failed: {exc}"
+                ) from exc
 
             if tool_executor is not None:
                 result = await tool_executor(name, args)

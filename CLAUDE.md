@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Non-negotiable: structured model output
+
+Do **not** add heuristics that reinterpret invalid or non-contract model JSON into valid `AgentDecision` values (for example mapping unknown `kind` strings such as `gather_context` to `call_tool` or `callback`). **Validate strictly** and **fail with a clear error** (`AgentDecision.from_model_response` raises `ValueError` for unsupported `kind`). Fix the problem at the source: agent prompts, `response_format` / JSON mode, or provider configuration — not silent repair in Python.
+
+### Breaking changes (observability)
+
+- All drivers (OpenAI, DIAL, …): non-**text** **`response_mode`** → assistant output must be valid JSON object text → else **`ModelDriverError`** (shared **`parse_json_object_model_output`** in **`model.py`**).
+- Decision JSON must include **`kind`**; both **`subagent_id`** and **`tool_name`** set → **`ValueError`**.
+- **`run_tool_loop`**: bad tool **`arguments`** JSON → **`ValueError`** after error log.
+
 ## Commands
 
 ```bash
@@ -64,11 +74,14 @@ This is a **markdown-defined agent runtime**. Agents and tools are defined in Ma
 
 Each agent runs a loop: call model → parse `AgentDecision` → act → repeat.
 
-Decision kinds:
+Decision kinds (closed set; any other top-level `kind` after alias normalization is invalid):
 - `final_message` — agent is done, returns `AgentResult`
 - `call_tool` — invoke a registered tool, add result to context
 - `call_subagent` — delegate to a child agent via `host.call_subagent`
 - `callback` — escalate to caller (human or parent agent)
+- `invoke_skill` — invoke a named skill from the catalog
+
+Top-level callback **intent** names (e.g. `information_request`) are normalized to `kind: callback` per `agents/agent_decision.py`.
 
 **Terminal tools** (`terminal_tools` in frontmatter): Tool names that exit the loop immediately when called, without executing the tool. The result is `AgentResult(status="completed", message=json.dumps(tool_args))`. Useful for clarification/escalation exit points.
 

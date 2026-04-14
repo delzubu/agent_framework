@@ -278,6 +278,7 @@ class AgentEventPublisher:
     def on_model_call_failed(
         self,
         *,
+        host: Any | None = None,
         run_id: str,
         agent_id: str,
         caller_id: str | None,
@@ -288,6 +289,7 @@ class AgentEventPublisher:
         payload: dict[str, Any] = {
             "error_type": type(exc).__name__,
             "message": str(exc),
+            "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
         }
         if status_code is not None:
             payload["status_code"] = status_code

@@ -52,6 +52,7 @@ from agent_framework.messages import (
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
+    DEFAULT_RESPONSE_MODE,
     DriverCapabilities,
     ModelContext,
     ModelDriver,
@@ -61,6 +62,8 @@ from agent_framework.model import (
     ProviderResponseTrace,
     SyncToAsyncAdapter,
     get_driver_capabilities,
+    parse_json_object_model_output,
+    resolved_response_format_dict,
 )
 from agent_framework.validation import parse_json_content, validate_and_retry
 
@@ -116,11 +119,14 @@ __all__ = [
     # Model drivers
     "AsyncModelDriver",
     "AsyncToSyncAdapter",
+    "DEFAULT_RESPONSE_MODE",
     "DriverCapabilities",
+    "resolved_response_format_dict",
     "ModelContext",
     "ModelDriver",
     "ModelResponse",
     "OpenAiModelDriver",
+    "parse_json_object_model_output",
     "ProviderRequestTrace",
     "ProviderResponseTrace",
     "SyncToAsyncAdapter",

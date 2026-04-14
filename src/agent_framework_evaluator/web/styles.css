@@ -233,6 +233,9 @@ body {
   border: 1px solid var(--border);
   background: var(--panel);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-x: hidden;
 }
 
 #trace-tree > .trace-agent-call,
@@ -394,10 +397,282 @@ body {
   color: #f08080;
 }
 
-#trace-tree pre {
+/* Trace payload tree (replaces raw <pre> JSON dump) */
+.trace-event-body {
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.25rem 0.5rem 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.trace-payload-tree {
   font-size: 0.75rem;
-  overflow-x: auto;
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  line-height: 1.45;
   color: var(--muted);
+  max-width: 100%;
+}
+
+.trace-json-kv {
+  margin: 0.15rem 0;
+  padding-left: 0.25rem;
+  max-width: 100%;
+}
+
+.trace-json-key {
+  color: #9ab7d4;
+  font-weight: 600;
+  vertical-align: top;
+}
+
+.trace-json-val {
+  display: inline;
+  max-width: 100%;
+  vertical-align: top;
+}
+
+.trace-json-str {
+  display: inline;
+  max-width: 100%;
+}
+
+.trace-json-quote {
+  color: #6a7a8f;
+  user-select: none;
+}
+
+.trace-json-str-inner {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.trace-json-str-inner--truncated {
+  cursor: pointer;
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+.trace-json-str-inner--truncated:hover {
+  color: #7ed4f0;
+}
+
+.trace-json-lit {
+  color: #c9e6ff;
+}
+
+.trace-json-null {
+  color: #8b9cb3;
+  font-style: italic;
+}
+
+.trace-json-array {
+  margin: 0.2rem 0 0.2rem 0.5rem;
+  padding-left: 0.35rem;
+  border-left: 1px solid var(--border);
+}
+
+.trace-json-array-row {
+  margin: 0.12rem 0;
+  max-width: 100%;
+}
+
+.trace-json-idx {
+  color: #6a7a8f;
+  user-select: none;
+}
+
+.trace-json-obj {
+  margin: 0.15rem 0 0.15rem 0.5rem;
+  padding-left: 0.35rem;
+  border-left: 1px solid rgba(91, 192, 222, 0.25);
+  max-width: 100%;
+}
+
+/* Full-screen detail modal (long strings, markdown preview) */
+.trace-detail-dialog {
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-width: min(92vw, 760px);
+  width: 100%;
+  max-height: min(88vh, 820px);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
+}
+
+.trace-detail-dialog::backdrop {
+  background: rgba(6, 10, 16, 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.trace-detail-dialog-surface {
+  display: flex;
+  flex-direction: column;
+  max-height: min(88vh, 820px);
+}
+
+.trace-detail-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.trace-detail-dialog-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-detail-dialog-x {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+}
+
+.trace-detail-dialog-x:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.trace-detail-dialog-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.4rem 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.trace-detail-tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+}
+
+.trace-detail-tab:hover {
+  color: var(--text);
+}
+
+.trace-detail-tab--active {
+  color: var(--accent);
+  border-color: var(--border);
+  border-bottom-color: var(--panel);
+  margin-bottom: -1px;
+  background: var(--panel);
+}
+
+.trace-detail-dialog-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.trace-detail-panel {
+  display: none;
+  margin: 0;
+  padding: 0.85rem 1rem;
+  max-height: min(62vh, 560px);
+  overflow: auto;
+  box-sizing: border-box;
+}
+
+.trace-detail-panel--active {
+  display: block;
+}
+
+.trace-detail-dialog-pre {
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.trace-detail-md-body {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.trace-detail-md-body h1,
+.trace-detail-md-body h2,
+.trace-detail-md-body h3 {
+  margin: 0.75rem 0 0.4rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.trace-detail-md-body h1 {
+  font-size: 1.15rem;
+}
+
+.trace-detail-md-body h2 {
+  font-size: 1.05rem;
+}
+
+.trace-detail-md-body h3 {
+  font-size: 0.98rem;
+}
+
+.trace-detail-md-body p {
+  margin: 0.45rem 0;
+}
+
+.trace-detail-md-body ul,
+.trace-detail-md-body ol {
+  margin: 0.4rem 0;
+  padding-left: 1.35rem;
+}
+
+.trace-detail-md-body code {
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.84em;
+  background: var(--bg);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+
+.trace-detail-md-body pre {
+  margin: 0.5rem 0;
+  padding: 0.65rem 0.75rem;
+  background: var(--bg);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.8rem;
+}
+
+.trace-detail-md-body pre code {
+  padding: 0;
+  background: none;
+}
+
+.trace-detail-md-body a {
+  color: var(--accent);
 }
 
 #reserved-testset-pane {

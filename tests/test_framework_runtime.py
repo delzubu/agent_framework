@@ -2,6 +2,8 @@ import json
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
+import pytest
+
 from agent_framework.agent import Agent, AgentBehavior, AgentEndHookDecision, AgentHookDecision, AgentParameter, AgentResult
 from agent_framework.config import load_host_config
 from agent_framework.host import AgentHost
@@ -441,6 +443,32 @@ def test_skill_end_event_fields(tmp_path: Path) -> None:
     assert event.content.body == "body"
 
 
+def test_parse_json_object_model_output_valid() -> None:
+    from agent_framework.model import parse_json_object_model_output
+
+    payload, norm = parse_json_object_model_output(
+        '{"kind": "final_message", "message": "ok"}', provider_label="Test"
+    )
+    assert payload == {"kind": "final_message", "message": "ok"}
+    assert '"kind"' in norm
+
+
+def test_parse_json_object_model_output_rejects_invalid_json() -> None:
+    from agent_framework.errors import ModelDriverError
+    from agent_framework.model import parse_json_object_model_output
+
+    with pytest.raises(ModelDriverError, match="not valid JSON"):
+        parse_json_object_model_output("not json {", provider_label="Test")
+
+
+def test_parse_json_object_model_output_rejects_non_object() -> None:
+    from agent_framework.errors import ModelDriverError
+    from agent_framework.model import parse_json_object_model_output
+
+    with pytest.raises(ModelDriverError, match="JSON object"):
+        parse_json_object_model_output("[1,2]", provider_label="Test")
+
+
 def test_agent_decision_extracts_skill_name() -> None:
     from agent_framework.agents.agent_decision import AgentDecision
     from agent_framework.model import ModelResponse
@@ -462,6 +490,53 @@ def test_agent_decision_skill_name_defaults_to_none() -> None:
     )
     decision = AgentDecision.from_model_response(response)
     assert decision.skill_name is None
+
+
+def test_agent_decision_rejects_missing_kind() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+    from agent_framework.model import ModelResponse
+
+    response = ModelResponse(payload={"message": "no kind"}, raw_text="{}")
+    with pytest.raises(ValueError, match="missing top-level"):
+        AgentDecision.from_model_response(response)
+
+
+def test_agent_decision_rejects_both_subagent_and_tool() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+    from agent_framework.model import ModelResponse
+
+    response = ModelResponse(
+        payload={
+            "kind": "call_tool",
+            "tool_name": "Read",
+            "subagent_id": "helper",
+            "message": "",
+        },
+        raw_text="{}",
+    )
+    with pytest.raises(ValueError, match="both subagent_id and tool_name"):
+        AgentDecision.from_model_response(response)
+
+
+def test_agent_decision_rejects_unknown_kind() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+    from agent_framework.model import ModelResponse
+
+    response = ModelResponse(
+        payload={"kind": "gather_context", "message": "x"},
+        raw_text="{}",
+    )
+    with pytest.raises(ValueError, match="gather_context"):
+        AgentDecision.from_model_response(response)
+
+
+def test_agent_decision_rejects_empty_kind() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+    from agent_framework.model import ModelResponse
+
+    response = ModelResponse(payload={"kind": "", "message": "x"}, raw_text="{}")
+    with pytest.raises(ValueError, match="unsupported"):
+        AgentDecision.from_model_response(response)
 
 
 def test_build_skills_catalog_returns_catalog_text() -> None:

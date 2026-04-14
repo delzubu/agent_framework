@@ -39,6 +39,10 @@ def parse_json_content(content: str) -> Any:
     Handles bare JSON, ````` ```json ... ``` `````, and ````` ``` ... ``` `````
     fenced blocks.
 
+    **Intentional (confirmed):** Fence stripping and the optional leading ``json``
+    label are **transport normalization** only — they do not reinterpret model
+    semantics; the remaining text must still be valid JSON for :func:`json.loads`.
+
     Args:
         content: Raw model output text.
 
@@ -50,6 +54,11 @@ def parse_json_content(content: str) -> Any:
             fence stripping.
     """
     return json.loads(_normalize_json_text(content))
+
+
+# TODO: Revisit validate_and_retry — audit call sites, whether a second model round
+# for malformed JSON fits the strict validate-and-fail policy for agent decisions,
+# and document or narrow scope (deferred; intentionally unchanged for now).
 
 
 async def validate_and_retry(
@@ -93,6 +102,10 @@ def _normalize_json_text(raw_text: str) -> str:
 
     This is the canonical implementation.  ``model.py`` delegates to this
     function to keep a single source of truth.
+
+    **Intentional (confirmed):** Removing markdown fences / a ``json`` line prefix
+    is agreed transport cleanup, not inference of a different structured intent
+    from prose.
     """
     text = raw_text.strip()
     if text.startswith("```"):

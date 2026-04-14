@@ -54,6 +54,23 @@
     <h2>Test Set</h2>
     <p>Reserved for future batch scoring and result summaries.</p>
   </section>
+  <dialog id="trace-detail-modal" class="trace-detail-dialog">
+    <div class="trace-detail-dialog-surface">
+      <header class="trace-detail-dialog-header">
+        <h3 id="trace-detail-modal-title" class="trace-detail-dialog-title"></h3>
+        <button type="button" class="trace-detail-dialog-x" id="trace-detail-modal-close" aria-label="Close">×</button>
+      </header>
+      <div class="trace-detail-dialog-tabs" id="trace-detail-dialog-tabs" hidden>
+        <button type="button" class="trace-detail-tab trace-detail-tab--active" data-panel="source" id="trace-detail-tab-source">Source</button>
+        <button type="button" class="trace-detail-tab" data-panel="md" id="trace-detail-tab-md">Markdown</button>
+      </div>
+      <div class="trace-detail-dialog-body">
+        <pre id="trace-detail-modal-source" class="trace-detail-panel trace-detail-panel--active trace-detail-dialog-pre"></pre>
+        <div id="trace-detail-modal-md" class="trace-detail-panel trace-detail-md-body"></div>
+      </div>
+    </div>
+  </dialog>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

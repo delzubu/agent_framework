@@ -80,6 +80,7 @@ class TestGetDriverCapabilities:
     def test_openai_driver_capabilities(self):
         caps = get_driver_capabilities(OpenAiModelDriver(api_key="x"))
         assert caps.is_async is False
+        assert caps.supports_response_format is True
 
 
 # ---------------------------------------------------------------------------

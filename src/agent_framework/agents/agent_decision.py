@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 from agent_framework.model import ModelResponse
+
+_LOGGER = logging.getLogger(__name__)
+
+# After alias normalization (callback intents, legacy names → callback).
+_ALLOWED_DECISION_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "final_message",
+        "call_tool",
+        "call_subagent",
+        "callback",
+        "invoke_skill",
+    }
+)
 
 
 def _optional_text(value: object) -> str | None:
@@ -32,8 +46,16 @@ class AgentDecision:
     def from_model_response(cls, response: ModelResponse) -> "AgentDecision":
         """Create an `AgentDecision` from a normalized model response."""
         payload = response.payload
+        if not isinstance(payload, dict):
+            raise ValueError(
+                "Invalid model decision JSON: payload must be a JSON object with a top-level \"kind\" field."
+            )
         if "kind" not in payload:
-            return cls(kind="final_message", message=response.raw_text)
+            raise ValueError(
+                'Invalid model decision JSON: missing top-level "kind" field '
+                "(json_object contract requires a structured decision object)."
+            )
+
         raw_kind = str(payload.get("kind", "")).strip()
         callback_intent = _optional_text(payload.get("intent"))
         normalized_kind = raw_kind
@@ -48,17 +70,46 @@ class AgentDecision:
         if raw_kind in {"request_parameter", "request_user_input", "callback_to_caller"}:
             normalized_kind = "callback"
             callback_intent = "information_request"
+            _LOGGER.info(
+                "Decision kind alias: mapped top-level kind %r to callback (intent=%r)",
+                raw_kind,
+                callback_intent,
+            )
         elif raw_kind in callback_kinds:
             normalized_kind = "callback"
             callback_intent = raw_kind
+            _LOGGER.info(
+                "Decision kind alias: mapped top-level kind %r to callback (intent=%r)",
+                raw_kind,
+                callback_intent,
+            )
+
+        if normalized_kind not in _ALLOWED_DECISION_KINDS:
+            allowed = ", ".join(sorted(_ALLOWED_DECISION_KINDS))
+            raise ValueError(
+                f"Invalid model decision JSON: unsupported 'kind' {raw_kind!r}. "
+                f"Must be one of: {allowed}. "
+                "Callback-style intents may also be used as top-level kind "
+                "(see agents/system.decision.md). Do not invent other kinds."
+            )
+
+        subagent_id = _optional_text(payload.get("subagent_id"))
+        tool_name = _optional_text(payload.get("tool_name"))
+        if subagent_id is not None and tool_name is not None:
+            raise ValueError(
+                "Invalid model decision JSON: both subagent_id and tool_name are set; "
+                "use exactly one target per decision."
+            )
+
         return cls(
             kind=normalized_kind,
             message=str(payload.get("message", "")).strip(),
             parameters=dict(payload.get("parameters", {}) or {}),
-            subagent_id=_optional_text(payload.get("subagent_id")),
-            tool_name=_optional_text(payload.get("tool_name")),
+            subagent_id=subagent_id,
+            tool_name=tool_name,
             callback_intent=callback_intent,
             skill_name=_optional_text(payload.get("skill_name")),
         )
+
 
 __all__ = ["AgentDecision"]

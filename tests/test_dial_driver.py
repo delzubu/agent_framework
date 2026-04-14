@@ -1,12 +1,13 @@
 """Tests for DialChatCompletionsDriver with mocked httpx responses."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agent_framework.errors import ModelDriverError
-from agent_framework.model import DriverCapabilities, ModelContext, ModelResponse
+from agent_framework.model import DEFAULT_RESPONSE_MODE, DriverCapabilities, ModelContext, ModelResponse
 
 
 # ---------------------------------------------------------------------------
@@ -16,7 +17,7 @@ from agent_framework.model import DriverCapabilities, ModelContext, ModelRespons
 
 def _make_context(
     messages=None,
-    response_mode="json_object",
+    response_mode=DEFAULT_RESPONSE_MODE,
     response_format=None,
     tools=(),
 ) -> ModelContext:
@@ -162,11 +163,37 @@ class TestDecideSuccess:
         assert result.raw_text == "Hello world"
         assert result.finish_reason == "stop"
         assert result.usage == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        body = mock_client.post.call_args.kwargs["json"]
+        assert "response_format" not in body
+
+    @pytest.mark.asyncio
+    async def test_json_object_sends_api_response_format_when_context_omits_it(self):
+        """DIAL requests json_object mode from the API when context.response_format is unset."""
+        driver = _make_driver()
+        ctx = _make_context(response_format=None)
+        payload = _make_response_payload('{"x": 1}')
+
+        mock_resp = _mock_httpx_response(200, payload)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        driver._client = mock_client
+
+        await driver.decide(
+            agent_id="a1",
+            provider_name="dial",
+            model_names=("gpt-4o",),
+            temperature=0.2,
+            context=ctx,
+        )
+
+        body = mock_client.post.call_args.kwargs["json"]
+        assert "response_format" in body
+        assert body["response_format"]["type"] == "json_object"
 
     @pytest.mark.asyncio
     async def test_json_object_response_is_parsed(self):
         driver = _make_driver()
-        ctx = _make_context(response_mode="json_object")
+        ctx = _make_context(response_mode=DEFAULT_RESPONSE_MODE)
         payload = _make_response_payload('{"kind": "done", "count": 3}')
 
         mock_resp = _mock_httpx_response(200, payload)
@@ -183,6 +210,26 @@ class TestDecideSuccess:
         )
 
         assert result.payload == {"kind": "done", "count": 3}
+
+    @pytest.mark.asyncio
+    async def test_json_object_invalid_json_raises_model_driver_error(self):
+        driver = _make_driver()
+        ctx = _make_context(response_mode=DEFAULT_RESPONSE_MODE)
+        payload = _make_response_payload("not valid json {")
+
+        mock_resp = _mock_httpx_response(200, payload)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        driver._client = mock_client
+
+        with pytest.raises(ModelDriverError, match="not valid JSON"):
+            await driver.decide(
+                agent_id="a1",
+                provider_name="dial",
+                model_names=("gpt-4o",),
+                temperature=0.2,
+                context=ctx,
+            )
 
     @pytest.mark.asyncio
     async def test_tool_call_response(self):
@@ -467,9 +514,23 @@ class TestAclose:
 
         mock_client.aclose.assert_called_once()
         assert driver._client is None
+        assert driver._httpx_loop is None
 
     @pytest.mark.asyncio
     async def test_aclose_noop_when_no_client(self):
         driver = _make_driver()
         assert driver._client is None
         await driver.aclose()  # Should not raise
+
+
+class TestAcquireClientLoopIsolation:
+    def test_new_httpx_client_when_event_loop_changes(self) -> None:
+        """``asyncio.run()`` closes its loop; cached ``AsyncClient`` must not be reused."""
+        driver = _make_driver()
+
+        async def acquire():
+            return await driver._acquire_client()
+
+        c1 = asyncio.run(acquire())
+        c2 = asyncio.run(acquire())
+        assert c1 is not c2

@@ -16,6 +16,216 @@ const treeEntries = [];
 /** @type {{ el: HTMLElement, event: Record<string, unknown> }[]} */
 const logEntries = [];
 
+/** Inline preview length before cropping (click opens modal with full text). ~80–100 chars. */
+const TRACE_STRING_PREVIEW_CHARS = 90;
+
+function looksLikeMarkdown(s) {
+  if (typeof s !== "string" || s.length < 4) return false;
+  return (
+    /(^|\n)#{1,6}\s/m.test(s) ||
+    /(^|\n)[-*+]\s/m.test(s) ||
+    /```[\s\S]*?```/.test(s) ||
+    /(^|\n)\|[^\n]+\|/m.test(s) ||
+    /\[[^\]]+\]\([^)]+\)/.test(s)
+  );
+}
+
+function getMarkedParse() {
+  const m = globalThis.marked;
+  if (m && typeof m.parse === "function") {
+    return m.parse.bind(m);
+  }
+  return null;
+}
+
+function openTraceDetailModal(title, text) {
+  const modal = document.getElementById("trace-detail-modal");
+  const titleEl = document.getElementById("trace-detail-modal-title");
+  const srcEl = document.getElementById("trace-detail-modal-source");
+  const mdEl = document.getElementById("trace-detail-modal-md");
+  const tabs = document.getElementById("trace-detail-dialog-tabs");
+  const tabSrc = document.getElementById("trace-detail-tab-source");
+  const tabMd = document.getElementById("trace-detail-tab-md");
+  if (!modal || !titleEl || !srcEl || !mdEl) return;
+  titleEl.textContent = title;
+  srcEl.textContent = text;
+  const parseMd = getMarkedParse();
+  const showMd = Boolean(parseMd && looksLikeMarkdown(text));
+  mdEl.innerHTML = "";
+  if (showMd && parseMd) {
+    try {
+      mdEl.innerHTML = parseMd(text);
+    } catch (_) {
+      mdEl.innerHTML = "<p><em>Could not render as Markdown.</em></p>";
+    }
+  }
+  if (tabs) tabs.hidden = !showMd;
+  if (tabMd) tabMd.style.display = showMd ? "" : "none";
+  if (tabSrc) tabSrc.classList.add("trace-detail-tab--active");
+  if (tabMd) tabMd.classList.remove("trace-detail-tab--active");
+  srcEl.classList.add("trace-detail-panel--active");
+  mdEl.classList.remove("trace-detail-panel--active");
+  modal.showModal();
+}
+
+function wireTraceDetailModal() {
+  const modal = document.getElementById("trace-detail-modal");
+  const closeBtn = document.getElementById("trace-detail-modal-close");
+  const tabSrc = document.getElementById("trace-detail-tab-source");
+  const tabMd = document.getElementById("trace-detail-tab-md");
+  const srcEl = document.getElementById("trace-detail-modal-source");
+  const mdEl = document.getElementById("trace-detail-modal-md");
+  if (!modal || !closeBtn) return;
+  closeBtn.addEventListener("click", () => modal.close());
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.close();
+  });
+  function showPanel(which) {
+    const showSrc = which === "source";
+    srcEl?.classList.toggle("trace-detail-panel--active", showSrc);
+    mdEl?.classList.toggle("trace-detail-panel--active", !showSrc);
+    tabSrc?.classList.toggle("trace-detail-tab--active", showSrc);
+    tabMd?.classList.toggle("trace-detail-tab--active", !showSrc);
+  }
+  tabSrc?.addEventListener("click", () => showPanel("source"));
+  tabMd?.addEventListener("click", () => showPanel("md"));
+}
+
+wireTraceDetailModal();
+
+function renderStringInTrace(parent, s, keyHint) {
+  const wrap = document.createElement("span");
+  wrap.className = "trace-json-str";
+  const openQ = document.createElement("span");
+  openQ.className = "trace-json-quote";
+  openQ.textContent = '"';
+  const inner = document.createElement("span");
+  inner.className = "trace-json-str-inner";
+  if (s.length <= TRACE_STRING_PREVIEW_CHARS) {
+    inner.textContent = s;
+  } else {
+    inner.textContent = s.slice(0, TRACE_STRING_PREVIEW_CHARS) + "…";
+    inner.classList.add("trace-json-str-inner--truncated");
+    inner.setAttribute("role", "button");
+    inner.tabIndex = 0;
+    inner.title = `Open full text (${s.length} characters)`;
+    const open = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openTraceDetailModal(String(keyHint || "Field"), s);
+    };
+    inner.addEventListener("click", open);
+    inner.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        e.stopPropagation();
+        open(e);
+      }
+    });
+  }
+  const closeQ = document.createElement("span");
+  closeQ.className = "trace-json-quote";
+  closeQ.textContent = '"';
+  wrap.appendChild(openQ);
+  wrap.appendChild(inner);
+  wrap.appendChild(closeQ);
+  parent.appendChild(wrap);
+}
+
+function appendJsonValue(parent, value, keyHint) {
+  if (value === null) {
+    const span = document.createElement("span");
+    span.className = "trace-json-lit trace-json-null";
+    span.textContent = "null";
+    parent.appendChild(span);
+    return;
+  }
+  const t = typeof value;
+  if (t === "string") {
+    renderStringInTrace(parent, value, keyHint);
+    return;
+  }
+  if (t === "number" || t === "boolean") {
+    const span = document.createElement("span");
+    span.className = "trace-json-lit";
+    span.textContent = JSON.stringify(value);
+    parent.appendChild(span);
+    return;
+  }
+  if (Array.isArray(value)) {
+    const block = document.createElement("div");
+    block.className = "trace-json-array";
+    if (value.length === 0) {
+      block.textContent = "[]";
+      parent.appendChild(block);
+      return;
+    }
+    value.forEach((item, i) => {
+      const row = document.createElement("div");
+      row.className = "trace-json-array-row";
+      const idx = document.createElement("span");
+      idx.className = "trace-json-idx";
+      idx.textContent = `${i}: `;
+      row.appendChild(idx);
+      const cell = document.createElement("span");
+      cell.className = "trace-json-array-cell";
+      appendJsonValue(cell, item, `${keyHint || "item"}[${i}]`);
+      row.appendChild(cell);
+      block.appendChild(row);
+    });
+    parent.appendChild(block);
+    return;
+  }
+  if (t === "object") {
+    const keys = Object.keys(value);
+    if (keys.length === 0) {
+      const span = document.createElement("span");
+      span.className = "trace-json-lit";
+      span.textContent = "{}";
+      parent.appendChild(span);
+      return;
+    }
+    const obj = document.createElement("div");
+    obj.className = "trace-json-obj";
+    for (const k of keys) {
+      obj.appendChild(renderJsonKeyRow(k, value[k], keyHint ? `${keyHint}.${k}` : k));
+    }
+    parent.appendChild(obj);
+  }
+}
+
+function renderJsonKeyRow(k, v, path) {
+  const row = document.createElement("div");
+  row.className = "trace-json-kv";
+  const keyEl = document.createElement("span");
+  keyEl.className = "trace-json-key";
+  keyEl.textContent = `${k}: `;
+  row.appendChild(keyEl);
+  const valWrap = document.createElement("span");
+  valWrap.className = "trace-json-val";
+  appendJsonValue(valWrap, v, path);
+  row.appendChild(valWrap);
+  return row;
+}
+
+function renderPayloadTree(payload) {
+  const root = document.createElement("div");
+  root.className = "trace-payload-tree";
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    appendJsonValue(root, payload, "payload");
+    return root;
+  }
+  const keys = Object.keys(payload);
+  if (keys.length === 0) {
+    root.textContent = "{}";
+    return root;
+  }
+  for (const k of keys) {
+    root.appendChild(renderJsonKeyRow(k, payload[k], k));
+  }
+  return root;
+}
+
 function getPayload(event) {
   return event.payload && typeof event.payload === "object" ? event.payload : {};
 }
@@ -104,6 +314,40 @@ function appendLogLine(event) {
   logEntries.push(entry);
   setEntryVisible(entry);
   logStrip.scrollTop = logStrip.scrollHeight;
+}
+
+/**
+ * Spans show runtime failures; the Logs strip only subscribed to channel=log (Python logging).
+ * Duplicate runtime error/warning rows into Logs with channel=log so filters stay consistent.
+ */
+function mirrorRuntimeSeverityToLogStrip(event) {
+  const channel = typeof event.channel === "string" ? event.channel : "runtime";
+  if (channel !== "runtime") {
+    return;
+  }
+  const lvl = typeof event.level === "string" ? event.level : "";
+  if (lvl !== "error" && lvl !== "warning") {
+    return;
+  }
+  const p = getPayload(event);
+  const message =
+    (typeof p.message === "string" && p.message) ||
+    (typeof p.error === "string" && p.error) ||
+    (typeof p.detail === "string" && p.detail) ||
+    (typeof event.summary === "string" && event.summary) ||
+    (typeof event.title === "string" && event.title) ||
+    lvl;
+  const kind = typeof event.kind === "string" ? event.kind : "runtime";
+  appendLogLine({
+    channel: "log",
+    level: lvl,
+    kind: `${kind}.ui_mirror`,
+    title: typeof event.title === "string" ? event.title : message,
+    payload: {
+      logger_name: kind,
+      message,
+    },
+  });
 }
 
 function getSpanContainer(event) {
@@ -259,10 +503,11 @@ function buildTraceDetails(event) {
     summary.appendChild(document.createTextNode(" "));
     summary.appendChild(badge);
   }
-  const pre = document.createElement("pre");
-  pre.textContent = JSON.stringify(event.payload ?? {}, null, 2);
+  const body = document.createElement("div");
+  body.className = "trace-event-body";
+  body.appendChild(renderPayloadTree(event.payload ?? {}));
   node.appendChild(summary);
-  node.appendChild(pre);
+  node.appendChild(body);
   return node;
 }
 
@@ -281,6 +526,8 @@ function routeTraceEvent(event) {
     appendLogLine(event);
     return;
   }
+
+  mirrorRuntimeSeverityToLogStrip(event);
 
   const kind = typeof event.kind === "string" ? event.kind : "";
 

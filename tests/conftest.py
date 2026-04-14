@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from agent_framework.model import ModelResponse
+
+# Avoid writing agent-host-*.jsonl under ./logs for every AgentHost.from_env() test.
+os.environ.setdefault("AGENT_HOST_RECEIVE_LOG", "0")
 
 
 class FakeModelDriver:

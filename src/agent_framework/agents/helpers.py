@@ -128,6 +128,11 @@ def coerce_parameter_value(spec: AgentParameter, raw_value: str) -> Any:
     return raw_value
 
 
+# TODO: Revisit extract_prompt_value — confirm all call sites (e.g. Agent.try_parse_prompt_input),
+# whether heuristic regex fallbacks (difficulty_class, skill_name) should stay or be stricter;
+# deferred; behavior unchanged for now.
+
+
 def extract_prompt_value(spec: AgentParameter, prompt: str) -> Any | None:
     """Extract one parameter value from tagged prompt content."""
     matches = list(

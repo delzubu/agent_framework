@@ -47,10 +47,13 @@ class SessionRunner:
             )
         host = AgentHost.from_env(str(self.env_path), user_comm=user_comm)
         audit_sub = host._audit_trace_subscriber
+        receive_sub = host._host_receive_log_subscriber
         if runtime_tracer is not None:
             host.runtime_tracer = runtime_tracer
             if audit_sub is not None:
                 host.runtime_tracer.subscribe(audit_sub)
+            if receive_sub is not None:
+                host.runtime_tracer.subscribe(receive_sub)
         return host
 
     def run_once(

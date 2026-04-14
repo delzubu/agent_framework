@@ -38,6 +38,35 @@ def test_agent_host_uses_supplied_runtime_tracer(fake_model_driver):
     assert host.runtime_tracer is tracer
 
 
+def test_enable_host_receive_log_writes_trace_events(tmp_path: Path) -> None:
+    host = AgentHost.create(model_driver=FakeModelDriver(), mcp_enabled=False)
+    host.enable_audit_trace(output_dir=tmp_path / "audit")
+    path = host.enable_host_receive_log(output_dir=tmp_path / "recv")
+    assert path.parent == tmp_path / "recv"
+    assert path.name.startswith("agent-host-")
+    assert path.suffix == ".jsonl"
+    assert host.host_receive_log_path == path
+    host.publish_trace_event(kind="runtime.probe", title="probe", summary="s")
+    text = path.read_text(encoding="utf-8")
+    assert "runtime.probe" in text
+    assert "probe" in text
+
+
+def test_from_env_enables_receive_log_when_env_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_HOST_RECEIVE_LOG", "1")
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "tools").mkdir()
+    (tmp_path / ".env").write_text(
+        "OPENAI_API_KEY=test-key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n"
+        f"AGENT_DIRECTORY={tmp_path / 'agents'}\nTOOLS_DIRECTORY={tmp_path / 'tools'}\n",
+        encoding="utf-8",
+    )
+    host = AgentHost.from_env(tmp_path / ".env", model_driver=FakeModelDriver())
+    assert host.host_receive_log_path is not None
+    assert host.host_receive_log_path.parent.resolve() == (tmp_path / "logs").resolve()
+
+
 def _write_env(env_path: Path) -> None:
     env_path.write_text(
         "OPENAI_API_KEY=test-key\nDEFAULT_PROVIDER=openai\nDEFAULT_MODEL=gpt-4o-mini\n",

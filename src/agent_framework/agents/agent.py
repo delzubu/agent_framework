@@ -19,6 +19,7 @@ from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
     CapabilityDefinition,
     CapabilityParameter,
+    DEFAULT_RESPONSE_MODE,
     ModelContext,
     ModelDriver,
     ModelResponse,
@@ -1443,11 +1444,27 @@ class Agent:
         return {item.name: item for item in self.parameters}
 
     def _normalize_decision_capabilities(self, decision: AgentDecision) -> AgentDecision:
-        """Repair common tool/subagent slot confusion using declared capabilities."""
+        """Repair tool vs subagent *slots* when they disagree with declared capabilities.
+
+        **Intentional and confirmed:** This is not open-ended semantic inference on unknown
+        ``kind`` strings. Only the branches below apply: the model used an allowed ``kind``
+        but put a declared child-agent id or tool name in the wrong field, or used
+        ``callback`` while filling a slot that uniquely matches a declared capability.
+        Repair is keyed solely against ``allowed_child_agents`` / ``allowed_tools``.
+
+        Both ``subagent_id`` and ``tool_name`` non-empty is always rejected (ambiguous).
+        """
+        if decision.subagent_id is not None and decision.tool_name is not None:
+            raise ValueError(
+                "Invalid model decision: both subagent_id and tool_name are set; "
+                "use exactly one of call_tool, call_subagent, or callback with a single target."
+            )
+
         if decision.kind == "callback":
             if decision.subagent_id in self.allowed_child_agents:
                 _LOGGER.warning(
-                    "Agent %s received callback decision naming legal subagent %s; normalizing to call_subagent.",
+                    "Agent %s: decision kind mismatch — model emitted callback but subagent_id=%r "
+                    "matches a declared child agent; normalizing to call_subagent (intentional slot repair).",
                     self.agent_id,
                     decision.subagent_id,
                 )
@@ -1460,7 +1477,8 @@ class Agent:
                 )
             if decision.tool_name in self.allowed_tools:
                 _LOGGER.warning(
-                    "Agent %s received callback decision naming legal tool %s; normalizing to call_tool.",
+                    "Agent %s: decision kind mismatch — model emitted callback but tool_name=%r "
+                    "matches a declared tool; normalizing to call_tool (intentional slot repair).",
                     self.agent_id,
                     decision.tool_name,
                 )
@@ -1474,7 +1492,8 @@ class Agent:
         if decision.kind == "call_tool":
             if decision.tool_name is None and decision.subagent_id in self.allowed_child_agents:
                 _LOGGER.warning(
-                    "Agent %s received call_tool decision with subagent id %s and no tool name; normalizing to call_subagent.",
+                    "Agent %s: model emitted call_tool with no tool_name but subagent_id=%r "
+                    "matches a declared child agent; normalizing to call_subagent (intentional slot repair).",
                     self.agent_id,
                     decision.subagent_id,
                 )
@@ -1485,9 +1504,14 @@ class Agent:
                     subagent_id=decision.subagent_id,
                     callback_intent=decision.callback_intent,
                 )
-            if decision.tool_name not in self.allowed_tools and decision.tool_name in self.allowed_child_agents:
+            if (
+                decision.tool_name is not None
+                and decision.tool_name not in self.allowed_tools
+                and decision.tool_name in self.allowed_child_agents
+            ):
                 _LOGGER.warning(
-                    "Agent %s received call_tool decision with subagent id in tool_name slot (%s); normalizing to call_subagent.",
+                    "Agent %s: model put a child-agent id in tool_name (%r); "
+                    "normalizing to call_subagent (intentional slot repair).",
                     self.agent_id,
                     decision.tool_name,
                 )
@@ -1501,7 +1525,8 @@ class Agent:
         if decision.kind == "call_subagent":
             if decision.subagent_id is None and decision.tool_name in self.allowed_tools:
                 _LOGGER.warning(
-                    "Agent %s received call_subagent decision with tool name %s and no subagent id; normalizing to call_tool.",
+                    "Agent %s: model emitted call_subagent with no subagent_id but tool_name=%r "
+                    "matches a declared tool; normalizing to call_tool (intentional slot repair).",
                     self.agent_id,
                     decision.tool_name,
                 )
@@ -1512,9 +1537,14 @@ class Agent:
                     tool_name=decision.tool_name,
                     callback_intent=decision.callback_intent,
                 )
-            if decision.subagent_id not in self.allowed_child_agents and decision.subagent_id in self.allowed_tools:
+            if (
+                decision.subagent_id is not None
+                and decision.subagent_id not in self.allowed_child_agents
+                and decision.subagent_id in self.allowed_tools
+            ):
                 _LOGGER.warning(
-                    "Agent %s received call_subagent decision with tool id in subagent_id slot (%s); normalizing to call_tool.",
+                    "Agent %s: model put a tool id in subagent_id (%r); "
+                    "normalizing to call_tool (intentional slot repair).",
                     self.agent_id,
                     decision.subagent_id,
                 )
