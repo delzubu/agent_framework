@@ -118,6 +118,7 @@ class AgentEventPublisher:
         *,
         host: Any | None = None,
         run_id: str,
+        parent_run_id: str | None = None,
         caller_id: str | None,
         agent_name: str,
         system_prompt: str,
@@ -125,16 +126,18 @@ class AgentEventPublisher:
         user_prompt: str,
         user_prompt_sources: tuple[str, ...],
     ) -> None:
+        """Emit audit start. ``parent_run_id`` is the caller agent's run id when this is a subagent (parallel-safe nesting)."""
         self._publish(
             make_trace_event(
                 channel="runtime",
                 kind="runtime.audit.agent_call_started",
                 title="Audit: agent call started",
                 span_id=run_id,
-                parent_span_id=None,
+                parent_span_id=parent_run_id,
                 context=TraceContext(run_id=run_id, agent_id=agent_name),
                 payload={
                     "run_id": run_id,
+                    "parent_run_id": parent_run_id,
                     "caller_id": caller_id,
                     "agent_name": agent_name,
                     "system_prompt": system_prompt,
@@ -177,12 +180,14 @@ class AgentEventPublisher:
                 span_id=run_id,
                 context=TraceContext(run_id=run_id, agent_id=agent_id),
                 payload={"decision": d},
-            )
+            ),
+            host=host,
         )
 
     def audit_callback(
         self,
         *,
+        host: Any | None = None,
         run_id: str,
         agent_id: str,
         intent: str,

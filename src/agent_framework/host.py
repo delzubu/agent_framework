@@ -763,12 +763,24 @@ class AgentHost:
                 print(result.message)
         return result
 
-    def call_subagent(self, *, caller: Agent, callee_id: str, parameters: dict[str, Any]) -> AgentResult:
+    def call_subagent(
+        self,
+        *,
+        caller: Agent,
+        callee_id: str,
+        parameters: dict[str, Any],
+        parent_run_id: str | None = None,
+    ) -> AgentResult:
         """Synchronously invoke a child agent from a caller agent."""
         base_dir = caller.source_path.parent if caller.source_path is not None else None
         callee = self._agent_with_runtime_tracing(self.get_agent(callee_id, base_dir=base_dir))
         with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
-            return callee.run(host=self, parameters=parameters, caller_id=caller.agent_id)
+            return callee.run(
+                host=self,
+                parameters=parameters,
+                caller_id=caller.agent_id,
+                parent_run_id=parent_run_id,
+            )
 
     def call_subagent_async(
         self,
@@ -776,9 +788,16 @@ class AgentHost:
         caller: Agent,
         callee_id: str,
         parameters: dict[str, Any],
+        parent_run_id: str | None = None,
     ) -> Future[AgentResult]:
         """Invoke a child agent on the thread pool for parallel execution."""
-        return self._executor.submit(self.call_subagent, caller=caller, callee_id=callee_id, parameters=parameters)
+        return self._executor.submit(
+            self.call_subagent,
+            caller=caller,
+            callee_id=callee_id,
+            parameters=parameters,
+            parent_run_id=parent_run_id,
+        )
 
     def execute_tool(self, tool_name: str, parameters: dict[str, Any]) -> str:
         """Execute a loaded tool by name."""

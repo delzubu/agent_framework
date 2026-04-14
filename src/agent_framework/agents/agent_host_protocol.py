@@ -28,7 +28,14 @@ class AgentHostProtocol(Protocol):
     def request_user_input(self, prompt: str) -> str:
         raise NotImplementedError
 
-    def call_subagent(self, *, caller: "Agent", callee_id: str, parameters: dict[str, Any]) -> AgentResult:
+    def call_subagent(
+        self,
+        *,
+        caller: "Agent",
+        callee_id: str,
+        parameters: dict[str, Any],
+        parent_run_id: str | None = None,
+    ) -> AgentResult:
         raise NotImplementedError
 
     def execute_tool(self, tool_name: str, parameters: dict[str, Any]) -> str:

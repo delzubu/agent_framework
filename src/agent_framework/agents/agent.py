@@ -271,6 +271,7 @@ class Agent:
         host: "AgentHostProtocol",
         parameters: dict[str, Any] | None = None,
         caller_id: str | None = None,
+        parent_run_id: str | None = None,
         rendered_prompt_override: str | None = None,
         conversation_messages: tuple[dict[str, str], ...] | None = None,
         prompt_fragments: tuple[str, ...] | None = None,
@@ -284,6 +285,8 @@ class Agent:
                 values only; the prompt remains the authoritative invocation
                 contract for extraction and validation.
             caller_id: Optional caller identifier used for callback requests.
+            parent_run_id: When this run is a subagent, the parent agent's ``run_id``
+                (used for trace/UI nesting; omit for root invocations).
 
         Returns:
             An `AgentResult` describing the completed invocation.
@@ -309,6 +312,7 @@ class Agent:
         agent_events.audit_agent_call_started(
             host=host,
             run_id=run.run_id,
+            parent_run_id=parent_run_id,
             caller_id=caller_id,
             agent_name=self.agent_id,
             system_prompt=_assemble_system_prompt(initial_context),
@@ -728,7 +732,12 @@ class Agent:
         )
         _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_call")
         try:
-            result = host.call_subagent(caller=self, callee_id=subagent_id, parameters=subagent_input)
+            result = host.call_subagent(
+                caller=self,
+                callee_id=subagent_id,
+                parameters=subagent_input,
+                parent_run_id=run.run_id,
+            )
         except Exception as exc:
             agent_events.audit_named_event(
                 host=host,

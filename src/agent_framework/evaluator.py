@@ -231,17 +231,29 @@ class RecordingAgentHost(AgentHost):
         """Return the recorded interactions in JSON-serializable form."""
         return tuple(item.to_dict() for item in self.recorded_interactions)
 
-    def call_subagent(self, *, caller, callee_id: str, parameters: dict[str, Any]):
+    def call_subagent(
+        self,
+        *,
+        caller,
+        callee_id: str,
+        parameters: dict[str, Any],
+        parent_run_id: str | None = None,
+    ):
         """Record a subagent call and its result."""
         self.recorded_interactions.append(
             RecordedInteraction(
                 kind="subagent_call",
                 caller_id=caller.agent_id,
                 callee_id=callee_id,
-                payload={"parameters": dict(parameters)},
+                payload={"parameters": dict(parameters), "parent_run_id": parent_run_id},
             )
         )
-        result = super().call_subagent(caller=caller, callee_id=callee_id, parameters=parameters)
+        result = super().call_subagent(
+            caller=caller,
+            callee_id=callee_id,
+            parameters=parameters,
+            parent_run_id=parent_run_id,
+        )
         self.recorded_interactions.append(
             RecordedInteraction(
                 kind="subagent_result",

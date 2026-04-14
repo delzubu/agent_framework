@@ -6,6 +6,8 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from agent_framework.agents.agent_result import AgentResult
+
 import pytest
 
 from agent_framework.host import AgentHost
@@ -271,6 +273,30 @@ class TestAgentHostProtocolCompliance:
     def test_has_call_subagent(self):
         host = AgentHost.create(model_driver=FakeModelDriver())
         assert callable(getattr(host, "call_subagent", None))
+
+    def test_call_subagent_passes_parent_run_id_to_child_run(self):
+        host = AgentHost.create(model_driver=FakeModelDriver(), builtin_tools=False)
+        child = MagicMock()
+        child.agent_id = "child"
+        child.source_path = Path("/tmp/child.md")
+        child.run.return_value = AgentResult(status="completed", message="", prompt="")
+        parent = MagicMock()
+        parent.agent_id = "parent"
+        parent.source_path = Path("/tmp/parent.md")
+
+        def fake_get_agent(self, agent_id, *, base_dir=None):
+            return child
+
+        with patch.object(AgentHost, "get_agent", fake_get_agent):
+            host.call_subagent(
+                caller=parent,
+                callee_id="child",
+                parameters={},
+                parent_run_id="parent-run-xyz",
+            )
+        child.run.assert_called_once()
+        assert child.run.call_args.kwargs["parent_run_id"] == "parent-run-xyz"
+        assert child.run.call_args.kwargs["caller_id"] == "parent"
 
     def test_has_open_context(self):
         host = AgentHost.create(model_driver=FakeModelDriver())

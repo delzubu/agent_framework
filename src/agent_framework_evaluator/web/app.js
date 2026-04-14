@@ -6,17 +6,35 @@ const promptInput = document.getElementById("prompt-input");
 const agentInput = document.getElementById("agent-select");
 const setupPathInput = document.getElementById("setup-path");
 const agentList = document.getElementById("agent-list");
-const minLevelSelect = document.getElementById("trace-min-level");
 const channelToggles = document.getElementById("channel-toggles");
 
-const LEVEL_ORDER = { debug: 0, info: 1, warning: 2, error: 3 };
-
-const bySpan = new Map();
+/** @type {Map<string, { details: HTMLElement, body: HTMLElement, spinner: HTMLElement, statusEl: HTMLElement, labelEl: HTMLElement, subEl: HTMLElement, agentName: string, lastStatus: string | null }>} */
+const runFrames = new Map();
 
 /** @type {{ el: HTMLElement, event: Record<string, unknown> }[]} */
 const treeEntries = [];
 /** @type {{ el: HTMLElement, event: Record<string, unknown> }[]} */
 const logEntries = [];
+
+function getPayload(event) {
+  return event.payload && typeof event.payload === "object" ? event.payload : {};
+}
+
+function getContext(event) {
+  return event.context && typeof event.context === "object" ? event.context : {};
+}
+
+function getEventRunId(event) {
+  const ctx = getContext(event);
+  if (typeof ctx.run_id === "string" && ctx.run_id) {
+    return ctx.run_id;
+  }
+  const p = getPayload(event);
+  if (typeof p.run_id === "string" && p.run_id) {
+    return p.run_id;
+  }
+  return null;
+}
 
 function channelEnabled(channel) {
   const id = `ch-${channel}`;
@@ -24,26 +42,14 @@ function channelEnabled(channel) {
   return box ? box.checked : true;
 }
 
-function minLevelThreshold() {
-  const v = minLevelSelect?.value || "warning";
-  return LEVEL_ORDER[v] ?? LEVEL_ORDER.warning;
-}
-
-function eventLevelOrder(event) {
-  const lv = typeof event.level === "string" ? event.level : "info";
-  return LEVEL_ORDER[lv] ?? LEVEL_ORDER.info;
-}
-
-function passesFilters(event) {
+/** Spans and log strip: channel checkboxes only (trace event level is display-only). */
+function passesChannelFilters(event) {
   const ch = typeof event.channel === "string" ? event.channel : "runtime";
-  if (!channelEnabled(ch)) {
-    return false;
-  }
-  return eventLevelOrder(event) >= minLevelThreshold();
+  return channelEnabled(ch);
 }
 
 function setEntryVisible(entry) {
-  entry.el.style.display = passesFilters(entry.event) ? "" : "none";
+  entry.el.style.display = passesChannelFilters(entry.event) ? "" : "none";
 }
 
 function reapplyFilters() {
@@ -58,7 +64,7 @@ function reapplyFilters() {
 function clearTraceUi() {
   traceTree.innerHTML = "";
   logStrip.innerHTML = "";
-  bySpan.clear();
+  runFrames.clear();
   treeEntries.length = 0;
   logEntries.length = 0;
 }
@@ -66,9 +72,8 @@ function clearTraceUi() {
 function appendLogLine(event) {
   const row = document.createElement("div");
   row.className = "log-line";
-  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
-  const loggerName =
-    typeof payload.logger_name === "string" ? payload.logger_name : "";
+  const payload = getPayload(event);
+  const loggerName = typeof payload.logger_name === "string" ? payload.logger_name : "";
   const message =
     typeof payload.message === "string"
       ? payload.message
@@ -101,8 +106,148 @@ function appendLogLine(event) {
   logStrip.scrollTop = logStrip.scrollHeight;
 }
 
-function appendTraceNode(event) {
+function getSpanContainer(event) {
+  const rid = getEventRunId(event);
+  if (rid && runFrames.has(rid)) {
+    return runFrames.get(rid).body;
+  }
+  return traceTree;
+}
+
+function mapStatusToOutcome(statusRaw) {
+  const s = String(statusRaw || "").toLowerCase();
+  if (s === "completed" || s === "success") {
+    return { text: String(statusRaw || "completed"), cls: "trace-agent-call--success" };
+  }
+  if (s === "failed" || s === "error") {
+    return { text: String(statusRaw || "failed"), cls: "trace-agent-call--error" };
+  }
+  if (s === "stopped" || s === "cancelled" || s === "canceled") {
+    return { text: String(statusRaw || "stopped"), cls: "trace-agent-call--stopped" };
+  }
+  if (s) {
+    return { text: String(statusRaw), cls: "trace-agent-call--neutral" };
+  }
+  return { text: "completed", cls: "trace-agent-call--success" };
+}
+
+function applyFrameOutcome(detailsEl, fr, statusRaw) {
+  const { text, cls } = mapStatusToOutcome(statusRaw);
+  detailsEl.classList.remove(
+    "trace-agent-call--running",
+    "trace-agent-call--success",
+    "trace-agent-call--error",
+    "trace-agent-call--stopped",
+    "trace-agent-call--neutral",
+  );
+  detailsEl.classList.add(cls);
+  fr.spinner.style.display = "none";
+  fr.spinner.setAttribute("aria-hidden", "true");
+  fr.statusEl.textContent = text;
+  fr.labelEl.textContent = fr.agentName;
+  if (fr.subEl) {
+    fr.subEl.textContent = "";
+  }
+}
+
+function beginAgentCallFrame(event) {
+  const p = getPayload(event);
+  const runId = typeof p.run_id === "string" ? p.run_id : null;
+  const parentRunId = p.parent_run_id != null && p.parent_run_id !== "" ? String(p.parent_run_id) : null;
+  const agentName = typeof p.agent_name === "string" ? p.agent_name : "agent";
+  if (!runId) {
+    appendTraceEventRow(event);
+    return;
+  }
+
+  let parentContainer = traceTree;
+  if (parentRunId && runFrames.has(parentRunId)) {
+    parentContainer = runFrames.get(parentRunId).body;
+  }
+
+  const details = document.createElement("details");
+  details.className = "trace-agent-call trace-agent-call--running";
+  details.open = false;
+
+  const summary = document.createElement("summary");
+  summary.className = "trace-agent-call-summary";
+
+  const spinner = document.createElement("span");
+  spinner.className = "trace-agent-call-spinner";
+  spinner.setAttribute("aria-hidden", "false");
+
+  const statusEl = document.createElement("span");
+  statusEl.className = "trace-agent-call-status";
+  statusEl.setAttribute("aria-live", "polite");
+
+  const labelEl = document.createElement("span");
+  labelEl.className = "trace-agent-call-label";
+  labelEl.textContent = agentName;
+
+  const subEl = document.createElement("span");
+  subEl.className = "trace-agent-call-sub";
+  subEl.textContent = "running…";
+
+  summary.appendChild(spinner);
+  summary.appendChild(statusEl);
+  summary.appendChild(document.createTextNode(" "));
+  summary.appendChild(labelEl);
+  summary.appendChild(document.createTextNode(" — "));
+  summary.appendChild(subEl);
+
+  const body = document.createElement("div");
+  body.className = "trace-agent-call-body";
+
+  details.appendChild(summary);
+  details.appendChild(body);
+  parentContainer.appendChild(details);
+
+  runFrames.set(runId, {
+    details,
+    body,
+    spinner,
+    statusEl,
+    labelEl,
+    subEl,
+    agentName,
+    lastStatus: null,
+  });
+
+  treeEntries.push({ el: details, event });
+  setEntryVisible(treeEntries[treeEntries.length - 1]);
+}
+
+function endAgentCallFrame(event) {
+  const p = getPayload(event);
+  const runId = typeof p.run_id === "string" ? p.run_id : null;
+  if (!runId) {
+    return;
+  }
+  const fr = runFrames.get(runId);
+  if (!fr) {
+    return;
+  }
+  if (fr.details.classList.contains("trace-agent-call--running")) {
+    applyFrameOutcome(fr.details, fr, fr.lastStatus || "completed");
+  }
+}
+
+function onAgentFinished(event) {
+  const rid = getEventRunId(event);
+  if (!rid || !runFrames.has(rid)) {
+    return;
+  }
+  const st = getPayload(event).status;
+  const fr = runFrames.get(rid);
+  if (st != null && st !== "") {
+    fr.lastStatus = String(st);
+  }
+  applyFrameOutcome(fr.details, fr, fr.lastStatus || st || "completed");
+}
+
+function buildTraceDetails(event) {
   const node = document.createElement("details");
+  node.className = "trace-event-row";
   const summary = document.createElement("summary");
   const ch = typeof event.channel === "string" ? event.channel : "";
   const lvl = typeof event.level === "string" ? event.level : "";
@@ -118,16 +263,13 @@ function appendTraceNode(event) {
   pre.textContent = JSON.stringify(event.payload ?? {}, null, 2);
   node.appendChild(summary);
   node.appendChild(pre);
-  const sid = event.span_id || event.event_id;
-  if (sid) {
-    bySpan.set(sid, node);
-  }
-  const pid = event.parent_span_id;
-  if (pid && bySpan.has(pid)) {
-    bySpan.get(pid).appendChild(node);
-  } else {
-    traceTree.appendChild(node);
-  }
+  return node;
+}
+
+function appendTraceEventRow(event) {
+  const container = getSpanContainer(event);
+  const node = buildTraceDetails(event);
+  container.appendChild(node);
   const entry = { el: node, event };
   treeEntries.push(entry);
   setEntryVisible(entry);
@@ -137,12 +279,27 @@ function routeTraceEvent(event) {
   const channel = typeof event.channel === "string" ? event.channel : "runtime";
   if (channel === "log") {
     appendLogLine(event);
-  } else {
-    appendTraceNode(event);
+    return;
   }
+
+  const kind = typeof event.kind === "string" ? event.kind : "";
+
+  if (kind === "runtime.audit.agent_call_started") {
+    beginAgentCallFrame(event);
+    return;
+  }
+  if (kind === "runtime.audit.agent_call_finished") {
+    endAgentCallFrame(event);
+    return;
+  }
+
+  if (kind === "runtime.agent_finished") {
+    onAgentFinished(event);
+  }
+
+  appendTraceEventRow(event);
 }
 
-minLevelSelect?.addEventListener("change", reapplyFilters);
 channelToggles?.addEventListener("change", reapplyFilters);
 
 let socket = null;

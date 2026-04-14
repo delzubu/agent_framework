@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from agent_framework.model import ProviderRequestTrace, ProviderResponseTrace
 from agent_framework.tracing import TraceContext, TraceEvent, make_trace_event
@@ -31,12 +32,14 @@ def build_llm_trace_event(trace: Any, *, kind: str, level: str = "info") -> Trac
     if hasattr(trace, "parsed_payload"):
         payload["parsed_payload"] = trace.parsed_payload
     agent_label = trace.agent_id or "host"
+    run_id = getattr(trace, "run_id", None)
     return make_trace_event(
         channel="llm",
         level=level,  # type: ignore[arg-type]
         kind=kind,
         title=f"{agent_label} {kind}",
-        span_id=getattr(trace, "run_id", None),
+        span_id=str(uuid4()),
+        parent_span_id=run_id,
         context=TraceContext(run_id=trace.run_id, agent_id=trace.agent_id),
         payload=payload,
     )

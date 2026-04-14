@@ -90,7 +90,7 @@ Enter the user instruction in **Prompt**, then **Run**. The client sends a WebSo
 { "type": "run", "agent_id": "<id>", "prompt": "<text>", "setup_path": "<optional path>" }
 ```
 
-**Response** and **trace** stream back on the same socket. The trace pane builds a **tree** from **`parent_span_id`** / **`span_id`**.
+**Response** and **trace** stream back on the same socket. The **Spans** pane groups events by **agent call**: each `runtime.audit.agent_call_started` opens a collapsible frame (collapsed by default) with a **spinner** while the run is in progress; when `runtime.agent_finished` arrives, the spinner is replaced by the **status** (e.g. completed / failed) and a color cue. Child events for that run (LLM, decisions, tools, etc.) are nested inside the frame. **Sub-agents** nest under the parent because the audit payload includes **`parent_run_id`** (the caller’s `run_id`), which keeps the tree correct even if multiple sub-agents are **forked in parallel** and finish out of order. Session-level rows (`runtime.session_started` / `finished`) stay at the root. Use the **channel** checkboxes to show or hide **runtime**, **llm**, **log**, and **user** events in both panes (trace level on each row is display-only). The **Logs** pane lists only `channel=log` events.
 
 ### 5.3 Clarifications
 
@@ -154,7 +154,7 @@ Full contract: [§9 Setup Module Contract](../architecture/agent-evaluator-web-r
 
 ## 8. Tracing and logs
 
-- **In the UI** — events are whatever the runner publishes to **`CompositeRuntimeTracer`** (runtime, user, LLM if enabled, mirrored console trace from **`TraceLoggingBehavior`** when agents use it).
+- **In the UI** — events are whatever the runner publishes to **`CompositeRuntimeTracer`** (runtime, user, LLM if enabled, **`log`** channel for Python logging when wired). The span view is **hierarchy-first** (agent-call frames + `parent_run_id`), not a flat `span_id` parent chain.
 - **Headless** — use **`--trace-jsonl`** / **`--trace-llm-dir`** on the evaluator CLI.
 - **Main framework CLI** — unified JSONL and optional Python logging mirror:
 

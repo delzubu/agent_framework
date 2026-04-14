@@ -223,3 +223,5 @@ def test_build_llm_trace_event_maps_provider_request() -> None:
     assert event.channel == "llm"
     assert event.kind == "llm.request"
     assert event.payload["agent_id"] == "root"
+    assert event.parent_span_id == "r1"
+    assert event.span_id is not None
