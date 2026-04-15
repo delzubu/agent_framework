@@ -48,6 +48,36 @@ def test_api_agents_endpoint_lists_discovered_agents() -> None:
     assert isinstance(data["agents"], list)
 
 
+def test_api_agent_system_prompt_404_unknown_agent() -> None:
+    client = TestClient(create_app())
+    r = client.get(
+        "/api/agent-system-prompt",
+        params={"env_path": ".env", "agent_id": "__no_such_agent_id__"},
+    )
+    assert r.status_code == 404
+
+
+def test_api_last_prompts_unknown_session() -> None:
+    client = TestClient(create_app())
+    r = client.get("/api/sessions/00000000-0000-0000-0000-000000000000/last-prompts")
+    assert r.status_code == 404
+
+
+def test_api_last_prompts_empty_when_no_run(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    env_f = tmp_path / ".env"
+    env_f.write_text("", encoding="utf-8")
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={"env_path": str(env_f)}).json()["session_id"]
+    r = client.get(f"/api/sessions/{sid}/last-prompts")
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("system_prompt") == ""
+    assert data.get("user_prompt") == ""
+    assert data.get("instruction_entered") == ""
+    assert data.get("user_messages") == []
+
+
 def test_user_input_http_unknown_session() -> None:
     client = TestClient(create_app())
     r = client.post(
@@ -116,12 +146,17 @@ def test_api_initializers_and_template(tmp_path) -> None:
     init_d = tmp_path / "init_here"
     init_d.mkdir()
     (init_d / "seed.py").write_text(
-        'PROMPT_TEMPLATE = "hello seed"\nEVALUATOR_CRITERIA = "check output"\n',
+        'PROMPT_TEMPLATE = "hello seed"\nEVALUATOR_CRITERIA = "check output"\n'
+        'DEFAULT_AGENT = "seed-agent"\n',
         encoding="utf-8",
     )
     sub = init_d / "pkg"
     sub.mkdir()
-    (sub / "nested.py").write_text('PROMPT_TEMPLATE = "nested"\n', encoding="utf-8")
+    (sub / "nested.py").write_text(
+        'PROMPT_TEMPLATE = "nested"\nDEFAULT_AGENT = "nested-agent"\n',
+        encoding="utf-8",
+    )
+    (init_d / "agent_only.py").write_text('DEFAULT_AGENT = "solo-agent"\n', encoding="utf-8")
     env_f.write_text(f"AGENT_EVAL_INITIALIZER_DIR={init_d.name}\n", encoding="utf-8")
 
     client = TestClient(create_app())
@@ -141,6 +176,17 @@ def test_api_initializers_and_template(tmp_path) -> None:
     assert tj["template"] == "hello seed"
     assert "evaluator_criteria" in tj
     assert tj["evaluator_criteria"] == "check output"
+    assert tj.get("agent") == "seed-agent"
+
+    ao = client.get(
+        "/api/initializer-template",
+        params={"env_path": str(env_f), "initializer": "agent_only.py"},
+    )
+    assert ao.status_code == 200
+    aoj = ao.json()
+    assert aoj["agent"] == "solo-agent"
+    assert aoj.get("template") == ""
+    assert aoj.get("evaluator_criteria") == ""
 
     tn = client.get(
         "/api/initializer-template",
@@ -150,6 +196,7 @@ def test_api_initializers_and_template(tmp_path) -> None:
     tnj = tn.json()
     assert tnj["template"] == "nested"
     assert tnj.get("evaluator_criteria") == ""
+    assert tnj.get("agent") == "nested-agent"
 
 
 def test_cli_run_supports_prompt_file(tmp_path: Path, monkeypatch) -> None:

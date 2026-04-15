@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from starlette.testclient import TestClient
 
 from agent_framework_evaluator.app import create_app
 from agent_framework_evaluator.evaluation import (
+    extract_first_llm_request_prompts,
     extract_initial_prompts,
     format_eval_input,
     parse_eval_response,
@@ -35,6 +37,57 @@ def test_extract_initial_prompts_dial() -> None:
     out = extract_initial_prompts(payload)
     assert out["system_prompt"] == "S"
     assert out["user_prompt"] == "U"
+
+
+def test_extract_first_llm_request_prompts_multiple_user_messages() -> None:
+    payload = {
+        "messages": [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "task"},
+            {"role": "user", "content": "skills_catalog"},
+        ]
+    }
+    out = extract_first_llm_request_prompts(payload)
+    assert out["system_prompt"] == "SYS"
+    assert out["user_prompt"] == "task"
+    assert out["user_messages"] == ["task", "skills_catalog"]
+
+
+def test_extract_first_llm_falls_back_from_empty_input_to_messages() -> None:
+    """Some traces include both keys; prefer the list that actually has turns."""
+    payload = {
+        "model": "gpt-4o",
+        "input": [],
+        "messages": [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "first"},
+            {"role": "user", "content": "## Skills\n[]"},
+        ],
+    }
+    out = extract_first_llm_request_prompts(payload)
+    assert out["user_messages"] == ["first", "## Skills\n[]"]
+
+
+def test_extract_first_llm_multimodal_user_content() -> None:
+    payload = {
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}, {"type": "text", "text": "world"}]},
+        ]
+    }
+    out = extract_first_llm_request_prompts(payload)
+    assert out["user_messages"] == ["hello\nworld"]
+
+
+def test_extract_first_llm_from_json_string_payload() -> None:
+    inner = {
+        "messages": [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "u1"},
+            {"role": "user", "content": "u2"},
+        ]
+    }
+    out = extract_first_llm_request_prompts(json.dumps(inner))
+    assert out["user_messages"] == ["u1", "u2"]
 
 
 def test_format_eval_input_contains_all_tags() -> None:

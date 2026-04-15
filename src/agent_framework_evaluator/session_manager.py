@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import uuid4
 
 from agent_framework.tracing import CompositeRuntimeTracer
@@ -18,7 +19,7 @@ class SessionRecord:
     debugger: DebuggerSubscriber
     env_path: str
     runner: SessionRunner
-    last_run_prompts: dict[str, str] | None = None
+    last_run_prompts: dict[str, Any] | None = None
 
 
 class SessionManager:

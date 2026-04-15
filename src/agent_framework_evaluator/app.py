@@ -14,15 +14,16 @@ from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent_framework.agent_registry import AgentRegistry
+from agent_framework.agent_registry import AgentRegistry, normalize_agent_id
 from agent_framework.agents.helpers import AgentMarkdownError
 from agent_framework.config import load_host_config
 from agent_framework.errors import ModelDriverError
 from agent_framework.tracing import TraceContext, make_trace_event
-from agent_framework_evaluator.evaluation import extract_initial_prompts, run_evaluation
+from agent_framework_evaluator.evaluation import extract_first_llm_request_prompts, run_evaluation
 from agent_framework_evaluator.initializer_catalog import (
     evaluator_initializer_root,
     list_initializer_scripts,
+    load_initializer_default_agent,
     load_initializer_default_evaluator_criteria,
     load_initializer_default_prompt,
     resolve_env_path,
@@ -206,6 +207,43 @@ def create_app() -> FastAPI:
         registry.discover()
         return {"agents": sorted(registry.list_names())}
 
+    @app.get("/api/agent-system-prompt")
+    def agent_system_prompt(env_path: str, agent_id: str) -> dict[str, str]:
+        """Return the raw ``system_prompt`` from the agent markdown (not provider-expanded)."""
+        cfg = load_host_config(resolve_env_path(env_path))
+        registry = AgentRegistry.from_config(cfg)
+        registry.discover()
+        aid = normalize_agent_id(agent_id) or "root"
+        try:
+            agent = registry.get(aid)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"system_prompt": agent.system_prompt}
+
+    @app.get("/api/sessions/{session_id}/last-prompts")
+    def last_prompts(session_id: str) -> dict[str, Any]:
+        """Snapshots from the last run: system, user parts, and text entered in the UI."""
+        rec = session_manager.get(session_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        snap = rec.last_run_prompts
+        if not snap:
+            return {
+                "system_prompt": "",
+                "user_prompt": "",
+                "instruction_entered": "",
+                "user_messages": [],
+            }
+        um = snap.get("user_messages")
+        if not isinstance(um, list):
+            um = [str(snap.get("user_prompt", ""))] if snap.get("user_prompt") else []
+        return {
+            "system_prompt": str(snap.get("system_prompt", "")),
+            "user_prompt": str(snap.get("user_prompt", "")),
+            "instruction_entered": str(snap.get("instruction_entered", "")),
+            "user_messages": [str(x) for x in um],
+        }
+
     @app.get("/api/initializers")
     def list_initializers(env_path: str = ".env") -> dict[str, Any]:
         env_file = resolve_env_path(env_path)
@@ -221,19 +259,23 @@ def create_app() -> FastAPI:
 
     @app.get("/api/initializer-template")
     def initializer_template(env_path: str, initializer: str) -> dict[str, Any]:
-        """Load initializer/setup ``.py`` and return default prompt and optional evaluator criteria."""
+        """Load initializer/setup ``.py`` and return default prompt, criteria, and optional agent id."""
         env_file = resolve_env_path(env_path)
         try:
             text = load_initializer_default_prompt(env_file, initializer)
             criteria = load_initializer_default_evaluator_criteria(env_file, initializer)
+            agent = load_initializer_default_agent(env_file, initializer)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not text and not criteria:
+        if not text and not criteria and not agent:
             raise HTTPException(
                 status_code=400,
-                detail="initializer not found or no PROMPT_TEMPLATE / get_prompt_template() / EVALUATOR_CRITERIA",
+                detail=(
+                    "initializer not found or no PROMPT_TEMPLATE / get_prompt_template() / "
+                    "EVALUATOR_CRITERIA / DEFAULT_AGENT / get_default_agent()"
+                ),
             )
-        return {"template": text or "", "evaluator_criteria": criteria or ""}
+        return {"template": text or "", "evaluator_criteria": criteria or "", "agent": agent or ""}
 
     @app.get("/api/setup-template")
     def setup_template(path: str) -> dict[str, Any]:
@@ -246,7 +288,15 @@ def create_app() -> FastAPI:
             if text is None and hasattr(module, "get_prompt_template"):
                 gt = module.get_prompt_template()
                 text = json.dumps(gt) if isinstance(gt, dict) else (gt or "")
-            return {"template": text or ""}
+            agent = ""
+            raw_agent = getattr(module, "DEFAULT_AGENT", None)
+            if isinstance(raw_agent, str) and raw_agent.strip():
+                agent = raw_agent.strip()
+            elif hasattr(module, "get_default_agent"):
+                g = module.get_default_agent()
+                if isinstance(g, str) and g.strip():
+                    agent = g.strip()
+            return {"template": text or "", "agent": agent}
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -309,11 +359,21 @@ def create_app() -> FastAPI:
                     rec.comm.submit_user_input(msg.get("text"), prompt_id=pid)
                 elif msg.get("type") == "run":
                     init_raw = msg.get("initializer") if msg.get("initializer") is not None else msg.get("setup_path")
-                    rec.last_run_prompts = None
+                    instruction_entered = str(msg.get("prompt", ""))
+                    # Seed so the UI always has composer text even if no LLM request fires;
+                    # on_first_llm_call replaces this with full trace-derived snapshots.
+                    rec.last_run_prompts = {
+                        "instruction_entered": instruction_entered,
+                        "system_prompt": "",
+                        "user_prompt": "",
+                        "user_messages": [],
+                    }
 
                     def on_first_llm_call(trace: Any) -> None:
                         payload = getattr(trace, "input_payload", None)
-                        rec.last_run_prompts = extract_initial_prompts(payload)
+                        snaps = extract_first_llm_request_prompts(payload)
+                        snaps["instruction_entered"] = instruction_entered
+                        rec.last_run_prompts = snaps
 
                     def work() -> dict[str, object]:
                         env_fp = resolve_env_path(rec.env_path)
@@ -337,8 +397,23 @@ def create_app() -> FastAPI:
                         )
                         continue
                     try:
+                        snaps = rec.last_run_prompts
                         await websocket.send_text(
-                            json.dumps({"type": "result", "payload": result}, ensure_ascii=False)
+                            json.dumps(
+                                {
+                                    "type": "result",
+                                    "payload": result,
+                                    "prompt_snapshots": snaps
+                                    if isinstance(snaps, dict)
+                                    else {
+                                        "system_prompt": "",
+                                        "user_prompt": "",
+                                        "instruction_entered": "",
+                                        "user_messages": [],
+                                    },
+                                },
+                                ensure_ascii=False,
+                            )
                         )
                     except (OSError, RuntimeError):
                         break

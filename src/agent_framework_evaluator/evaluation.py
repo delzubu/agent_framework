@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,8 @@ from agent_framework.errors import ModelDriverError
 from agent_framework.host import AgentHost
 from agent_framework.model import DEFAULT_RESPONSE_MODE, AsyncToSyncAdapter, ModelContext
 
-EVALUATOR_SYSTEM_PROMPT = """Evaluate the LLM agent output. The input contains the agent's system prompt, the user \
+EVALUATOR_SYSTEM_PROMPT = """
+Evaluate the LLM agent output very critically. The input contains the agent's system prompt, the user \
 prompt, optional evaluation criteria, and the agent result, each in XML tags. \
 Use the evaluation criteria as guidance but also apply your own reasoning.
 
@@ -20,6 +22,9 @@ Score 1-10:
   6-7  some requirements are missing but there are some that are met
   8-9  all explicit requirements covered; minor improvements possible
   10   complete and accurate match to all criteria
+
+You must be very strict and critical in your evaluation. The purpose of this excersise is to identify
+bugs and shortcomings early in the agent development process.
 
 Return a JSON object with no markdown fences and exactly these keys:
 
@@ -35,12 +40,14 @@ Return a JSON object with no markdown fences and exactly these keys:
   "result": text describing the overall evaluation of results
 }
 
-you must include at least 3 criteria that were checked by you, and all the criteria that was
-provided in the evaluation criteria.
+You must include at least 5 criteria that were checked by you (excluding the evaluation criteria provided)
+and all the criteria that was provided in the evaluation criteria. ideally, I expect at least 8-10 distinct 
+criteria that was evaluated.
 
-score must be close to the proportion of passed criteria (scaled to 1-10), but if there \
+Score must be close to the proportion of passed criteria (scaled to 1-10), but if there \
 is a strong reason to deviate from the proportion, you can adjust it by +/- 2 at maximum. \
-Usually, you will reduce it because critical output is missing or format is incorrect.
+Usually, you will reduce it because critical output is missing or format is incorrect. If 
+there is an adjustment, you must explicitly explain the reason for the adjustment in the result.
 """
 
 
@@ -69,32 +76,90 @@ def _eval_model_override(env_path: str | Path) -> tuple[str, ...] | None:
     return t or None
 
 
+def _content_to_str(content: Any) -> str:
+    """Flatten OpenAI-style message content (str, or list of text/image parts) to a string."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                ptype = part.get("type")
+                if ptype == "text" and "text" in part:
+                    parts.append(str(part["text"]))
+                elif "text" in part:
+                    parts.append(str(part["text"]))
+                elif ptype == "image_url":
+                    parts.append("[image]")
+        return "\n".join(p for p in parts if p)
+    return str(content)
+
+
+def _normalise_role(role: Any) -> str:
+    if role is None:
+        return ""
+    val = getattr(role, "value", None)
+    if isinstance(val, str):
+        return val.strip().lower()
+    s = str(role).strip().lower()
+    if "." in s:
+        s = s.rsplit(".", 1)[-1]
+    return s
+
+
 def _normalise_to_messages(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return []
     if isinstance(payload, list):
         return [m for m in payload if isinstance(m, dict)]
-    if isinstance(payload, dict):
-        if "input" in payload:
-            v = payload["input"]
-            return [m for m in v if isinstance(m, dict)] if isinstance(v, list) else []
-        if "messages" in payload:
-            v = payload["messages"]
-            return [m for m in v if isinstance(m, dict)] if isinstance(v, list) else []
+    if not isinstance(payload, dict):
+        return []
+    # Prefer a non-empty message list. OpenAI Responses traces use "input"; chat
+    # completions use "messages". If "input" is present but wrong-shaped/empty,
+    # fall back to "messages" (fixes dropped follow-up user turns).
+    for key in ("input", "messages"):
+        v = payload.get(key)
+        if isinstance(v, list):
+            msgs = [m for m in v if isinstance(m, dict)]
+            if msgs:
+                return msgs
     return []
 
 
-def extract_initial_prompts(input_payload: Any) -> dict[str, str]:
-    """Extract first system and user message text from a provider request trace payload."""
+def extract_first_llm_request_prompts(input_payload: Any) -> dict[str, Any]:
+    """Extract system and every ``user`` message from the first provider request (in order).
+
+    Multiple user turns are common (task text, then skills catalog, etc.).
+    """
     msgs = _normalise_to_messages(input_payload)
     system = ""
-    user = ""
+    users: list[str] = []
     for m in msgs:
-        role = m.get("role")
-        content = m.get("content", "")
+        role = _normalise_role(m.get("role"))
+        content = m.get("content")
+        c = _content_to_str(content)
         if role == "system" and not system:
-            system = str(content) if content is not None else ""
-        elif role == "user" and not user:
-            user = str(content) if content is not None else ""
-    return {"system_prompt": system, "user_prompt": user}
+            system = c
+        elif role == "user":
+            users.append(c)
+    return {
+        "system_prompt": system,
+        "user_prompt": users[0] if users else "",
+        "user_messages": users,
+    }
+
+
+def extract_initial_prompts(input_payload: Any) -> dict[str, str]:
+    """Extract first system and first user message (evaluation / backward compatibility)."""
+    d = extract_first_llm_request_prompts(input_payload)
+    return {"system_prompt": d["system_prompt"], "user_prompt": d["user_prompt"]}
 
 
 def format_eval_input(

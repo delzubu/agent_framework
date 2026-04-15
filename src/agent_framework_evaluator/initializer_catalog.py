@@ -116,3 +116,19 @@ def load_initializer_default_evaluator_criteria(env_file: Path, initializer_ref:
     if text is None and hasattr(module, "get_evaluator_criteria"):
         text = module.get_evaluator_criteria()
     return text if isinstance(text, str) else ""
+
+
+def load_initializer_default_agent(env_file: Path, initializer_ref: str) -> str:
+    """Load initializer/setup module and return default agent id, if any."""
+    path = resolve_setup_path_for_run(env_file, initializer_ref)
+    if path is None or not path.is_file():
+        return ""
+    module = load_setup_module(path)
+    raw = getattr(module, "DEFAULT_AGENT", None)
+    if raw is not None and isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if hasattr(module, "get_default_agent"):
+        g = module.get_default_agent()
+        if isinstance(g, str) and g.strip():
+            return g.strip()
+    return ""

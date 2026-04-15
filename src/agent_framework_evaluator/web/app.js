@@ -1,8 +1,7 @@
-const traceTree = document.getElementById("trace-tree");
-const logStrip = document.getElementById("log-strip");
+const traceFeed = document.getElementById("trace-feed");
 const appStatus = document.getElementById("app-status");
-const runButton = document.getElementById("run-button");
 const promptInput = document.getElementById("prompt-input");
+const sendChatButton = document.getElementById("send-chat-button");
 const envPathInput = document.getElementById("env-path");
 const agentInput = document.getElementById("agent-select");
 const initializerInput = document.getElementById("initializer-select");
@@ -10,37 +9,72 @@ const agentList = document.getElementById("agent-list");
 const initializerList = document.getElementById("initializer-list");
 const channelToggles = document.getElementById("channel-toggles");
 const conversationThread = document.getElementById("conversation-thread");
-const replyInput = document.getElementById("reply-input");
-const sendReplyButton = document.getElementById("send-reply-button");
+const modeSelect = document.getElementById("mode-select");
+const testsetHint = document.getElementById("testset-hint");
 const evaluatorPromptInput = document.getElementById("evaluator-prompt-input");
 const evaluationPanel = document.getElementById("evaluation-panel");
 const evalScoreBar = document.getElementById("eval-score-bar");
 const evalScoreLabel = document.getElementById("eval-score-label");
 const evaluationStatus = document.getElementById("evaluation-status");
 const evaluationScoreTrigger = document.getElementById("evaluation-score-trigger");
+const evaluationInlineDetail = document.getElementById("evaluation-inline-detail");
+const evaluateButton = document.getElementById("evaluate-button");
 const evaluationDetailModal = document.getElementById("evaluation-detail-modal");
 const evaluationDetailBody = document.getElementById("evaluation-detail-body");
 const evaluationDetailClose = document.getElementById("evaluation-detail-close");
-const evaluationActions = document.getElementById("evaluation-actions");
-const reevaluateButton = document.getElementById("reevaluate-button");
+const tabChat = document.getElementById("tab-chat");
+const tabEvaluation = document.getElementById("tab-evaluation");
+const tabAgent = document.getElementById("tab-agent");
+const panelChat = document.getElementById("tab-panel-chat");
+const panelEvaluation = document.getElementById("tab-panel-evaluation");
+const panelAgent = document.getElementById("tab-panel-agent");
+const agentPromptDisplay = document.getElementById("agent-prompt-display");
+const agentPromptEmpty = document.getElementById("agent-prompt-empty");
+const agentPromptRaw = document.getElementById("agent-prompt-raw");
+const agentPromptExpanded = document.getElementById("agent-prompt-expanded");
+const agentUserSection = document.getElementById("agent-user-section");
+const agentUserPrimaryDisplay = document.getElementById("agent-user-primary-display");
+const agentUserEmpty = document.getElementById("agent-user-empty");
+const agentUserExtra = document.getElementById("agent-user-extra");
+const agentUserExtraHeading = document.getElementById("agent-user-extra-heading");
+const agentUserEnteredBtn = document.getElementById("agent-user-entered");
+const agentUserActualBtn = document.getElementById("agent-user-actual");
 
 /** @typedef {{ criteria: string, passed: boolean, reason: string }} EvalCriterionRow */
 
 /** @type {null | { score: number, overall_verdict: string, evaluation: EvalCriterionRow[] }} */
 let lastEvaluationPayload = null;
 
-/** Last agent `result` payload from the server (for Re-evaluate). @type {Record<string, unknown> | null} */
+/** Last agent `result` payload from the server. @type {Record<string, unknown> | null} */
 let lastAgentResultPayload = null;
 
-/** @type {Map<string, { details: HTMLElement, body: HTMLElement, spinner: HTMLElement, statusEl: HTMLElement, labelEl: HTMLElement, subEl: HTMLElement, agentName: string, lastStatus: string | null }>} */
+/**
+ * Snapshots from the last run (first LLM request).
+ * @type {{
+ *   system_prompt: string,
+ *   user_prompt: string,
+ *   instruction_entered: string,
+ *   user_messages: string[],
+ * } | null}
+ */
+let lastPromptSnapshots = null;
+
+/** Primary user block: text typed in UI vs first user message sent to the model. */
+let userPrimaryMode = "entered";
+
+let evaluationInFlight = false;
+/** True while a run is in flight until result, error, or outbox (HITL). */
+let agentRunInProgress = false;
+
+/** @type {HTMLElement | null} */
+let typingPlaceholderEl = null;
+
+/** @type {Map<string, { details: HTMLElement, body: HTMLElement, spinner: HTMLElement, statusEl: HTMLElement, labelEl: HTMLElement, subEl: HTMLElement, agentName: string, lastStatus: string | null, depth: number }>} */
 const runFrames = new Map();
 
 /** @type {{ el: HTMLElement, event: Record<string, unknown> }[]} */
-const treeEntries = [];
-/** @type {{ el: HTMLElement, event: Record<string, unknown> }[]} */
-const logEntries = [];
+const unifiedEntries = [];
 
-/** Inline preview length before cropping (click opens modal with full text). ~80–100 chars. */
 const TRACE_STRING_PREVIEW_CHARS = 90;
 
 function looksLikeMarkdown(s) {
@@ -153,15 +187,18 @@ function renderEvalScoreBar(container, score) {
   }
 }
 
-function openEvaluationDetailModal() {
-  if (!evaluationDetailModal || !evaluationDetailBody || !lastEvaluationPayload) return;
+/**
+ * @param {HTMLElement} target
+ * @param {null | { score: number, overall_verdict: string, evaluation: EvalCriterionRow[] }} d
+ */
+function fillEvaluationDetailDom(target, d) {
+  if (!target || !d) return;
   const parseMd = getMarkedParse();
-  const d = lastEvaluationPayload;
-  evaluationDetailBody.innerHTML = "";
+  target.innerHTML = "";
 
   const hOverall = document.createElement("h4");
   hOverall.textContent = "Overall result";
-  evaluationDetailBody.appendChild(hOverall);
+  target.appendChild(hOverall);
   const overallDiv = document.createElement("div");
   overallDiv.className = "evaluation-detail-section";
   const ov = d.overall_verdict || "";
@@ -174,11 +211,11 @@ function openEvaluationDetailModal() {
   } else {
     overallDiv.textContent = ov;
   }
-  evaluationDetailBody.appendChild(overallDiv);
+  target.appendChild(overallDiv);
 
   const hCrit = document.createElement("h4");
   hCrit.textContent = "Criteria";
-  evaluationDetailBody.appendChild(hCrit);
+  target.appendChild(hCrit);
 
   const table = document.createElement("table");
   table.className = "eval-detail-table";
@@ -228,9 +265,24 @@ function openEvaluationDetailModal() {
     }
   }
   table.appendChild(tbody);
-  evaluationDetailBody.appendChild(table);
+  target.appendChild(table);
+}
 
+function openEvaluationDetailModal() {
+  if (!evaluationDetailModal || !evaluationDetailBody || !lastEvaluationPayload) return;
+  fillEvaluationDetailDom(evaluationDetailBody, lastEvaluationPayload);
   evaluationDetailModal.showModal();
+}
+
+function syncInlineEvaluationDetail() {
+  if (!evaluationInlineDetail) return;
+  if (lastEvaluationPayload) {
+    evaluationInlineDetail.hidden = false;
+    fillEvaluationDetailDom(evaluationInlineDetail, lastEvaluationPayload);
+  } else {
+    evaluationInlineDetail.innerHTML = "";
+    evaluationInlineDetail.hidden = true;
+  }
 }
 
 function resetEvaluationPanel() {
@@ -239,11 +291,12 @@ function resetEvaluationPanel() {
   if (evalScoreBar) evalScoreBar.innerHTML = "";
   if (evalScoreLabel) evalScoreLabel.textContent = "";
   if (evaluationStatus) evaluationStatus.textContent = "";
+  syncInlineEvaluationDetail();
 }
 
 function clearStoredAgentResult() {
   lastAgentResultPayload = null;
-  updateReevaluateUi();
+  updateEvaluateUi();
 }
 
 function hasAgentOutputForEval() {
@@ -252,17 +305,14 @@ function hasAgentOutputForEval() {
   );
 }
 
-function updateReevaluateUi() {
+function updateEvaluateUi() {
   const hasOut = hasAgentOutputForEval();
   const critOk = Boolean(evaluatorPromptInput?.value?.trim());
-  if (evaluationActions) evaluationActions.hidden = !hasOut;
-  if (reevaluateButton) {
-    reevaluateButton.disabled = !hasOut || !critOk;
-  }
+  const canRun = hasOut && critOk && !evaluationInFlight;
+  if (evaluateButton) evaluateButton.disabled = !canRun;
 }
 
 /**
- * Only the user-facing message text is sent for evaluation (no status or other payload fields).
  * @param {Record<string, unknown> | null | undefined} payload
  */
 function agentMessageOnly(payload) {
@@ -288,11 +338,12 @@ async function runPostEvaluation(agentResultPayload) {
   const crit = evaluatorPromptInput?.value?.trim() ?? "";
   if (!crit) {
     resetEvaluationPanel();
-    updateReevaluateUi();
+    updateEvaluateUi();
     return;
   }
   if (!evaluationPanel || !evalScoreBar || !evalScoreLabel) return;
-  if (reevaluateButton) reevaluateButton.disabled = true;
+  evaluationInFlight = true;
+  updateEvaluateUi();
   evaluationPanel.hidden = false;
   if (evaluationStatus) evaluationStatus.textContent = "Scoring…";
   renderEvalScoreBar(evalScoreBar, 0);
@@ -330,15 +381,17 @@ async function runPostEvaluation(agentResultPayload) {
     };
     renderEvalScoreBar(evalScoreBar, scoreN);
     evalScoreLabel.textContent = scoreN.toFixed(1);
-    if (evaluationStatus)
-      evaluationStatus.textContent = "Click the score for the overall result and criteria table.";
+    if (evaluationStatus) evaluationStatus.textContent = "";
+    syncInlineEvaluationDetail();
   } catch (err) {
     lastEvaluationPayload = null;
     renderEvalScoreBar(evalScoreBar, 0);
     evalScoreLabel.textContent = "";
     if (evaluationStatus) evaluationStatus.textContent = `Evaluation failed: ${err}`;
+    syncInlineEvaluationDetail();
   } finally {
-    updateReevaluateUi();
+    evaluationInFlight = false;
+    updateEvaluateUi();
   }
 }
 
@@ -501,7 +554,6 @@ function channelEnabled(channel) {
   return box ? box.checked : true;
 }
 
-/** Spans and log strip: channel checkboxes only (trace event level is display-only). */
 function passesChannelFilters(event) {
   const ch = typeof event.channel === "string" ? event.channel : "runtime";
   return channelEnabled(ch);
@@ -512,39 +564,114 @@ function setEntryVisible(entry) {
 }
 
 function reapplyFilters() {
-  for (const e of treeEntries) {
-    setEntryVisible(e);
-  }
-  for (const e of logEntries) {
+  for (const e of unifiedEntries) {
     setEntryVisible(e);
   }
 }
 
+function depthForTraceEvent(event) {
+  const rid = getEventRunId(event);
+  if (rid && runFrames.has(rid)) {
+    return runFrames.get(rid).depth + 1;
+  }
+  const p = getPayload(event);
+  const pr = p.parent_run_id != null && p.parent_run_id !== "" ? String(p.parent_run_id) : null;
+  if (pr && runFrames.has(pr)) {
+    return runFrames.get(pr).depth + 1;
+  }
+  return 0;
+}
+
+function applyRowPadding(el, depth) {
+  el.style.paddingLeft = `${4 + depth * 12}px`;
+}
+
 function clearTraceUi() {
-  traceTree.innerHTML = "";
-  logStrip.innerHTML = "";
+  if (traceFeed) traceFeed.innerHTML = "";
   runFrames.clear();
-  treeEntries.length = 0;
-  logEntries.length = 0;
+  unifiedEntries.length = 0;
   if (conversationThread) conversationThread.innerHTML = "";
+  removeTypingPlaceholder();
   setAwaitingPrompt(null);
 }
 
 /** @type {string | null} */
 let awaitingPromptId = null;
 
+function setComposerEnabled(enabled) {
+  if (promptInput) promptInput.disabled = !enabled;
+  if (sendChatButton) sendChatButton.disabled = !enabled;
+}
+
+/**
+ * Waiting for user reply: enabled. Running LLM: disabled. Idle: enabled.
+ */
+function refreshComposerState() {
+  if (awaitingPromptId) {
+    setComposerEnabled(true);
+    return;
+  }
+  setComposerEnabled(!agentRunInProgress);
+}
+
 function setAwaitingPrompt(promptId) {
   awaitingPromptId = promptId;
-  const active = Boolean(promptId);
-  if (replyInput) {
-    replyInput.disabled = !active;
-    replyInput.placeholder = active
-      ? "Type your answer and press Send (submitted over HTTP)"
-      : "Your answer appears here when the agent asks for input…";
+  if (promptInput) {
+    promptInput.placeholder = promptId
+      ? "Type your reply and press Send…"
+      : "Message…";
   }
-  if (sendReplyButton) sendReplyButton.disabled = !active;
-  if (active && replyInput) replyInput.focus();
+  refreshComposerState();
+  if (promptId && promptInput) promptInput.focus();
 }
+
+function removeTypingPlaceholder() {
+  if (typingPlaceholderEl && typingPlaceholderEl.parentNode) {
+    typingPlaceholderEl.remove();
+  }
+  typingPlaceholderEl = null;
+}
+
+function showTypingPlaceholder() {
+  if (!conversationThread) return;
+  removeTypingPlaceholder();
+  const wrap = document.createElement("div");
+  wrap.className = "conv-msg conv-msg--typing";
+  wrap.setAttribute("aria-live", "polite");
+  wrap.setAttribute("aria-busy", "true");
+  const sp = document.createElement("span");
+  sp.className = "typing-spinner";
+  const lab = document.createElement("span");
+  lab.textContent = "Thinking…";
+  wrap.appendChild(sp);
+  wrap.appendChild(lab);
+  conversationThread.appendChild(wrap);
+  typingPlaceholderEl = wrap;
+  conversationThread.scrollTop = conversationThread.scrollHeight;
+}
+
+function scrollThreadToBottom() {
+  if (conversationThread) conversationThread.scrollTop = conversationThread.scrollHeight;
+}
+
+/** Grow the composer like ChatGPT; only show a scrollbar when content exceeds the cap. */
+function adjustPromptInputHeight() {
+  const el = promptInput;
+  if (!el) return;
+  const maxH = Math.min(200, Math.floor(window.innerHeight * 0.28));
+  el.style.maxHeight = `${maxH}px`;
+  el.style.height = "auto";
+  const sh = el.scrollHeight;
+  const h = Math.min(sh, maxH);
+  el.style.height = `${h}px`;
+  el.style.overflowY = sh > maxH ? "auto" : "hidden";
+}
+
+let promptResizeTimer = null;
+window.addEventListener("resize", () => {
+  if (promptResizeTimer) clearTimeout(promptResizeTimer);
+  promptResizeTimer = setTimeout(() => adjustPromptInputHeight(), 100);
+});
 
 /**
  * @param {"user" | "assistant" | "error"} role
@@ -583,7 +710,7 @@ function appendConversationBubble(role, text, opts) {
   wrap.appendChild(meta);
   wrap.appendChild(body);
   conversationThread.appendChild(wrap);
-  conversationThread.scrollTop = conversationThread.scrollHeight;
+  scrollThreadToBottom();
 }
 
 function setAppStatus(message) {
@@ -598,6 +725,10 @@ function clearAppStatus() {
  * @param {Record<string, unknown>} item
  */
 function handleOutboxItem(item) {
+  removeTypingPlaceholder();
+  agentRunInProgress = false;
+  refreshComposerState();
+
   const kind = item.kind;
   const pid = typeof item.prompt_id === "string" ? item.prompt_id : null;
   if (!pid) return;
@@ -620,7 +751,7 @@ function handleOutboxItem(item) {
   } else {
     return;
   }
-  appendConversationBubble("assistant", text);
+  appendConversationBubble("assistant", text, { markdown: true });
   setAwaitingPrompt(pid);
 }
 
@@ -643,12 +774,17 @@ async function postUserInputHttp(text) {
   }
   appendConversationBubble("user", text ?? "");
   setAwaitingPrompt(null);
-  if (replyInput) replyInput.value = "";
+  if (promptInput) promptInput.value = "";
+  adjustPromptInputHeight();
+  agentRunInProgress = true;
+  showTypingPlaceholder();
+  refreshComposerState();
 }
 
 function appendLogLine(event) {
   const row = document.createElement("div");
-  row.className = "log-line";
+  row.className = "log-line trace-feed-row";
+  applyRowPadding(row, 0);
   const payload = getPayload(event);
   const loggerName = typeof payload.logger_name === "string" ? payload.logger_name : "";
   const message =
@@ -676,17 +812,13 @@ function appendLogLine(event) {
   row.appendChild(logger);
   row.appendChild(msg);
 
-  logStrip.appendChild(row);
+  traceFeed.appendChild(row);
   const entry = { el: row, event };
-  logEntries.push(entry);
+  unifiedEntries.push(entry);
   setEntryVisible(entry);
-  logStrip.scrollTop = logStrip.scrollHeight;
+  traceFeed.scrollTop = traceFeed.scrollHeight;
 }
 
-/**
- * Spans show runtime failures; the Logs strip only subscribed to channel=log (Python logging).
- * Duplicate runtime error/warning rows into Logs with channel=log so filters stay consistent.
- */
 function mirrorRuntimeSeverityToLogStrip(event) {
   const channel = typeof event.channel === "string" ? event.channel : "runtime";
   if (channel !== "runtime") {
@@ -715,14 +847,6 @@ function mirrorRuntimeSeverityToLogStrip(event) {
       message,
     },
   });
-}
-
-function getSpanContainer(event) {
-  const rid = getEventRunId(event);
-  if (rid && runFrames.has(rid)) {
-    return runFrames.get(rid).body;
-  }
-  return traceTree;
 }
 
 function mapStatusToOutcome(statusRaw) {
@@ -771,13 +895,13 @@ function beginAgentCallFrame(event) {
     return;
   }
 
-  let parentContainer = traceTree;
-  if (parentRunId && runFrames.has(parentRunId)) {
-    parentContainer = runFrames.get(parentRunId).body;
-  }
+  const parentDepth =
+    parentRunId && runFrames.has(parentRunId) ? runFrames.get(parentRunId).depth : -1;
+  const depth = parentDepth >= 0 ? parentDepth + 1 : 0;
 
   const details = document.createElement("details");
-  details.className = "trace-agent-call trace-agent-call--running";
+  details.className = "trace-agent-call trace-agent-call--running trace-feed-row";
+  applyRowPadding(details, depth);
   details.open = false;
 
   const summary = document.createElement("summary");
@@ -811,7 +935,7 @@ function beginAgentCallFrame(event) {
 
   details.appendChild(summary);
   details.appendChild(body);
-  parentContainer.appendChild(details);
+  traceFeed.appendChild(details);
 
   runFrames.set(runId, {
     details,
@@ -822,10 +946,13 @@ function beginAgentCallFrame(event) {
     subEl,
     agentName,
     lastStatus: null,
+    depth,
   });
 
-  treeEntries.push({ el: details, event });
-  setEntryVisible(treeEntries[treeEntries.length - 1]);
+  const entry = { el: details, event };
+  unifiedEntries.push(entry);
+  setEntryVisible(entry);
+  traceFeed.scrollTop = traceFeed.scrollHeight;
 }
 
 function endAgentCallFrame(event) {
@@ -858,7 +985,9 @@ function onAgentFinished(event) {
 
 function buildTraceDetails(event) {
   const node = document.createElement("details");
-  node.className = "trace-event-row";
+  node.className = "trace-event-row trace-feed-row";
+  const d = depthForTraceEvent(event);
+  applyRowPadding(node, d);
   const summary = document.createElement("summary");
   const ch = typeof event.channel === "string" ? event.channel : "";
   const lvl = typeof event.level === "string" ? event.level : "";
@@ -879,12 +1008,12 @@ function buildTraceDetails(event) {
 }
 
 function appendTraceEventRow(event) {
-  const container = getSpanContainer(event);
   const node = buildTraceDetails(event);
-  container.appendChild(node);
+  traceFeed.appendChild(node);
   const entry = { el: node, event };
-  treeEntries.push(entry);
+  unifiedEntries.push(entry);
   setEntryVisible(entry);
+  traceFeed.scrollTop = traceFeed.scrollHeight;
 }
 
 function routeTraceEvent(event) {
@@ -926,9 +1055,20 @@ function onSocketMessage(ev) {
   }
   if (msg.type === "result" && msg.payload) {
     clearAppStatus();
+    removeTypingPlaceholder();
+    agentRunInProgress = false;
+    refreshComposerState();
+
     const p = /** @type {Record<string, unknown>} */ (msg.payload);
     lastAgentResultPayload = p;
-    updateReevaluateUi();
+    if (msg.prompt_snapshots && typeof msg.prompt_snapshots === "object") {
+      lastPromptSnapshots = normalizePromptSnapshots(
+        /** @type {Record<string, unknown>} */ (msg.prompt_snapshots),
+      );
+    }
+    updateEvaluateUi();
+    void refreshAgentPromptView();
+
     let messageText = "";
     let asMarkdown = false;
     if (typeof p.message === "string") {
@@ -942,11 +1082,14 @@ function onSocketMessage(ev) {
       }
     }
     appendConversationBubble("assistant", messageText, { markdown: asMarkdown });
-    runButton.disabled = false;
     void runPostEvaluation(p);
   }
   if (msg.type === "error") {
     clearAppStatus();
+    removeTypingPlaceholder();
+    agentRunInProgress = false;
+    refreshComposerState();
+
     const et = msg.error_type || "Error";
     const lines = [`[${et}] ${msg.message || ""}`];
     if (msg.path) {
@@ -956,7 +1099,6 @@ function onSocketMessage(ev) {
       lines.push(msg.hint);
     }
     appendConversationBubble("error", lines.join("\n\n"));
-    runButton.disabled = false;
     clearStoredAgentResult();
     resetEvaluationPanel();
   }
@@ -1065,56 +1207,60 @@ async function loadInitializerCatalog(envPath) {
       initializerList.appendChild(opt);
     }
   } catch (_) {
-    /* ignore */
+    /* ignore catalog failures */
   }
 }
 
-/** If prompt and/or evaluator criteria are empty and an initializer is selected, load defaults once. */
+function applyInitializerResponseFields(data) {
+  if (data.template && promptInput && !promptInput.value.trim()) {
+    promptInput.value = data.template;
+  }
+  if (data.evaluator_criteria && evaluatorPromptInput && !evaluatorPromptInput.value.trim()) {
+    evaluatorPromptInput.value = data.evaluator_criteria;
+  }
+  if (data.agent && agentInput && !agentInput.value.trim()) {
+    agentInput.value = data.agent;
+  }
+}
+
 async function maybeApplyInitializerPrompt() {
   if (!initializerInput) return;
   const init = initializerInput.value.trim();
   if (!init) return;
   const needPrompt = promptInput && !promptInput.value.trim();
   const needEval = evaluatorPromptInput && !evaluatorPromptInput.value.trim();
-  if (!needPrompt && !needEval) return;
+  const needAgent = agentInput && !agentInput.value.trim();
+  if (!needPrompt && !needEval && !needAgent) return;
   try {
     const r = await fetch(
       `/api/initializer-template?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(init)}`,
     );
     if (!r.ok) return;
     const data = await r.json();
-    if (data.template && promptInput && !promptInput.value.trim()) {
-      promptInput.value = data.template;
-    }
-    if (data.evaluator_criteria && evaluatorPromptInput && !evaluatorPromptInput.value.trim()) {
-      evaluatorPromptInput.value = data.evaluator_criteria;
-    }
-    updateReevaluateUi();
+    applyInitializerResponseFields(data);
+    updateEvaluateUi();
+    adjustPromptInputHeight();
   } catch (_) {
     /* leave fields empty */
   }
 }
 
-/** Fill prompt / evaluator from initializer module when field changes and fields are still empty. */
 initializerInput?.addEventListener("change", async () => {
   const raw = initializerInput.value.trim();
   if (!raw) return;
   const needPrompt = promptInput && !promptInput.value.trim();
   const needEval = evaluatorPromptInput && !evaluatorPromptInput.value.trim();
-  if (!needPrompt && !needEval) return;
+  const needAgent = agentInput && !agentInput.value.trim();
+  if (!needPrompt && !needEval && !needAgent) return;
   try {
     const ir = await fetch(
       `/api/initializer-template?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(raw)}`,
     );
     if (ir.ok) {
       const data = await ir.json();
-      if (data.template && promptInput && !promptInput.value.trim()) {
-        promptInput.value = data.template;
-      }
-      if (data.evaluator_criteria && evaluatorPromptInput && !evaluatorPromptInput.value.trim()) {
-        evaluatorPromptInput.value = data.evaluator_criteria;
-      }
-      updateReevaluateUi();
+      applyInitializerResponseFields(data);
+      updateEvaluateUi();
+      adjustPromptInputHeight();
       return;
     }
   } catch (_) {
@@ -1123,9 +1269,9 @@ initializerInput?.addEventListener("change", async () => {
   try {
     const res = await fetch(`/api/setup-template?path=${encodeURIComponent(raw)}`);
     const data = await res.json();
-    if (data.template && promptInput && !promptInput.value.trim()) {
-      promptInput.value = data.template;
-    }
+    applyInitializerResponseFields(data);
+    updateEvaluateUi();
+    adjustPromptInputHeight();
   } catch (_) {
     /* ignore */
   }
@@ -1149,6 +1295,8 @@ async function initSession() {
     if (defs.initializer && initializerInput) initializerInput.value = defs.initializer;
     await refreshCatalogs();
     await ensureSessionConnected();
+    refreshComposerState();
+    adjustPromptInputHeight();
   } catch (err) {
     setAppStatus(`Failed to start session: ${err}`);
   }
@@ -1165,7 +1313,17 @@ envPathInput?.addEventListener("change", () => {
   refreshCatalogs().catch(() => {});
 });
 
-runButton.addEventListener("click", async () => {
+async function sendChatOrRun() {
+  if (awaitingPromptId) {
+    const text = promptInput ? promptInput.value : "";
+    try {
+      await postUserInputHttp(text);
+    } catch (err) {
+      setAppStatus(`Reply failed: ${err}`);
+    }
+    return;
+  }
+
   try {
     await ensureSessionConnected();
     await maybeApplyInitializerPrompt();
@@ -1179,37 +1337,51 @@ runButton.addEventListener("click", async () => {
   }
   const agentId = agentInput.value.trim() || "root";
   const initializerPath = initializerInput ? initializerInput.value.trim() : "";
-  runButton.disabled = true;
+  const promptText = promptInput ? promptInput.value : "";
   clearStoredAgentResult();
   resetEvaluationPanel();
   clearTraceUi();
-  appendConversationBubble("user", promptInput.value || "(empty prompt)");
+  appendConversationBubble("user", promptText || "(empty prompt)");
+  agentRunInProgress = true;
+  refreshComposerState();
+  showTypingPlaceholder();
   setAppStatus("Running…");
   socket.send(
     JSON.stringify({
       type: "run",
       agent_id: agentId,
-      prompt: promptInput.value,
+      prompt: promptText,
       initializer: initializerPath || null,
     }),
   );
-});
-
-sendReplyButton?.addEventListener("click", async () => {
-  if (!awaitingPromptId || !replyInput) return;
-  const text = replyInput.value;
-  try {
-    await postUserInputHttp(text);
-  } catch (err) {
-    setAppStatus(`Reply failed: ${err}`);
+  if (promptInput) {
+    promptInput.value = "";
+    adjustPromptInputHeight();
   }
+}
+
+sendChatButton?.addEventListener("click", () => {
+  void sendChatOrRun();
 });
 
-replyInput?.addEventListener("keydown", (e) => {
+promptInput?.addEventListener("input", () => {
+  adjustPromptInputHeight();
+});
+
+promptInput?.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    sendReplyButton?.click();
+    void sendChatOrRun();
   }
+});
+
+evaluateButton?.addEventListener("click", () => {
+  if (!lastAgentResultPayload || evaluateButton?.disabled) return;
+  void runPostEvaluation(lastAgentResultPayload);
+});
+
+evaluatorPromptInput?.addEventListener("input", () => {
+  updateEvaluateUi();
 });
 
 evaluationScoreTrigger?.addEventListener("click", () => {
@@ -1223,14 +1395,178 @@ evaluationScoreTrigger?.addEventListener("keydown", (e) => {
   }
 });
 
-reevaluateButton?.addEventListener("click", () => {
-  if (!lastAgentResultPayload || reevaluateButton?.disabled) return;
-  void runPostEvaluation(lastAgentResultPayload);
+function setActiveTab(which) {
+  const tabs = [
+    { id: "chat", btn: tabChat, panel: panelChat },
+    { id: "evaluation", btn: tabEvaluation, panel: panelEvaluation },
+    { id: "agent", btn: tabAgent, panel: panelAgent },
+  ];
+  for (const t of tabs) {
+    const active = t.id === which;
+    if (t.btn) {
+      t.btn.classList.toggle("main-tab--active", active);
+      t.btn.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    if (t.panel) {
+      t.panel.classList.toggle("tab-panel--active", active);
+      t.panel.hidden = !active;
+    }
+  }
+  if (which === "agent") {
+    void refreshAgentPromptView();
+  }
+}
+
+tabChat?.addEventListener("click", () => setActiveTab("chat"));
+tabEvaluation?.addEventListener("click", () => setActiveTab("evaluation"));
+tabAgent?.addEventListener("click", () => setActiveTab("agent"));
+
+let agentPromptMode = "raw";
+let cachedRawSystemPrompt = "";
+
+/**
+ * @param {Record<string, unknown>} ps
+ */
+function normalizePromptSnapshots(ps) {
+  const system_prompt = String(ps.system_prompt ?? "");
+  const user_prompt = String(ps.user_prompt ?? "");
+  let user_messages = ps.user_messages;
+  if (!Array.isArray(user_messages)) {
+    user_messages = user_prompt ? [user_prompt] : [];
+  } else {
+    user_messages = user_messages.map((x) => String(x));
+  }
+  return {
+    system_prompt,
+    user_prompt,
+    instruction_entered: String(ps.instruction_entered ?? ""),
+    user_messages,
+  };
+}
+
+function syncUserPrimaryToggleUi() {
+  const entered = userPrimaryMode === "entered";
+  agentUserEnteredBtn?.classList.toggle("agent-toggle--active", entered);
+  agentUserActualBtn?.classList.toggle("agent-toggle--active", !entered);
+}
+
+function renderAgentUserSection() {
+  if (!agentUserSection || !agentUserPrimaryDisplay || !agentUserExtra) return;
+  if (!lastPromptSnapshots) {
+    agentUserSection.hidden = true;
+    return;
+  }
+  agentUserSection.hidden = false;
+  const entered = lastPromptSnapshots.instruction_entered;
+  const userMessages = lastPromptSnapshots.user_messages;
+  const firstSent = userMessages[0] ?? "";
+
+  let primaryText = userPrimaryMode === "entered" ? entered : firstSent;
+  agentUserPrimaryDisplay.textContent = primaryText;
+  const showUserEmpty = !String(primaryText).trim();
+  if (agentUserEmpty) {
+    agentUserEmpty.hidden = !showUserEmpty;
+  }
+
+  agentUserExtra.innerHTML = "";
+  const rest = userMessages.slice(1);
+  if (agentUserExtraHeading) {
+    agentUserExtraHeading.hidden = rest.length === 0;
+  }
+  for (let i = 0; i < rest.length; i++) {
+    const cap = document.createElement("div");
+    cap.className = "agent-user-additional-cap";
+    cap.textContent = `Additional user message ${i + 2}`;
+    const sub = document.createElement("pre");
+    sub.className = "agent-prompt-display agent-user-additional";
+    sub.textContent = rest[i];
+    agentUserExtra.appendChild(cap);
+    agentUserExtra.appendChild(sub);
+  }
+  syncUserPrimaryToggleUi();
+}
+
+async function fetchRawSystemPrompt() {
+  const aid = agentInput?.value.trim() || "root";
+  const ep = getEnvPath();
+  const res = await fetch(
+    `/api/agent-system-prompt?env_path=${encodeURIComponent(ep)}&agent_id=${encodeURIComponent(aid)}`,
+  );
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || res.statusText);
+  }
+  const data = await res.json();
+  cachedRawSystemPrompt = String(data.system_prompt ?? "");
+}
+
+async function ensurePromptSnapshotsFromApi() {
+  if (lastPromptSnapshots || !sessionId) return;
+  try {
+    const r = await fetch(`/api/sessions/${sessionId}/last-prompts`);
+    if (!r.ok) return;
+    const d = await r.json();
+    lastPromptSnapshots = normalizePromptSnapshots(/** @type {Record<string, unknown>} */ (d));
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+async function refreshAgentPromptView() {
+  if (!agentPromptDisplay || !agentPromptEmpty) return;
+  await ensurePromptSnapshotsFromApi();
+  if (agentPromptMode === "expanded") {
+    agentPromptRaw?.classList.remove("agent-toggle--active");
+    agentPromptExpanded?.classList.add("agent-toggle--active");
+    const sys = lastPromptSnapshots?.system_prompt;
+    if (sys && sys.length > 0) {
+      agentPromptDisplay.textContent = sys;
+      agentPromptEmpty.classList.remove("is-visible");
+    } else {
+      agentPromptDisplay.textContent = "";
+      agentPromptEmpty.classList.add("is-visible");
+    }
+  } else {
+    agentPromptRaw?.classList.add("agent-toggle--active");
+    agentPromptExpanded?.classList.remove("agent-toggle--active");
+    agentPromptEmpty.classList.remove("is-visible");
+    try {
+      await fetchRawSystemPrompt();
+      agentPromptDisplay.textContent = cachedRawSystemPrompt;
+    } catch (err) {
+      agentPromptDisplay.textContent = `Could not load agent: ${err}`;
+    }
+  }
+  renderAgentUserSection();
+}
+
+agentPromptRaw?.addEventListener("click", () => {
+  agentPromptMode = "raw";
+  void refreshAgentPromptView();
+});
+agentPromptExpanded?.addEventListener("click", () => {
+  agentPromptMode = "expanded";
+  void refreshAgentPromptView();
 });
 
-evaluatorPromptInput?.addEventListener("input", () => {
-  updateReevaluateUi();
+agentInput?.addEventListener("change", () => {
+  if (agentPromptMode === "raw") void refreshAgentPromptView();
 });
+
+agentUserEnteredBtn?.addEventListener("click", () => {
+  userPrimaryMode = "entered";
+  renderAgentUserSection();
+});
+agentUserActualBtn?.addEventListener("click", () => {
+  userPrimaryMode = "actual";
+  renderAgentUserSection();
+});
+
+modeSelect?.addEventListener("change", () => {
+  const v = modeSelect.value;
+  if (testsetHint) testsetHint.hidden = v !== "testset";
+});
+if (modeSelect && testsetHint) testsetHint.hidden = modeSelect.value !== "testset";
 
 initSession().catch((err) => {
   setAppStatus(`Failed to start session: ${err}`);

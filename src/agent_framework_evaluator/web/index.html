@@ -21,44 +21,75 @@
         <input id="initializer-select" type="text" list="initializer-list" placeholder="e.g. seed.py (from AGENT_EVAL_INITIALIZER_DIR) or full path" autocomplete="off" spellcheck="false">
         <datalist id="initializer-list"></datalist>
       </label>
-      <label>Mode <select id="mode-select"><option>Single Run</option><option>Test Set</option></select></label>
+      <label>Mode <select id="mode-select"><option value="single">Single Run</option><option value="testset">Test Set</option></select></label>
+      <p id="testset-hint" class="left-rail-hint" hidden>Test Set mode is reserved for future batch scoring.</p>
+      <p id="app-status" class="app-status" aria-live="polite"></p>
     </aside>
     <main id="main-pane">
-      <section id="prompt-pane">
-        <h2>Prompt</h2>
-        <textarea id="prompt-input"></textarea>
-        <div class="evaluator-prompt-block">
-          <label for="evaluator-prompt-input">Evaluator criteria <span class="field-hint">(not sent to the agent)</span></label>
-          <textarea id="evaluator-prompt-input" rows="4" placeholder="Describe how to judge the final answer. Used only after the run completes." spellcheck="true"></textarea>
-        </div>
-        <button id="run-button" type="button">Run</button>
-        <p id="app-status" class="app-status" aria-live="polite"></p>
-      </section>
-      <section id="conversation-pane">
-        <h2>Conversation</h2>
-        <div id="conversation-thread" class="conversation-thread" aria-live="polite"></div>
-        <div id="evaluation-actions" class="evaluation-actions" hidden>
-          <button type="button" id="reevaluate-button" class="reevaluate-button" disabled>Re-evaluate</button>
-        </div>
-        <div id="evaluation-panel" class="evaluation-panel" hidden>
-          <h3 class="evaluation-panel-title">Evaluation</h3>
-          <button type="button" id="evaluation-score-trigger" class="evaluation-score-trigger" aria-label="Open evaluation details">
-            <div class="eval-score-bar" id="eval-score-bar" aria-hidden="true"></div>
-            <span class="eval-score-label" id="eval-score-label"></span>
-          </button>
-          <p class="evaluation-status" id="evaluation-status"></p>
-        </div>
-        <div id="reply-bar" class="reply-bar">
-          <label id="reply-label" class="reply-label" for="reply-input">Reply when prompted</label>
-          <textarea id="reply-input" rows="2" placeholder="Your answer appears here when the agent asks for input…" disabled></textarea>
-          <div class="reply-actions">
-            <button type="button" id="send-reply-button" disabled>Send</button>
+      <div class="main-tabs" role="tablist" aria-label="Main panels">
+        <button type="button" class="main-tab main-tab--active" role="tab" aria-selected="true" aria-controls="tab-panel-chat" id="tab-chat">Chat</button>
+        <button type="button" class="main-tab" role="tab" aria-selected="false" aria-controls="tab-panel-evaluation" id="tab-evaluation">Evaluation</button>
+        <button type="button" class="main-tab" role="tab" aria-selected="false" aria-controls="tab-panel-agent" id="tab-agent">Agent</button>
+      </div>
+      <div id="tab-panel-chat" class="tab-panel tab-panel--active" role="tabpanel" aria-labelledby="tab-chat">
+        <div class="chat-layout">
+          <div id="conversation-thread" class="conversation-thread" aria-live="polite"></div>
+          <div id="chat-composer" class="chat-composer">
+            <div class="chat-composer-inner">
+              <textarea id="prompt-input" class="chat-input" rows="1" placeholder="Message…"></textarea>
+              <button type="button" id="send-chat-button" class="send-chat-button">Send</button>
+            </div>
           </div>
         </div>
-      </section>
+      </div>
+      <div id="tab-panel-evaluation" class="tab-panel" role="tabpanel" aria-labelledby="tab-evaluation" hidden>
+        <div class="evaluation-tab-inner">
+          <label class="eval-criteria-label" for="evaluator-prompt-input">Evaluator criteria <span class="field-hint">(not sent to the agent)</span></label>
+          <textarea id="evaluator-prompt-input" rows="3" placeholder="Describe how to judge the final answer. Used only after the run completes." spellcheck="true"></textarea>
+          <div class="evaluation-tab-actions">
+            <button type="button" id="evaluate-button" class="evaluate-button" disabled>Evaluate</button>
+          </div>
+          <div id="evaluation-panel" class="evaluation-panel" hidden>
+            <button type="button" id="evaluation-score-trigger" class="evaluation-score-trigger" aria-label="Evaluation score (details below)">
+              <div class="eval-score-bar" id="eval-score-bar" aria-hidden="true"></div>
+              <span class="eval-score-label" id="eval-score-label"></span>
+            </button>
+            <p class="evaluation-status" id="evaluation-status"></p>
+            <div id="evaluation-inline-detail" class="evaluation-inline-detail" hidden></div>
+          </div>
+        </div>
+      </div>
+      <div id="tab-panel-agent" class="tab-panel tab-panel--agent" role="tabpanel" aria-labelledby="tab-agent" hidden>
+        <div class="agent-tab-body">
+          <section class="agent-system-section" aria-label="System prompt">
+            <div class="agent-prompt-toolbar">
+              <span class="agent-prompt-label">System prompt</span>
+              <div class="agent-prompt-toggle" role="group" aria-label="System prompt source">
+                <button type="button" class="agent-toggle agent-toggle--active" id="agent-prompt-raw" data-mode="raw">Raw</button>
+                <button type="button" class="agent-toggle" id="agent-prompt-expanded" data-mode="expanded">Expanded</button>
+              </div>
+            </div>
+            <pre id="agent-prompt-display" class="agent-prompt-display" spellcheck="false"></pre>
+            <p id="agent-prompt-empty" class="agent-prompt-empty">No expanded prompt yet — run the agent once to capture the first LLM request.</p>
+          </section>
+          <section class="agent-user-section" id="agent-user-section" aria-label="User prompts" hidden>
+            <div class="agent-prompt-toolbar">
+              <span class="agent-prompt-label">User prompt</span>
+              <div class="agent-prompt-toggle" role="group" aria-label="Primary user text">
+                <button type="button" class="agent-toggle agent-toggle--active" id="agent-user-entered">Entered</button>
+                <button type="button" class="agent-toggle" id="agent-user-actual">As sent</button>
+              </div>
+            </div>
+            <pre id="agent-user-primary-display" class="agent-prompt-display agent-user-primary" spellcheck="false"></pre>
+            <p id="agent-user-empty" class="agent-prompt-empty" hidden>No primary user text for this view.</p>
+            <h4 id="agent-user-extra-heading" class="agent-user-extra-heading" hidden>Additional user messages (first LLM request)</h4>
+            <div id="agent-user-extra" class="agent-user-extra"></div>
+          </section>
+        </div>
+      </div>
     </main>
     <aside id="trace-pane">
-      <h2>Trace</h2>
+      <h2 class="trace-pane-title">Trace</h2>
       <div id="trace-controls" class="trace-controls">
         <div class="channel-toggles" id="channel-toggles">
           <label><input type="checkbox" id="ch-runtime" data-channel="runtime" checked> runtime</label>
@@ -67,22 +98,9 @@
           <label><input type="checkbox" id="ch-user" data-channel="user" checked> user</label>
         </div>
       </div>
-      <div id="trace-split">
-        <section class="trace-span-section">
-          <h3>Spans</h3>
-          <div id="trace-tree"></div>
-        </section>
-        <section class="trace-log-section">
-          <h3>Logs</h3>
-          <div id="log-strip" aria-live="polite"></div>
-        </section>
-      </div>
+      <div id="trace-feed" class="trace-feed" aria-live="polite"></div>
     </aside>
   </div>
-  <section id="reserved-testset-pane">
-    <h2>Test Set</h2>
-    <p>Reserved for future batch scoring and result summaries.</p>
-  </section>
   <dialog id="evaluation-detail-modal" class="evaluation-detail-dialog">
     <div class="evaluation-detail-surface">
       <header class="evaluation-detail-header">
