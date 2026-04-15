@@ -17,15 +17,22 @@ from fastapi.staticfiles import StaticFiles
 from agent_framework.agent_registry import AgentRegistry, normalize_agent_id
 from agent_framework.agents.helpers import AgentMarkdownError
 from agent_framework.config import load_host_config
-from agent_framework.errors import ModelDriverError
 from agent_framework.tracing import TraceContext, make_trace_event
-from agent_framework_evaluator.evaluation import extract_first_llm_request_prompts, run_evaluation
+from agent_framework_evaluator.auto_user_reply import reply_text_for_outbox_item
+from agent_framework_evaluator.evaluation import (
+    extract_first_llm_request_prompts,
+    run_code_evaluation,
+    run_evaluation,
+)
 from agent_framework_evaluator.initializer_catalog import (
     evaluator_initializer_root,
     list_initializer_scripts,
     load_initializer_default_agent,
     load_initializer_default_evaluator_criteria,
     load_initializer_default_prompt,
+    load_initializer_default_eval_model,
+    load_raw_test_cases,
+    load_test_cases,
     resolve_env_path,
     resolve_setup_path_for_run,
 )
@@ -47,6 +54,15 @@ class EvaluateResultBody(BaseModel):
 
     session_id: str = ""
     evaluator_prompt: str = ""
+    agent_message: str = ""
+
+
+class EvaluateCaseBody(BaseModel):
+    """POST body for scoring a run against a named initializer test case."""
+
+    session_id: str = ""
+    initializer: str = ""
+    case_index: int = Field(..., ge=0)
     agent_message: str = ""
 
 
@@ -172,19 +188,80 @@ def create_app() -> FastAPI:
         rec = session_manager.get(body.session_id) if body.session_id else None
         env_path = rec.env_path if rec else ".env"
         prompts = rec.last_run_prompts if rec else None
-        try:
-            out = run_evaluation(
-                env_path=env_path,
-                evaluator_prompt=body.evaluator_prompt,
-                agent_message=body.agent_message,
-                system_prompt=(prompts or {}).get("system_prompt", ""),
-                user_prompt=(prompts or {}).get("user_prompt", ""),
-            )
-        except ModelDriverError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        out = run_evaluation(
+            env_path=env_path,
+            evaluator_prompt=body.evaluator_prompt,
+            agent_message=body.agent_message,
+            system_prompt=(prompts or {}).get("system_prompt", ""),
+            user_prompt=(prompts or {}).get("user_prompt", ""),
+        )
         score = float(out["score"])
-        out["score"] = min(10.0, max(1.0, score))
+        out["score"] = min(10.0, max(0.0, score))
         return out
+
+    @app.get("/api/initializer-cases")
+    def initializer_cases(env_path: str, initializer: str) -> dict[str, Any]:
+        """List test cases from initializer ``get_test_cases()``."""
+        env_file = resolve_env_path(env_path)
+        resolved = resolve_setup_path_for_run(env_file, initializer)
+        cases = load_test_cases(env_file, initializer)
+        hint = ""
+        if resolved is None:
+            hint = "Initializer file not found."
+        return {
+            "cases": cases,
+            "initializer_resolved": str(resolved) if resolved is not None else "",
+            "hint": hint,
+        }
+
+    @app.post("/api/evaluate-case")
+    def evaluate_case(body: EvaluateCaseBody) -> dict[str, Any]:
+        """LLM + optional programmatic evaluation for one test case index."""
+        rec = session_manager.get(body.session_id) if body.session_id else None
+        env_path = rec.env_path if rec else ".env"
+        env_file = resolve_env_path(env_path)
+        cases = load_raw_test_cases(env_file, body.initializer)
+        if body.case_index >= len(cases):
+            raise HTTPException(status_code=400, detail="invalid case_index for this initializer")
+        case = cases[body.case_index]
+        criteria = str(case.get("evaluation_criteria", "") or "")
+        prompts = rec.last_run_prompts if rec else None
+        eval_model = load_initializer_default_eval_model(env_file, body.initializer)
+        llm = run_evaluation(
+            env_path=env_file,
+            evaluator_prompt=criteria,
+            agent_message=body.agent_message,
+            system_prompt=(prompts or {}).get("system_prompt", ""),
+            user_prompt=(prompts or {}).get("user_prompt", ""),
+            model_override=eval_model if eval_model else None,
+        )
+        score = float(llm["score"])
+        llm["score"] = min(10.0, max(0.0, score))
+
+        code_result: dict[str, Any] | None = None
+        ce = case.get("code_evaluator")
+        if callable(ce):
+            try:
+                code_result = run_code_evaluation(
+                    ce,
+                    prompt=str(case.get("prompt", "")),
+                    agent_message=body.agent_message,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            cs = float(code_result["score"])
+            code_result["score"] = min(10.0, max(0.0, cs))
+
+        parts = [float(llm["score"])]
+        if code_result is not None:
+            parts.append(float(code_result["score"]))
+        average = sum(parts) / len(parts)
+
+        return {
+            "llm_result": llm,
+            "code_result": code_result,
+            "average_score": average,
+        }
 
     @app.post("/api/sessions/{session_id}/user-input")
     def post_user_input(session_id: str, body: UserInputBody) -> dict[str, str]:
@@ -268,13 +345,18 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not text and not criteria and not agent:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "initializer not found or no PROMPT_TEMPLATE / get_prompt_template() / "
-                    "EVALUATOR_CRITERIA / DEFAULT_AGENT / get_default_agent()"
-                ),
-            )
+            cases = load_test_cases(env_file, initializer)
+            if not cases:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "initializer not found or no PROMPT_TEMPLATE / get_prompt_template() / "
+                        "get_test_cases() / EVALUATOR_CRITERIA / DEFAULT_AGENT / get_default_agent()"
+                    ),
+                )
+            c0 = cases[0]
+            text = str(c0.get("prompt", "") or "")
+            criteria = str(c0.get("criteria", "") or "")
         return {"template": text or "", "evaluator_criteria": criteria or "", "agent": agent or ""}
 
     @app.get("/api/setup-template")
@@ -326,7 +408,16 @@ def create_app() -> FastAPI:
                         return
                     for item in rec.comm.drain_outbox():
                         try:
+                            auto_text = reply_text_for_outbox_item(
+                                item, case_run_mode=getattr(rec, "case_run_mode", "standard")
+                            )
+                            if auto_text is not None:
+                                item["evaluator_auto_reply_text"] = auto_text
                             await websocket.send_text(json.dumps({"type": "outbox", "item": item}))
+                            if auto_text is not None:
+                                pid = item.get("prompt_id")
+                                if isinstance(pid, str):
+                                    rec.comm.submit_user_input(auto_text, prompt_id=pid)
                         except (OSError, RuntimeError):
                             return
                 except (OSError, RuntimeError):
@@ -358,6 +449,9 @@ def create_app() -> FastAPI:
                     pid = str(raw_pid) if raw_pid else None
                     rec.comm.submit_user_input(msg.get("text"), prompt_id=pid)
                 elif msg.get("type") == "run":
+                    crm_raw = msg.get("case_run_mode", "standard")
+                    crm = str(crm_raw).strip() if crm_raw is not None else "standard"
+                    rec.case_run_mode = crm if crm in ("standard", "no_callbacks") else "standard"
                     init_raw = msg.get("initializer") if msg.get("initializer") is not None else msg.get("setup_path")
                     instruction_entered = str(msg.get("prompt", ""))
                     # Seed so the UI always has composer text even if no LLM request fires;

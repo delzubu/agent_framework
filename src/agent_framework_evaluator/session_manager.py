@@ -20,6 +20,9 @@ class SessionRecord:
     env_path: str
     runner: SessionRunner
     last_run_prompts: dict[str, Any] | None = None
+    #: From WebSocket ``run`` message: ``standard`` (auto-answer confirmations/permissions) vs
+    #: ``no_callbacks`` (only auto-answer text prompts; user handles confirm/permission).
+    case_run_mode: str = "standard"
 
 
 class SessionManager:

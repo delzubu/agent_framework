@@ -48,4 +48,5 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "agent_framework.agents" = ["*.md"]
+"agent_framework_evaluator" = ["web/**/*", "examples/**/*.md"]
 

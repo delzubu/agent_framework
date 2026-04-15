@@ -21,8 +21,25 @@
         <input id="initializer-select" type="text" list="initializer-list" placeholder="e.g. seed.py (from AGENT_EVAL_INITIALIZER_DIR) or full path" autocomplete="off" spellcheck="false">
         <datalist id="initializer-list"></datalist>
       </label>
-      <label>Mode <select id="mode-select"><option value="single">Single Run</option><option value="testset">Test Set</option></select></label>
-      <p id="testset-hint" class="left-rail-hint" hidden>Test Set mode is reserved for future batch scoring.</p>
+      <div id="case-list-section" class="case-list-section" hidden>
+        <div class="case-list-header">
+          <span class="case-list-title">Test cases</span>
+          <div class="case-list-controls">
+            <span id="case-run-mode-label" class="case-run-mode-label" title="Run mode for test cases">Standard</span>
+            <div class="case-run-split case-run-opens-menu" title="Click: run all with selected mode. Hold ▶ or click ▾: choose mode.">
+              <button type="button" id="run-all-cases-btn" class="run-all-cases-btn" aria-label="Run all test cases">▶</button>
+              <button type="button" id="run-all-cases-mode-btn" class="case-run-mode-chevron case-run-opens-menu" aria-label="Choose run mode for test cases" title="Choose Standard or No callbacks">▾</button>
+            </div>
+          </div>
+        </div>
+        <div id="case-run-menu" class="case-run-menu" hidden role="menu" aria-label="Test case run mode">
+          <button type="button" role="menuitem" class="case-run-menu-item" data-mode="standard">Standard</button>
+          <button type="button" role="menuitem" class="case-run-menu-item" data-mode="no_callbacks">No callbacks</button>
+        </div>
+        <ul id="case-list" class="case-list" aria-label="Test cases"></ul>
+        <p id="case-list-hint" class="case-list-hint" hidden></p>
+        <p id="batch-progress" class="batch-progress" hidden></p>
+      </div>
       <p id="app-status" class="app-status" aria-live="polite"></p>
     </aside>
     <main id="main-pane">
@@ -50,12 +67,52 @@
             <button type="button" id="evaluate-button" class="evaluate-button" disabled>Evaluate</button>
           </div>
           <div id="evaluation-panel" class="evaluation-panel" hidden>
-            <button type="button" id="evaluation-score-trigger" class="evaluation-score-trigger" aria-label="Evaluation score (details below)">
+            <button type="button" id="evaluation-score-trigger" class="evaluation-score-trigger" aria-label="Average evaluation score (details below)">
               <div class="eval-score-bar" id="eval-score-bar" aria-hidden="true"></div>
               <span class="eval-score-label" id="eval-score-label"></span>
             </button>
             <p class="evaluation-status" id="evaluation-status"></p>
+            <div id="eval-single-sections" class="eval-single-sections">
+              <div id="eval-llm-section" class="eval-result-section" hidden>
+                <div class="eval-result-section-header">
+                  <h4 class="eval-result-heading" id="eval-llm-heading">LLM result</h4>
+                  <span class="eval-result-section-score" id="eval-llm-score-label"></span>
+                </div>
+                <div id="eval-llm-inline-detail" class="evaluation-inline-detail evaluation-inline-detail--sub"></div>
+              </div>
+              <div id="eval-code-section" class="eval-result-section" hidden>
+                <h4 class="eval-result-heading" id="eval-code-heading">Programmatic result</h4>
+                <div class="eval-sub-score-wrap">
+                  <div class="eval-score-bar eval-score-bar--sub" id="eval-code-score-bar" aria-hidden="true"></div>
+                  <span class="eval-score-label eval-score-label--sub" id="eval-code-score-label"></span>
+                </div>
+                <div id="eval-code-inline-detail" class="evaluation-inline-detail evaluation-inline-detail--sub"></div>
+              </div>
+            </div>
             <div id="evaluation-inline-detail" class="evaluation-inline-detail" hidden></div>
+            <div id="batch-summary-panel" class="batch-summary-panel" hidden>
+              <div class="batch-summary-header">
+                <span class="batch-summary-title">Run summary</span>
+              </div>
+              <div class="batch-summary-overall">
+                <span class="batch-summary-overall-label">Overall score</span>
+                <div class="batch-summary-avg-wrap">
+                  <div class="eval-score-bar eval-score-bar--sub" id="batch-avg-score-bar" aria-hidden="true"></div>
+                  <span class="eval-score-label eval-score-label--sub" id="batch-avg-score-label"></span>
+                </div>
+              </div>
+              <div class="batch-summary-table-wrap">
+                <table class="batch-summary-table" aria-label="Per-test-case scores">
+                  <thead>
+                    <tr>
+                      <th scope="col">Test case</th>
+                      <th scope="col" class="batch-summary-th-score">Score</th>
+                    </tr>
+                  </thead>
+                  <tbody id="batch-summary-table-body"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -104,7 +161,7 @@
   <dialog id="evaluation-detail-modal" class="evaluation-detail-dialog">
     <div class="evaluation-detail-surface">
       <header class="evaluation-detail-header">
-        <h3 class="evaluation-detail-title">Evaluation details</h3>
+        <h3 class="evaluation-detail-title" id="evaluation-detail-title">Evaluation details</h3>
         <button type="button" class="evaluation-detail-x" id="evaluation-detail-close" aria-label="Close">×</button>
       </header>
       <div id="evaluation-detail-body" class="evaluation-detail-body"></div>

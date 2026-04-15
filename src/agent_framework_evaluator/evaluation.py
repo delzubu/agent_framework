@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from agent_framework.errors import ModelDriverError
 from agent_framework.host import AgentHost
-from agent_framework.model import DEFAULT_RESPONSE_MODE, AsyncToSyncAdapter, ModelContext
+from agent_framework.model import (
+    DEFAULT_RESPONSE_MODE,
+    AsyncToSyncAdapter,
+    ModelContext,
+    merge_runtime_system_into_messages,
+)
 
 EVALUATOR_SYSTEM_PROMPT = """
 Evaluate the LLM agent output very critically. The input contains the agent's system prompt, the user \
@@ -185,6 +191,22 @@ def _coerce_str(value: Any) -> str:
     return str(value)
 
 
+def failed_evaluator_result(error_message: str) -> dict[str, Any]:
+    """Return a zero-score result with the error in verdict and criterion reasoning."""
+    msg = (error_message or "").strip() or "Evaluator failed."
+    return {
+        "score": 0.0,
+        "overall_verdict": msg,
+        "evaluation": [
+            {
+                "criteria": "Evaluator run",
+                "passed": False,
+                "reason": msg,
+            }
+        ],
+    }
+
+
 def parse_eval_response(payload: dict[str, Any]) -> dict[str, Any]:
     """Map evaluator LLM JSON to API / UI fields."""
     raw_score = payload.get("score", 7.0)
@@ -246,6 +268,19 @@ def _sync_driver_for_evaluator(host: AgentHost) -> Any:
     return raw
 
 
+def run_code_evaluation(
+    code_evaluator: Callable[..., Any],
+    *,
+    prompt: str,
+    agent_message: str,
+) -> dict[str, Any]:
+    """Run a programmatic evaluator; output must match evaluator JSON shape after parsing."""
+    raw = code_evaluator(prompt, agent_message)
+    if not isinstance(raw, dict):
+        raise ValueError("code_evaluator must return a dict (JSON-shaped evaluator output).")
+    return parse_eval_response(raw)
+
+
 def run_evaluation(
     *,
     env_path: str | Path,
@@ -253,10 +288,11 @@ def run_evaluation(
     agent_message: str,
     system_prompt: str = "",
     user_prompt: str = "",
+    model_override: str | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Call the evaluator LLM once. Does not run the agent loop."""
     env_path = Path(env_path)
-    override = _eval_model_override(env_path)
+    override = model_override if model_override is not None else _eval_model_override(env_path)
     host = AgentHost.from_env(env_path, model_override=override)
     user_content = format_eval_input(
         system_prompt,
@@ -264,15 +300,22 @@ def run_evaluation(
         evaluator_prompt,
         agent_message,
     )
-    context = ModelContext(
-        system_prompt="",
+    # Same assembly as Agent.build_context / AgentHost.complete: evaluator task text plus
+    # agents/system.md (tools/agents placeholders) and agents/system.json_object.md for json_object.
+    eval_system = EVALUATOR_SYSTEM_PROMPT.strip()
+    raw_ctx = ModelContext(
+        system_prompt=eval_system,
         user_prompt="",
         messages=(
-            {"role": "system", "content": EVALUATOR_SYSTEM_PROMPT},
+            {"role": "system", "content": eval_system},
             {"role": "user", "content": user_content},
         ),
         response_mode=DEFAULT_RESPONSE_MODE,
+        tools=(),
+        subagents=(),
+        skills=(),
     )
+    context = merge_runtime_system_into_messages(raw_ctx)
     driver = _sync_driver_for_evaluator(host)
     try:
         response = driver.decide(
@@ -282,15 +325,17 @@ def run_evaluation(
             temperature=0.2,
             context=context,
         )
-    except ModelDriverError:
-        raise
+    except ModelDriverError as exc:
+        return failed_evaluator_result(str(exc))
     except Exception as exc:
-        raise ModelDriverError(str(exc), status_code=None, upstream_body=None) from exc
+        return failed_evaluator_result(str(exc))
     payload = response.payload
     if not isinstance(payload, dict):
-        raise ModelDriverError(
-            "Evaluator response is not a JSON object.",
-            status_code=None,
-            upstream_body=response.raw_text,
+        return failed_evaluator_result(
+            "Evaluator response is not a JSON object."
+            + (f" Raw: {response.raw_text[:500]}" if getattr(response, "raw_text", None) else "")
         )
-    return parse_eval_response(payload)
+    try:
+        return parse_eval_response(payload)
+    except (TypeError, ValueError) as exc:
+        return failed_evaluator_result(str(exc))

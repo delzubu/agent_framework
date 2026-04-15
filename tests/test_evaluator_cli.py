@@ -97,6 +97,53 @@ def test_user_input_http_409_when_nothing_pending() -> None:
     assert r.status_code == 409
 
 
+def test_auto_reply_skips_confirmation_when_no_callbacks_mode() -> None:
+    from agent_framework_evaluator.auto_user_reply import reply_text_for_outbox_item
+
+    pid = "abc"
+    assert reply_text_for_outbox_item({"kind": "confirmation", "prompt": "ok?", "prompt_id": pid}) == "y"
+    assert (
+        reply_text_for_outbox_item(
+            {"kind": "confirmation", "prompt": "ok?", "prompt_id": pid},
+            case_run_mode="no_callbacks",
+        )
+        is None
+    )
+    assert (
+        reply_text_for_outbox_item(
+            {"kind": "permission", "prompt_id": pid, "request": {}},
+            case_run_mode="no_callbacks",
+        )
+        is None
+    )
+
+
+def test_evaluator_llm_merge_includes_system_md_and_json_object_template() -> None:
+    """Evaluator scoring uses the same runtime stack as agents (system.md + system.json_object.md)."""
+    from agent_framework.model import DEFAULT_RESPONSE_MODE, ModelContext, merge_runtime_system_into_messages
+
+    from agent_framework_evaluator.evaluation import EVALUATOR_SYSTEM_PROMPT
+
+    eval_system = EVALUATOR_SYSTEM_PROMPT.strip()
+    merged = merge_runtime_system_into_messages(
+        ModelContext(
+            system_prompt=eval_system,
+            user_prompt="",
+            messages=(
+                {"role": "system", "content": eval_system},
+                {"role": "user", "content": "<agent_result>x</agent_result>"},
+            ),
+            response_mode=DEFAULT_RESPONSE_MODE,
+            tools=(),
+            subagents=(),
+            skills=(),
+        )
+    )
+    first = merged.messages[0]["content"]
+    assert "You are currently producing a final JSON object" in first
+    assert "<allowed_tools>" in first
+
+
 def test_api_evaluate_result(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(**_: object) -> dict[str, object]:
         return {
@@ -121,7 +168,7 @@ def test_api_evaluate_result(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.status_code == 200
     data = r.json()
     assert "score" in data
-    assert 1.0 <= float(data["score"]) <= 10.0
+    assert 0.0 <= float(data["score"]) <= 10.0
     assert "overall_verdict" in data
     assert "evaluation" in data
     assert isinstance(data["evaluation"], list)

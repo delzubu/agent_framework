@@ -9,8 +9,12 @@ const agentList = document.getElementById("agent-list");
 const initializerList = document.getElementById("initializer-list");
 const channelToggles = document.getElementById("channel-toggles");
 const conversationThread = document.getElementById("conversation-thread");
-const modeSelect = document.getElementById("mode-select");
-const testsetHint = document.getElementById("testset-hint");
+const caseListSection = document.getElementById("case-list-section");
+const caseList = document.getElementById("case-list");
+const runAllCasesBtn = document.getElementById("run-all-cases-btn");
+const runAllCasesModeBtn = document.getElementById("run-all-cases-mode-btn");
+const caseRunModeLabel = document.getElementById("case-run-mode-label");
+const batchProgress = document.getElementById("batch-progress");
 const evaluatorPromptInput = document.getElementById("evaluator-prompt-input");
 const evaluationPanel = document.getElementById("evaluation-panel");
 const evalScoreBar = document.getElementById("eval-score-bar");
@@ -19,8 +23,21 @@ const evaluationStatus = document.getElementById("evaluation-status");
 const evaluationScoreTrigger = document.getElementById("evaluation-score-trigger");
 const evaluationInlineDetail = document.getElementById("evaluation-inline-detail");
 const evaluateButton = document.getElementById("evaluate-button");
+const evalSingleSections = document.getElementById("eval-single-sections");
+const evalLlmSection = document.getElementById("eval-llm-section");
+const evalCodeSection = document.getElementById("eval-code-section");
+const evalLlmScoreLabel = document.getElementById("eval-llm-score-label");
+const evalCodeScoreBar = document.getElementById("eval-code-score-bar");
+const evalCodeScoreLabel = document.getElementById("eval-code-score-label");
+const evalLlmInlineDetail = document.getElementById("eval-llm-inline-detail");
+const evalCodeInlineDetail = document.getElementById("eval-code-inline-detail");
+const batchSummaryPanel = document.getElementById("batch-summary-panel");
+const batchSummaryTableBody = document.getElementById("batch-summary-table-body");
+const batchAvgScoreBar = document.getElementById("batch-avg-score-bar");
+const batchAvgScoreLabel = document.getElementById("batch-avg-score-label");
 const evaluationDetailModal = document.getElementById("evaluation-detail-modal");
 const evaluationDetailBody = document.getElementById("evaluation-detail-body");
+const evaluationDetailTitle = document.getElementById("evaluation-detail-title");
 const evaluationDetailClose = document.getElementById("evaluation-detail-close");
 const tabChat = document.getElementById("tab-chat");
 const tabEvaluation = document.getElementById("tab-evaluation");
@@ -41,6 +58,7 @@ const agentUserEnteredBtn = document.getElementById("agent-user-entered");
 const agentUserActualBtn = document.getElementById("agent-user-actual");
 
 /** @typedef {{ criteria: string, passed: boolean, reason: string }} EvalCriterionRow */
+/** @typedef {{ title?: string, average_score?: number | null, error?: string, detail?: Record<string, unknown> | null }} BatchSummaryRow */
 
 /** @type {null | { score: number, overall_verdict: string, evaluation: EvalCriterionRow[] }} */
 let lastEvaluationPayload = null;
@@ -65,6 +83,24 @@ let userPrimaryMode = "entered";
 let evaluationInFlight = false;
 /** True while a run is in flight until result, error, or outbox (HITL). */
 let agentRunInProgress = false;
+
+/** When set, a ``result`` / terminal ``error`` resolves this instead of running manual post-eval. */
+/** @type {null | { resolve: (v: unknown) => void, reject: (e: unknown) => void }} */
+let pendingAgentRun = null;
+
+/** @type {{ index: number, title: string, prompt: string, criteria: string, has_code_evaluator: boolean }[]} */
+let loadedCases = [];
+
+/** API hint when cases are empty. */
+let lastCaseListHint = "";
+
+/** @type {"standard" | "no_callbacks"} */
+let caseRunMode = "standard";
+
+/** @type {HTMLElement | null} */
+let caseRunMenuAnchor = null;
+
+const CASE_RUN_HOLD_MS = 450;
 
 /** @type {HTMLElement | null} */
 let typingPlaceholderEl = null;
@@ -153,9 +189,18 @@ wireTraceDetailModal();
 
 function wireEvaluationDetailModal() {
   if (!evaluationDetailModal || !evaluationDetailClose) return;
-  evaluationDetailClose.addEventListener("click", () => evaluationDetailModal.close());
+  const resetTitle = () => {
+    if (evaluationDetailTitle) evaluationDetailTitle.textContent = "Evaluation details";
+  };
+  evaluationDetailClose.addEventListener("click", () => {
+    evaluationDetailModal.close();
+    resetTitle();
+  });
   evaluationDetailModal.addEventListener("click", (e) => {
-    if (e.target === evaluationDetailModal) evaluationDetailModal.close();
+    if (e.target === evaluationDetailModal) {
+      evaluationDetailModal.close();
+      resetTitle();
+    }
   });
 }
 
@@ -268,8 +313,93 @@ function fillEvaluationDetailDom(target, d) {
   target.appendChild(table);
 }
 
+/** Hue 0 (red) … 120 (green) for score 0–10 (same scale as the evaluation bar). */
+function scoreToHue(score) {
+  const s = Math.min(10, Math.max(0, Number(score)));
+  return (s / 10) * 120;
+}
+
+/**
+ * @param {Record<string, unknown> | null | undefined} apiData
+ */
+function fillBatchCaseEvaluationDetailBody(target, apiData) {
+  if (!target) return;
+  target.innerHTML = "";
+  if (!apiData || typeof apiData !== "object") {
+    target.textContent = "No detail available.";
+    return;
+  }
+  if (apiData.__batchError === true) {
+    const p = document.createElement("p");
+    p.className = "batch-detail-error";
+    p.textContent = String(apiData.message ?? "Error");
+    target.appendChild(p);
+    return;
+  }
+
+  const avg = apiData.average_score;
+  const avgP = document.createElement("p");
+  avgP.className = "batch-detail-avg-line";
+  avgP.textContent =
+    typeof avg === "number" && Number.isFinite(avg)
+      ? `Average score (this case): ${avg.toFixed(1)}`
+      : "Average score: —";
+  target.appendChild(avgP);
+
+  const llm = apiData.llm_result;
+  if (llm && typeof llm === "object") {
+    const h = document.createElement("h4");
+    h.className = "batch-detail-subheading";
+    h.textContent = "LLM evaluation";
+    target.appendChild(h);
+    const wrap = document.createElement("div");
+    const le = /** @type {Record<string, unknown>} */ (llm);
+    fillEvaluationDetailDom(wrap, {
+      score: Number(le.score),
+      overall_verdict: String(le.overall_verdict ?? ""),
+      evaluation: Array.isArray(le.evaluation) ? /** @type {EvalCriterionRow[]} */ (le.evaluation) : [],
+    });
+    target.appendChild(wrap);
+  }
+
+  const code = apiData.code_result;
+  if (code && typeof code === "object") {
+    const h = document.createElement("h4");
+    h.className = "batch-detail-subheading";
+    h.textContent = "Programmatic evaluation";
+    target.appendChild(h);
+    const wrap = document.createElement("div");
+    const ce = /** @type {Record<string, unknown>} */ (code);
+    fillEvaluationDetailDom(wrap, {
+      score: Number(ce.score),
+      overall_verdict: String(ce.overall_verdict ?? ""),
+      evaluation: Array.isArray(ce.evaluation) ? /** @type {EvalCriterionRow[]} */ (ce.evaluation) : [],
+    });
+    target.appendChild(wrap);
+  }
+
+  if (!llm && !code) {
+    const p = document.createElement("p");
+    p.className = "batch-detail-empty";
+    p.textContent = "No evaluation sections in response.";
+    target.appendChild(p);
+  }
+}
+
+/**
+ * @param {string} caseTitle
+ * @param {Record<string, unknown> | null | undefined} detail
+ */
+function openBatchCaseEvaluationModal(caseTitle, detail) {
+  if (!evaluationDetailModal || !evaluationDetailBody) return;
+  if (evaluationDetailTitle) evaluationDetailTitle.textContent = caseTitle || "Test case";
+  fillBatchCaseEvaluationDetailBody(evaluationDetailBody, detail);
+  evaluationDetailModal.showModal();
+}
+
 function openEvaluationDetailModal() {
   if (!evaluationDetailModal || !evaluationDetailBody || !lastEvaluationPayload) return;
+  if (evaluationDetailTitle) evaluationDetailTitle.textContent = "Evaluation details";
   fillEvaluationDetailDom(evaluationDetailBody, lastEvaluationPayload);
   evaluationDetailModal.showModal();
 }
@@ -287,6 +417,7 @@ function syncInlineEvaluationDetail() {
 
 function resetEvaluationPanel() {
   lastEvaluationPayload = null;
+  hideCaseEvalSubpanels();
   if (evaluationPanel) evaluationPanel.hidden = true;
   if (evalScoreBar) evalScoreBar.innerHTML = "";
   if (evalScoreLabel) evalScoreLabel.textContent = "";
@@ -342,6 +473,7 @@ async function runPostEvaluation(agentResultPayload) {
     return;
   }
   if (!evaluationPanel || !evalScoreBar || !evalScoreLabel) return;
+  hideCaseEvalSubpanels();
   evaluationInFlight = true;
   updateEvaluateUi();
   evaluationPanel.hidden = false;
@@ -366,7 +498,7 @@ async function runPostEvaluation(agentResultPayload) {
     /** @type {{ score: number, overall_verdict?: string, evaluation?: { criteria?: string, passed?: boolean, reason?: string }[] }} */
     const data = await res.json();
     const sc = Number(data.score);
-    const scoreN = Number.isFinite(sc) ? Math.min(10, Math.max(1, sc)) : 7.5;
+    const scoreN = Number.isFinite(sc) ? Math.min(10, Math.max(0, sc)) : 7.5;
     const rawEval = Array.isArray(data.evaluation) ? data.evaluation : [];
     /** @type {EvalCriterionRow[]} */
     const evaluation = rawEval.map((row) => ({
@@ -392,6 +524,563 @@ async function runPostEvaluation(agentResultPayload) {
   } finally {
     evaluationInFlight = false;
     updateEvaluateUi();
+  }
+}
+
+/** Postfix for &quot;No callbacks&quot; mode (test-case runs only). */
+const CASE_NO_CALLBACKS_POSTFIX = `
+
+## MANDATORY ASSUMPTIONS RULE
+YOU MUST NOT ask for any further questions or clarification from the user.
+Make assumptions to provide the best answer possible, given this input.
+`;
+
+/**
+ * @param {string} prompt
+ */
+function augmentCasePromptForRun(prompt) {
+  if (caseRunMode !== "no_callbacks" || typeof prompt !== "string") {
+    return prompt;
+  }
+  return prompt.replace(/\s*$/, "") + CASE_NO_CALLBACKS_POSTFIX;
+}
+
+function hideCaseEvalSubpanels() {
+  if (evalLlmSection) evalLlmSection.hidden = true;
+  if (evalCodeSection) evalCodeSection.hidden = true;
+  if (batchSummaryPanel) batchSummaryPanel.hidden = true;
+  if (evalLlmInlineDetail) {
+    evalLlmInlineDetail.innerHTML = "";
+    evalLlmInlineDetail.hidden = true;
+  }
+  if (evalCodeInlineDetail) {
+    evalCodeInlineDetail.innerHTML = "";
+    evalCodeInlineDetail.hidden = true;
+  }
+}
+
+function closeCaseRunMenu() {
+  const menu = document.getElementById("case-run-menu");
+  if (!menu) return;
+  menu.hidden = true;
+  menu.setAttribute("aria-hidden", "true");
+  caseRunMenuAnchor = null;
+}
+
+/**
+ * @param {HTMLElement} anchorEl
+ */
+function openCaseRunMenu(anchorEl) {
+  const menu = document.getElementById("case-run-menu");
+  if (!menu) return;
+  caseRunMenuAnchor = anchorEl;
+  const r = anchorEl.getBoundingClientRect();
+  const mw = 220;
+  let left = r.left;
+  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+  if (left < 8) left = 8;
+  menu.style.position = "fixed";
+  menu.style.left = `${left}px`;
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.minWidth = `${Math.max(r.width, 160)}px`;
+  menu.hidden = false;
+  menu.setAttribute("aria-hidden", "false");
+  updateCaseRunMenuSelection();
+}
+
+function updateCaseRunMenuSelection() {
+  const menu = document.getElementById("case-run-menu");
+  if (!menu) return;
+  for (const item of menu.querySelectorAll(".case-run-menu-item[data-mode]")) {
+    const mode = item.getAttribute("data-mode");
+    const on = mode === caseRunMode;
+    item.classList.toggle("case-run-menu-item--selected", on);
+    item.setAttribute("aria-checked", on ? "true" : "false");
+  }
+  const modeLabel = caseRunMode === "no_callbacks" ? "No callbacks" : "Standard";
+  if (runAllCasesBtn) {
+    runAllCasesBtn.title = `Run all (${modeLabel}). Click to run; hold to choose mode.`;
+  }
+  if (runAllCasesModeBtn) {
+    runAllCasesModeBtn.title = `Choose mode (current: ${modeLabel})`;
+  }
+  if (caseRunModeLabel) {
+    caseRunModeLabel.textContent = modeLabel;
+    caseRunModeLabel.title = `Run mode: ${modeLabel}. Use ▾ to change.`;
+  }
+}
+
+function initCaseRunMenu() {
+  const menu = document.getElementById("case-run-menu");
+  if (!menu) return;
+  for (const item of menu.querySelectorAll(".case-run-menu-item[data-mode]")) {
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const m = item.getAttribute("data-mode");
+      if (m === "standard" || m === "no_callbacks") {
+        caseRunMode = m;
+        updateCaseRunMenuSelection();
+      }
+      closeCaseRunMenu();
+    });
+  }
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!menu || menu.hidden) return;
+      if (menu.contains(/** @type {Node} */ (e.target))) return;
+      closeCaseRunMenu();
+    },
+    true,
+  );
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeCaseRunMenu();
+  });
+  runAllCasesModeBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (runAllCasesModeBtn.disabled) return;
+    if (!menu.hidden) {
+      closeCaseRunMenu();
+      return;
+    }
+    openCaseRunMenu(runAllCasesModeBtn);
+  });
+  updateCaseRunMenuSelection();
+}
+
+/**
+ * Short click runs; hold opens the mode menu.
+ * @param {HTMLButtonElement} btn
+ * @param {() => void} onShortRun
+ */
+function bindHoldShortRun(btn, onShortRun) {
+  let holdTimer = null;
+  let menuOpenedThisGesture = false;
+
+  btn.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    menuOpenedThisGesture = false;
+    holdTimer = window.setTimeout(() => {
+      holdTimer = null;
+      menuOpenedThisGesture = true;
+      openCaseRunMenu(btn);
+    }, CASE_RUN_HOLD_MS);
+  });
+
+  const clearHold = () => {
+    if (holdTimer != null) {
+      window.clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+  };
+
+  btn.addEventListener("pointerup", (e) => {
+    if (e.button !== 0) return;
+    clearHold();
+    if (!menuOpenedThisGesture) {
+      closeCaseRunMenu();
+      onShortRun();
+    }
+    menuOpenedThisGesture = false;
+  });
+
+  btn.addEventListener("pointerleave", () => {
+    clearHold();
+  });
+
+  btn.addEventListener("pointercancel", () => {
+    clearHold();
+    menuOpenedThisGesture = false;
+  });
+}
+
+function caseControlsDisabled(disabled) {
+  if (runAllCasesBtn) runAllCasesBtn.disabled = disabled;
+  if (runAllCasesModeBtn) runAllCasesModeBtn.disabled = disabled;
+  if (caseList) {
+    for (const btn of caseList.querySelectorAll(".run-case-btn")) {
+      /** @type {HTMLButtonElement} */ (btn).disabled = disabled;
+    }
+  }
+}
+
+function setRunCaseButtonBusy(caseIndex, busy) {
+  if (!caseList) return;
+  const btn = caseList.querySelector(`.run-case-btn[data-case-index="${caseIndex}"]`);
+  if (!btn) return;
+  btn.classList.toggle("run-case-btn--running", busy);
+  btn.setAttribute("aria-busy", busy ? "true" : "false");
+  btn.textContent = busy ? "…" : "▶";
+}
+
+async function recreateSessionForNewRun() {
+  detachWebSocket();
+  if (sessionId) {
+    await fetch(`/api/sessions/${sessionId}/close`, { method: "POST" }).catch(() => {});
+    sessionId = null;
+  }
+  await ensureSessionConnected();
+}
+
+function waitForAgentRunResult() {
+  return new Promise((resolve, reject) => {
+    pendingAgentRun = { resolve, reject };
+  });
+}
+
+async function refreshInitializerCases() {
+  const hintEl = document.getElementById("case-list-hint");
+  const init = initializerInput?.value.trim();
+  lastCaseListHint = "";
+  if (!init || !caseListSection) {
+    loadedCases = [];
+    caseListSection.hidden = true;
+    if (hintEl) {
+      hintEl.textContent = "";
+      hintEl.hidden = true;
+    }
+    return;
+  }
+  try {
+    const r = await fetch(
+      `/api/initializer-cases?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(init)}`,
+    );
+    if (!r.ok) {
+      loadedCases = [];
+      caseListSection.hidden = true;
+      if (hintEl) {
+        hintEl.textContent = "";
+        hintEl.hidden = true;
+      }
+      return;
+    }
+    const data = await r.json();
+    loadedCases = Array.isArray(data.cases) ? data.cases : [];
+    lastCaseListHint = typeof data.hint === "string" ? data.hint : "";
+    renderCaseList();
+  } catch (_) {
+    loadedCases = [];
+    lastCaseListHint = "";
+    caseListSection.hidden = true;
+    if (hintEl) {
+      hintEl.textContent = "";
+      hintEl.hidden = true;
+    }
+  }
+}
+
+function renderCaseList() {
+  if (!caseList || !caseListSection) return;
+  const hintEl = document.getElementById("case-list-hint");
+  caseList.innerHTML = "";
+  if (loadedCases.length === 0) {
+    if (hintEl) {
+      hintEl.textContent = lastCaseListHint || "";
+      hintEl.hidden = !lastCaseListHint;
+    }
+    caseListSection.hidden = !lastCaseListHint;
+    if (runAllCasesBtn) runAllCasesBtn.disabled = true;
+    if (runAllCasesModeBtn) runAllCasesModeBtn.disabled = true;
+    return;
+  }
+  if (hintEl) {
+    hintEl.textContent = "";
+    hintEl.hidden = true;
+  }
+  caseListSection.hidden = false;
+  if (runAllCasesBtn) runAllCasesBtn.disabled = false;
+  if (runAllCasesModeBtn) runAllCasesModeBtn.disabled = false;
+  for (const c of loadedCases) {
+    const li = document.createElement("li");
+    li.className = "case-list-item";
+    const t = document.createElement("span");
+    t.className = "case-list-item-title";
+    t.textContent = c.title || `Case ${c.index}`;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "run-case-btn";
+    btn.dataset.caseIndex = String(c.index);
+    btn.setAttribute("aria-label", `Run ${c.title || "case"}`);
+    btn.textContent = "▶";
+    const idx = c.index;
+    bindHoldShortRun(btn, () => void playCase(idx));
+    li.appendChild(t);
+    li.appendChild(btn);
+    caseList.appendChild(li);
+  }
+}
+
+/**
+ * @param {Record<string, unknown>} data
+ */
+function displayCaseEvaluation(data) {
+  hideCaseEvalSubpanels();
+  if (!evaluationPanel) return;
+  const llm = /** @type {{ score: number, overall_verdict?: string, evaluation?: unknown[] } | null} */ (
+    data.llm_result || null
+  );
+  const code = /** @type {{ score: number, overall_verdict?: string, evaluation?: unknown[] } | null} */ (
+    data.code_result || null
+  );
+  const avg = Number(data.average_score);
+  const avgN = Number.isFinite(avg) ? Math.min(10, Math.max(0, avg)) : 7.5;
+
+  if (llm) {
+    const rawEval = Array.isArray(llm.evaluation) ? llm.evaluation : [];
+    /** @type {EvalCriterionRow[]} */
+    const evaluation = rawEval.map((row) => ({
+      criteria: String(/** @type {Record<string, unknown>} */ (row)?.criteria ?? ""),
+      passed: Boolean(/** @type {Record<string, unknown>} */ (row)?.passed),
+      reason: String(/** @type {Record<string, unknown>} */ (row)?.reason ?? ""),
+    }));
+    lastEvaluationPayload = {
+      score: Number(llm.score),
+      overall_verdict: String(llm.overall_verdict ?? ""),
+      evaluation,
+    };
+  }
+
+  evaluationPanel.hidden = false;
+  if (evalSingleSections) evalSingleSections.hidden = false;
+  renderEvalScoreBar(evalScoreBar, avgN);
+  if (evalScoreLabel) evalScoreLabel.textContent = avgN.toFixed(1);
+  if (evaluationStatus) evaluationStatus.textContent = "";
+
+  if (llm && evalLlmSection && evalLlmScoreLabel && evalLlmInlineDetail) {
+    evalLlmSection.hidden = false;
+    const ls = Number(llm.score);
+    const lsN = Number.isFinite(ls) ? Math.min(10, Math.max(0, ls)) : 7.5;
+    evalLlmScoreLabel.textContent = lsN.toFixed(1);
+    evalLlmInlineDetail.hidden = false;
+    fillEvaluationDetailDom(evalLlmInlineDetail, {
+      score: lsN,
+      overall_verdict: String(llm.overall_verdict ?? ""),
+      evaluation: lastEvaluationPayload ? lastEvaluationPayload.evaluation : [],
+    });
+  }
+
+  if (code && evalCodeSection && evalCodeScoreBar && evalCodeScoreLabel && evalCodeInlineDetail) {
+    evalCodeSection.hidden = false;
+    const cs = Number(code.score);
+    const csN = Number.isFinite(cs) ? Math.min(10, Math.max(0, cs)) : 7.5;
+    renderEvalScoreBar(evalCodeScoreBar, csN);
+    evalCodeScoreLabel.textContent = csN.toFixed(1);
+    const rawEval = Array.isArray(code.evaluation) ? code.evaluation : [];
+    /** @type {EvalCriterionRow[]} */
+    const codeRows = rawEval.map((row) => ({
+      criteria: String(/** @type {Record<string, unknown>} */ (row)?.criteria ?? ""),
+      passed: Boolean(/** @type {Record<string, unknown>} */ (row)?.passed),
+      reason: String(/** @type {Record<string, unknown>} */ (row)?.reason ?? ""),
+    }));
+    evalCodeInlineDetail.hidden = false;
+    fillEvaluationDetailDom(evalCodeInlineDetail, {
+      score: csN,
+      overall_verdict: String(code.overall_verdict ?? ""),
+      evaluation: codeRows,
+    });
+  }
+
+  if (evaluationInlineDetail) {
+    evaluationInlineDetail.hidden = true;
+    evaluationInlineDetail.innerHTML = "";
+  }
+  updateEvaluateUi();
+}
+
+/**
+ * @param {BatchSummaryRow[]} rows
+ */
+function displayBatchSummary(rows) {
+  hideCaseEvalSubpanels();
+  if (!evaluationPanel || !batchSummaryPanel || !batchSummaryTableBody) return;
+  const nums = rows.map((r) => r.average_score).filter((x) => typeof x === "number" && Number.isFinite(x));
+  const mean = nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
+  evaluationPanel.hidden = false;
+  if (evalSingleSections) evalSingleSections.hidden = true;
+  batchSummaryPanel.hidden = false;
+  renderEvalScoreBar(batchAvgScoreBar, mean);
+  if (batchAvgScoreLabel) batchAvgScoreLabel.textContent = nums.length ? mean.toFixed(1) : "—";
+
+  batchSummaryTableBody.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.className = "batch-summary-table-row";
+
+    const titleTd = document.createElement("td");
+    titleTd.className = "batch-summary-td-title";
+    titleTd.textContent = r.title || "Case";
+
+    const scoreTd = document.createElement("td");
+    scoreTd.className = "batch-summary-td-score";
+
+    let detailPayload = r.detail != null ? r.detail : null;
+    if (r.error && detailPayload == null) {
+      detailPayload = { __batchError: true, message: r.error };
+    }
+
+    const hasErr = Boolean(r.error) && typeof r.average_score !== "number";
+    const hasScore = typeof r.average_score === "number" && Number.isFinite(r.average_score);
+
+    if (hasErr) {
+      scoreTd.textContent = "Error";
+      scoreTd.classList.add("batch-summary-score--error");
+    } else if (hasScore) {
+      const sc = /** @type {number} */ (r.average_score);
+      scoreTd.textContent = sc.toFixed(1);
+      scoreTd.style.color = `hsl(${scoreToHue(sc)} 78% 58%)`;
+    } else {
+      scoreTd.textContent = "—";
+      scoreTd.classList.add("batch-summary-score--na");
+    }
+
+    tr.tabIndex = 0;
+    tr.setAttribute("role", "button");
+    const label = `${r.title || "Case"}${hasScore ? `, score ${(/** @type {number} */ (r.average_score)).toFixed(1)}` : hasErr ? ", error" : ""}. Open details.`;
+    tr.setAttribute("aria-label", label);
+
+    const openDetail = () => {
+      openBatchCaseEvaluationModal(
+        r.title || "Test case",
+        detailPayload ?? { __batchError: true, message: r.error || "No evaluation data" },
+      );
+    };
+    tr.addEventListener("click", openDetail);
+    tr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openDetail();
+      }
+    });
+
+    tr.appendChild(titleTd);
+    tr.appendChild(scoreTd);
+    batchSummaryTableBody.appendChild(tr);
+  }
+
+  renderEvalScoreBar(evalScoreBar, mean);
+  if (evalScoreLabel) evalScoreLabel.textContent = nums.length ? mean.toFixed(1) : "—";
+  if (evaluationStatus) evaluationStatus.textContent = "";
+  lastEvaluationPayload = null;
+  updateEvaluateUi();
+}
+
+/**
+ * @param {number} caseIndex
+ * @param {{ batch?: boolean }} [opts]
+ */
+async function playCase(caseIndex, opts = {}) {
+  const batch = Boolean(opts.batch);
+  const init = initializerInput?.value.trim();
+  if (!init || !loadedCases.length) return;
+  const c = loadedCases.find((x) => x.index === caseIndex);
+  if (!c) return;
+  if (!batch) caseControlsDisabled(true);
+  if (!batch) setRunCaseButtonBusy(caseIndex, true);
+  evaluationInFlight = true;
+  try {
+    await ensureSessionConnected();
+    if (!batch) {
+      clearStoredAgentResult();
+      resetEvaluationPanel();
+    }
+    await recreateSessionForNewRun();
+    clearTraceUi();
+    const runPrompt = augmentCasePromptForRun(c.prompt || "");
+    appendConversationBubble("user", runPrompt || "(empty prompt)");
+    agentRunInProgress = true;
+    refreshComposerState();
+    showTypingPlaceholder();
+    setAppStatus("Running…");
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("No WebSocket");
+    const pRun = waitForAgentRunResult();
+    socket.send(
+      JSON.stringify({
+        type: "run",
+        agent_id: agentInput?.value.trim() || "root",
+        prompt: runPrompt,
+        initializer: init,
+        case_run_mode: caseRunMode,
+      }),
+    );
+    await pRun;
+    const agentMsg = agentMessageOnly(lastAgentResultPayload);
+    const res = await fetch("/api/evaluate-case", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId ?? "",
+        initializer: init,
+        case_index: caseIndex,
+        agent_message: agentMsg,
+      }),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(t || res.statusText);
+    }
+    const data = await res.json();
+    if (!batch) {
+      displayCaseEvaluation(data);
+      setActiveTab("evaluation");
+    }
+    return data;
+  } catch (err) {
+    if (!batch && evaluationStatus) evaluationStatus.textContent = String(err);
+    if (!batch) setAppStatus(String(err));
+    throw err;
+  } finally {
+    agentRunInProgress = false;
+    evaluationInFlight = false;
+    removeTypingPlaceholder();
+    refreshComposerState();
+    if (!batch) caseControlsDisabled(false);
+    if (!batch) setRunCaseButtonBusy(caseIndex, false);
+    if (!batch) clearAppStatus();
+  }
+}
+
+async function runAllCasesPlay() {
+  const init = initializerInput?.value.trim();
+  if (!init || !loadedCases.length) return;
+  clearStoredAgentResult();
+  resetEvaluationPanel();
+  caseControlsDisabled(true);
+  if (batchProgress) {
+    batchProgress.hidden = false;
+    batchProgress.textContent = "";
+  }
+  /** @type {BatchSummaryRow[]} */
+  const summaryRows = [];
+  try {
+    for (let i = 0; i < loadedCases.length; i++) {
+      const c = loadedCases[i];
+      if (batchProgress) {
+        batchProgress.textContent = `Batch run — ${i + 1} / ${loadedCases.length}: ${c.title || "case"}`;
+      }
+      try {
+        const data = await playCase(c.index, { batch: true });
+        const raw = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data) : null;
+        const av = raw && "average_score" in raw ? Number(raw.average_score) : NaN;
+        summaryRows.push({
+          title: c.title || `Case ${c.index}`,
+          average_score: Number.isFinite(av) ? av : null,
+          detail: raw,
+        });
+      } catch (e) {
+        summaryRows.push({
+          title: c.title || `Case ${c.index}`,
+          average_score: null,
+          error: String(e),
+          detail: { __batchError: true, message: String(e) },
+        });
+      }
+    }
+    displayBatchSummary(summaryRows);
+    setActiveTab("evaluation");
+  } finally {
+    if (batchProgress) batchProgress.hidden = true;
+    caseControlsDisabled(false);
+    clearAppStatus();
   }
 }
 
@@ -752,6 +1441,18 @@ function handleOutboxItem(item) {
     return;
   }
   appendConversationBubble("assistant", text, { markdown: true });
+  const autoReply =
+    item.evaluator_auto_reply_text != null && typeof item.evaluator_auto_reply_text === "string"
+      ? item.evaluator_auto_reply_text
+      : null;
+  if (autoReply !== null) {
+    appendConversationBubble("user", autoReply);
+    setAwaitingPrompt(null);
+    agentRunInProgress = true;
+    showTypingPlaceholder();
+    refreshComposerState();
+    return;
+  }
   setAwaitingPrompt(pid);
 }
 
@@ -1082,6 +1783,12 @@ function onSocketMessage(ev) {
       }
     }
     appendConversationBubble("assistant", messageText, { markdown: asMarkdown });
+    if (pendingAgentRun) {
+      const pr = pendingAgentRun;
+      pendingAgentRun = null;
+      pr.resolve(msg);
+      return;
+    }
     void runPostEvaluation(p);
   }
   if (msg.type === "error") {
@@ -1089,6 +1796,22 @@ function onSocketMessage(ev) {
     removeTypingPlaceholder();
     agentRunInProgress = false;
     refreshComposerState();
+
+    if (pendingAgentRun) {
+      const pr = pendingAgentRun;
+      pendingAgentRun = null;
+      const et = msg.error_type || "Error";
+      const lines = [`[${et}] ${msg.message || ""}`];
+      if (msg.path) {
+        lines.push(`File: ${msg.path}`);
+      }
+      if (msg.hint) {
+        lines.push(msg.hint);
+      }
+      appendConversationBubble("error", lines.join("\n\n"));
+      pr.reject(new Error(lines.join("\n")));
+      return;
+    }
 
     const et = msg.error_type || "Error";
     const lines = [`[${et}] ${msg.message || ""}`];
@@ -1251,30 +1974,40 @@ initializerInput?.addEventListener("change", async () => {
   const needPrompt = promptInput && !promptInput.value.trim();
   const needEval = evaluatorPromptInput && !evaluatorPromptInput.value.trim();
   const needAgent = agentInput && !agentInput.value.trim();
-  if (!needPrompt && !needEval && !needAgent) return;
-  try {
-    const ir = await fetch(
-      `/api/initializer-template?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(raw)}`,
-    );
-    if (ir.ok) {
-      const data = await ir.json();
-      applyInitializerResponseFields(data);
-      updateEvaluateUi();
-      adjustPromptInputHeight();
-      return;
+  if (needPrompt || needEval || needAgent) {
+    try {
+      const ir = await fetch(
+        `/api/initializer-template?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(raw)}`,
+      );
+      if (ir.ok) {
+        const data = await ir.json();
+        applyInitializerResponseFields(data);
+        updateEvaluateUi();
+        adjustPromptInputHeight();
+      } else {
+        try {
+          const res = await fetch(`/api/setup-template?path=${encodeURIComponent(raw)}`);
+          const data = await res.json();
+          applyInitializerResponseFields(data);
+          updateEvaluateUi();
+          adjustPromptInputHeight();
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    } catch (_) {
+      try {
+        const res = await fetch(`/api/setup-template?path=${encodeURIComponent(raw)}`);
+        const data = await res.json();
+        applyInitializerResponseFields(data);
+        updateEvaluateUi();
+        adjustPromptInputHeight();
+      } catch (_) {
+        /* ignore */
+      }
     }
-  } catch (_) {
-    /* try setup-template for absolute paths */
   }
-  try {
-    const res = await fetch(`/api/setup-template?path=${encodeURIComponent(raw)}`);
-    const data = await res.json();
-    applyInitializerResponseFields(data);
-    updateEvaluateUi();
-    adjustPromptInputHeight();
-  } catch (_) {
-    /* ignore */
-  }
+  void refreshInitializerCases();
 });
 
 function closeSessionOnLeave() {
@@ -1295,6 +2028,7 @@ async function initSession() {
     if (defs.initializer && initializerInput) initializerInput.value = defs.initializer;
     await refreshCatalogs();
     await ensureSessionConnected();
+    await refreshInitializerCases();
     refreshComposerState();
     adjustPromptInputHeight();
   } catch (err) {
@@ -1307,10 +2041,12 @@ envPathInput?.addEventListener("input", () => {
   if (envRefreshTimer) clearTimeout(envRefreshTimer);
   envRefreshTimer = setTimeout(() => {
     refreshCatalogs().catch(() => {});
+    void refreshInitializerCases();
   }, 400);
 });
 envPathInput?.addEventListener("change", () => {
   refreshCatalogs().catch(() => {});
+  void refreshInitializerCases();
 });
 
 async function sendChatOrRun() {
@@ -1352,6 +2088,7 @@ async function sendChatOrRun() {
       agent_id: agentId,
       prompt: promptText,
       initializer: initializerPath || null,
+      case_run_mode: caseRunMode,
     }),
   );
   if (promptInput) {
@@ -1562,11 +2299,10 @@ agentUserActualBtn?.addEventListener("click", () => {
   renderAgentUserSection();
 });
 
-modeSelect?.addEventListener("change", () => {
-  const v = modeSelect.value;
-  if (testsetHint) testsetHint.hidden = v !== "testset";
-});
-if (modeSelect && testsetHint) testsetHint.hidden = modeSelect.value !== "testset";
+if (runAllCasesBtn) {
+  bindHoldShortRun(runAllCasesBtn, () => void runAllCasesPlay());
+}
+initCaseRunMenu();
 
 initSession().catch((err) => {
   setAppStatus(`Failed to start session: ${err}`);

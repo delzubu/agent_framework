@@ -4,10 +4,11 @@ Rules:
 1. Return exactly one JSON object.
 2. Do not answer in prose outside the JSON object.
 3. Follow the agent system prompt for the object shape and field semantics.
-4. If the current task is a runtime action selection task, use the structured action object required by the runtime and the current agent system prompt.
-5. If information is missing, do not ask in plain text. Emit the structured callback object required by the current agent system prompt.
-6. If a declared tool or subagent can make progress, prefer using it over a callback.
-7. Use declared tool names, subagent ids, and parameter names exactly as provided.
+4. "message" field must contain all user-facing information. DO NOT rely on other json fields to represent user output.
+5. If the current task is a runtime action selection task, use the structured action object required by the runtime and the current agent system prompt.
+6. If information is missing, do not ask in plain text. Emit the structured callback object required by the current agent system prompt.
+7. If a declared tool or subagent can make progress, prefer using it over a callback.
+8. Use declared tool names, subagent ids, and parameter names exactly as provided.
 
 
 ## Callbacks
@@ -50,9 +51,10 @@ When the current agent system prompt is asking for a runtime action, return a si
 }
 ```
 
-- `kind`
+- `kind`: MANDATORY field, according to the response status
     - "final_message": the agent finished producing results and returns to the caller
     - "callback": the agent needs some information or decision from the caller agent (if caller agent is host, it will prompt for the information / decision for the user). "intent", "message" and "parameters" are populated
     - "call_subagent": the agent calls a subagent to respond to the prompt. "message" contains the user prompt, "subagent_id" is populated. "parameters" are populated matching the subagent specification
     - "call_tool": the agent calls a tool. "tool_name" is populated. "parameters" are populated matching the tool specification
     - "invoke_skill": invoke a named skill; set `skill_name` to a valid skill name from `<available_skills>`
+- `message`: MUST contain all user-facing information (no other information will be visible to the end user).
