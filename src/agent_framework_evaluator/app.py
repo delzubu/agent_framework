@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -16,7 +17,17 @@ from fastapi.staticfiles import StaticFiles
 from agent_framework.agent_registry import AgentRegistry
 from agent_framework.agents.helpers import AgentMarkdownError
 from agent_framework.config import load_host_config
+from agent_framework.errors import ModelDriverError
 from agent_framework.tracing import TraceContext, make_trace_event
+from agent_framework_evaluator.evaluation import extract_initial_prompts, run_evaluation
+from agent_framework_evaluator.initializer_catalog import (
+    evaluator_initializer_root,
+    list_initializer_scripts,
+    load_initializer_default_evaluator_criteria,
+    load_initializer_default_prompt,
+    resolve_env_path,
+    resolve_setup_path_for_run,
+)
 from agent_framework_evaluator.runtime.session_runner import SessionRunner
 from agent_framework_evaluator.runtime.setup_loader import load_setup_module
 from agent_framework_evaluator.session_manager import session_manager
@@ -28,6 +39,14 @@ _executor = ThreadPoolExecutor(max_workers=4)
 class UserInputBody(BaseModel):
     prompt_id: str = Field(..., min_length=1)
     text: str | None = None
+
+
+class EvaluateResultBody(BaseModel):
+    """POST body for post-run scoring. ``evaluator_prompt`` is never sent to the agent."""
+
+    session_id: str = ""
+    evaluator_prompt: str = ""
+    agent_message: str = ""
 
 
 class _AsyncQueueSubscriber:
@@ -118,6 +137,15 @@ def create_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=str(_WEB_DIR)), name="static")
 
+    @app.get("/api/evaluator-defaults")
+    def evaluator_defaults() -> dict[str, str]:
+        """Defaults from ``agent-eval web`` CLI (overridable in the UI)."""
+        return {
+            "env_path": os.environ.get("AGENT_EVAL_DEFAULT_ENV_PATH", ".env"),
+            "agent": os.environ.get("AGENT_EVAL_DEFAULT_AGENT", ""),
+            "initializer": os.environ.get("AGENT_EVAL_DEFAULT_INITIALIZER", ""),
+        }
+
     @app.post("/api/sessions")
     def create_session(
         payload: Annotated[dict[str, Any] | None, Body()] = None,
@@ -137,6 +165,26 @@ def create_app() -> FastAPI:
             return {"status": "closed"}
         return {"status": "already_closed"}
 
+    @app.post("/api/evaluate-result")
+    def evaluate_result(body: EvaluateResultBody) -> dict[str, Any]:
+        """Score the agent run after the fact. Does not invoke the agent."""
+        rec = session_manager.get(body.session_id) if body.session_id else None
+        env_path = rec.env_path if rec else ".env"
+        prompts = rec.last_run_prompts if rec else None
+        try:
+            out = run_evaluation(
+                env_path=env_path,
+                evaluator_prompt=body.evaluator_prompt,
+                agent_message=body.agent_message,
+                system_prompt=(prompts or {}).get("system_prompt", ""),
+                user_prompt=(prompts or {}).get("user_prompt", ""),
+            )
+        except ModelDriverError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        score = float(out["score"])
+        out["score"] = min(10.0, max(1.0, score))
+        return out
+
     @app.post("/api/sessions/{session_id}/user-input")
     def post_user_input(session_id: str, body: UserInputBody) -> dict[str, str]:
         """Deliver user text (or cancel with ``text: null``) for the pending ``prompt_id``."""
@@ -153,10 +201,39 @@ def create_app() -> FastAPI:
 
     @app.get("/api/agents")
     def list_agents(env_path: str = ".env") -> dict[str, list[str]]:
-        cfg = load_host_config(env_path)
+        cfg = load_host_config(resolve_env_path(env_path))
         registry = AgentRegistry.from_config(cfg)
         registry.discover()
         return {"agents": sorted(registry.list_names())}
+
+    @app.get("/api/initializers")
+    def list_initializers(env_path: str = ".env") -> dict[str, Any]:
+        env_file = resolve_env_path(env_path)
+        names = list_initializer_scripts(env_file)
+        init_root = evaluator_initializer_root(env_file)
+        env_resolved = str(env_file)
+        return {
+            "initializers": names,
+            "initializer_dir": str(init_root) if init_root is not None else "",
+            "env_exists": env_file.exists(),
+            "env_resolved": env_resolved,
+        }
+
+    @app.get("/api/initializer-template")
+    def initializer_template(env_path: str, initializer: str) -> dict[str, Any]:
+        """Load initializer/setup ``.py`` and return default prompt and optional evaluator criteria."""
+        env_file = resolve_env_path(env_path)
+        try:
+            text = load_initializer_default_prompt(env_file, initializer)
+            criteria = load_initializer_default_evaluator_criteria(env_file, initializer)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not text and not criteria:
+            raise HTTPException(
+                status_code=400,
+                detail="initializer not found or no PROMPT_TEMPLATE / get_prompt_template() / EVALUATOR_CRITERIA",
+            )
+        return {"template": text or "", "evaluator_criteria": criteria or ""}
 
     @app.get("/api/setup-template")
     def setup_template(path: str) -> dict[str, Any]:
@@ -231,16 +308,24 @@ def create_app() -> FastAPI:
                     pid = str(raw_pid) if raw_pid else None
                     rec.comm.submit_user_input(msg.get("text"), prompt_id=pid)
                 elif msg.get("type") == "run":
-                    setup_raw = msg.get("setup_path")
+                    init_raw = msg.get("initializer") if msg.get("initializer") is not None else msg.get("setup_path")
+                    rec.last_run_prompts = None
+
+                    def on_first_llm_call(trace: Any) -> None:
+                        payload = getattr(trace, "input_payload", None)
+                        rec.last_run_prompts = extract_initial_prompts(payload)
 
                     def work() -> dict[str, object]:
+                        env_fp = resolve_env_path(rec.env_path)
+                        sp = resolve_setup_path_for_run(env_fp, str(init_raw).strip() if init_raw else None)
                         return rec.runner.run_once(
                             agent_id=str(msg["agent_id"]),
                             prompt=str(msg["prompt"]),
-                            setup_path=Path(setup_raw) if setup_raw else None,
+                            setup_path=sp,
                             user_comm=rec.comm,
                             runtime_tracer=rec.tracer,
                             session_id=session_id,
+                            on_first_llm_call=on_first_llm_call,
                         )
 
                     try:

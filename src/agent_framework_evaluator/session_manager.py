@@ -18,6 +18,7 @@ class SessionRecord:
     debugger: DebuggerSubscriber
     env_path: str
     runner: SessionRunner
+    last_run_prompts: dict[str, str] | None = None
 
 
 class SessionManager:

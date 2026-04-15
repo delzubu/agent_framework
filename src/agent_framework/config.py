@@ -237,4 +237,17 @@ def _strip_quotes(value: str) -> str:
     return value
 
 
-__all__ = ["HostConfig", "load_host_config"]
+def read_optional_path_relative_to_env_file(env_file: Path, key: str) -> Path | None:
+    """Return a filesystem path from a single key in ``.env``, or ``None`` if missing or empty.
+
+    Relative values resolve against the directory containing the env file (same
+    rules as :func:`load_host_config`).
+    """
+    values = _parse_env_file(env_file)
+    raw = values.get(key, "").strip()
+    if not raw:
+        return None
+    return _resolve_config_path(env_file, raw, default_relative=".")
+
+
+__all__ = ["HostConfig", "load_host_config", "read_optional_path_relative_to_env_file"]

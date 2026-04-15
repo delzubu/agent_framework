@@ -15,6 +15,26 @@ from agent_framework_evaluator.runtime.setup_loader import load_setup_module
 HostFactory = Callable[..., Any]
 
 
+def _wire_one_shot_capture(host: Any, callback: Callable[[Any], None]) -> None:
+    """Invoke ``callback`` once on the first ``on_request_trace`` (LLM request), then chain."""
+    try:
+        raw = host.get_model_driver_raw()
+    except Exception:
+        return
+    prev_req = getattr(raw, "on_request_trace", None)
+    prev_resp = getattr(raw, "on_response_trace", None)
+    fired = [False]
+
+    def one_shot(trace: Any) -> None:
+        if not fired[0]:
+            fired[0] = True
+            callback(trace)
+        if prev_req is not None:
+            prev_req(trace)
+
+    raw.set_trace_callbacks(on_request=one_shot, on_response=prev_resp)
+
+
 class SessionRunner:
     def __init__(
         self,
@@ -65,6 +85,7 @@ class SessionRunner:
         user_comm: Any | None = None,
         runtime_tracer: Any | None = None,
         session_id: str | None = None,
+        on_first_llm_call: Callable[[Any], None] | None = None,
     ) -> dict[str, object]:
         self._suite_teardown_done = False
         sid = session_id or self._new_session_id()
@@ -109,6 +130,8 @@ class SessionRunner:
             host._llm_traces_wired = False
             wire_llm_traces_to_runtime_tracer(host)
             agent_events.attach_log_sources()
+        if on_first_llm_call is not None:
+            _wire_one_shot_capture(host, on_first_llm_call)
         if setup_module and hasattr(setup_module, "register"):
             setup_module.register(host, session_context)
         if setup_module and hasattr(setup_module, "suite_setup"):

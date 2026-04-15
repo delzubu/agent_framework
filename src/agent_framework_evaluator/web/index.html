@@ -10,22 +10,44 @@
   <div id="app">
     <aside id="left-rail">
       <h1>Agent Evaluator</h1>
+      <label>Env file
+        <input id="env-path" type="text" placeholder=".env" autocomplete="off" spellcheck="false">
+      </label>
       <label>Agent
         <input id="agent-select" type="text" list="agent-list" placeholder="agent id" autocomplete="off">
         <datalist id="agent-list"></datalist>
       </label>
-      <label>Setup File <input id="setup-path" type="text" placeholder="optional path/to/setup.py"></label>
+      <label>Initializer
+        <input id="initializer-select" type="text" list="initializer-list" placeholder="e.g. seed.py (from AGENT_EVAL_INITIALIZER_DIR) or full path" autocomplete="off" spellcheck="false">
+        <datalist id="initializer-list"></datalist>
+      </label>
       <label>Mode <select id="mode-select"><option>Single Run</option><option>Test Set</option></select></label>
     </aside>
     <main id="main-pane">
       <section id="prompt-pane">
         <h2>Prompt</h2>
         <textarea id="prompt-input"></textarea>
+        <div class="evaluator-prompt-block">
+          <label for="evaluator-prompt-input">Evaluator criteria <span class="field-hint">(not sent to the agent)</span></label>
+          <textarea id="evaluator-prompt-input" rows="4" placeholder="Describe how to judge the final answer. Used only after the run completes." spellcheck="true"></textarea>
+        </div>
         <button id="run-button" type="button">Run</button>
+        <p id="app-status" class="app-status" aria-live="polite"></p>
       </section>
       <section id="conversation-pane">
         <h2>Conversation</h2>
         <div id="conversation-thread" class="conversation-thread" aria-live="polite"></div>
+        <div id="evaluation-actions" class="evaluation-actions" hidden>
+          <button type="button" id="reevaluate-button" class="reevaluate-button" disabled>Re-evaluate</button>
+        </div>
+        <div id="evaluation-panel" class="evaluation-panel" hidden>
+          <h3 class="evaluation-panel-title">Evaluation</h3>
+          <button type="button" id="evaluation-score-trigger" class="evaluation-score-trigger" aria-label="Open evaluation details">
+            <div class="eval-score-bar" id="eval-score-bar" aria-hidden="true"></div>
+            <span class="eval-score-label" id="eval-score-label"></span>
+          </button>
+          <p class="evaluation-status" id="evaluation-status"></p>
+        </div>
         <div id="reply-bar" class="reply-bar">
           <label id="reply-label" class="reply-label" for="reply-input">Reply when prompted</label>
           <textarea id="reply-input" rows="2" placeholder="Your answer appears here when the agent asks for input…" disabled></textarea>
@@ -33,10 +55,6 @@
             <button type="button" id="send-reply-button" disabled>Send</button>
           </div>
         </div>
-      </section>
-      <section id="response-pane">
-        <h2>Response</h2>
-        <div id="response-output"></div>
       </section>
     </main>
     <aside id="trace-pane">
@@ -65,6 +83,15 @@
     <h2>Test Set</h2>
     <p>Reserved for future batch scoring and result summaries.</p>
   </section>
+  <dialog id="evaluation-detail-modal" class="evaluation-detail-dialog">
+    <div class="evaluation-detail-surface">
+      <header class="evaluation-detail-header">
+        <h3 class="evaluation-detail-title">Evaluation details</h3>
+        <button type="button" class="evaluation-detail-x" id="evaluation-detail-close" aria-label="Close">×</button>
+      </header>
+      <div id="evaluation-detail-body" class="evaluation-detail-body"></div>
+    </div>
+  </dialog>
   <dialog id="trace-detail-modal" class="trace-detail-dialog">
     <div class="trace-detail-dialog-surface">
       <header class="trace-detail-dialog-header">

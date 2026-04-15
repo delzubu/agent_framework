@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -14,7 +15,18 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     web = subparsers.add_parser("web")
-    web.add_argument("--env", default=".env")
+    web.add_argument("--env", default=".env", help="Path to .env (default for the web UI; overridable in the UI).")
+    web.add_argument(
+        "--agent",
+        default=None,
+        help="Default agent id for the web UI (datalist still overridable).",
+    )
+    web.add_argument(
+        "--initializer",
+        default=None,
+        metavar="NAME",
+        help="Default initializer .py (under AGENT_EVAL_INITIALIZER_DIR from .env); overridable in the UI.",
+    )
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8123)
     web.add_argument("--open-browser", action="store_true")
@@ -44,6 +56,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _cmd_web(args: argparse.Namespace) -> int:
     import uvicorn
+
+    env_abs = str(Path(args.env).resolve())
+    os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] = env_abs
+    for key in ("AGENT_EVAL_DEFAULT_AGENT", "AGENT_EVAL_DEFAULT_INITIALIZER"):
+        os.environ.pop(key, None)
+    if args.agent:
+        os.environ["AGENT_EVAL_DEFAULT_AGENT"] = args.agent
+    if args.initializer:
+        os.environ["AGENT_EVAL_DEFAULT_INITIALIZER"] = args.initializer
 
     url = f"http://{args.host}:{args.port}/"
     if args.open_browser:

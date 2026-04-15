@@ -1,15 +1,36 @@
 const traceTree = document.getElementById("trace-tree");
 const logStrip = document.getElementById("log-strip");
-const responseOutput = document.getElementById("response-output");
+const appStatus = document.getElementById("app-status");
 const runButton = document.getElementById("run-button");
 const promptInput = document.getElementById("prompt-input");
+const envPathInput = document.getElementById("env-path");
 const agentInput = document.getElementById("agent-select");
-const setupPathInput = document.getElementById("setup-path");
+const initializerInput = document.getElementById("initializer-select");
 const agentList = document.getElementById("agent-list");
+const initializerList = document.getElementById("initializer-list");
 const channelToggles = document.getElementById("channel-toggles");
 const conversationThread = document.getElementById("conversation-thread");
 const replyInput = document.getElementById("reply-input");
 const sendReplyButton = document.getElementById("send-reply-button");
+const evaluatorPromptInput = document.getElementById("evaluator-prompt-input");
+const evaluationPanel = document.getElementById("evaluation-panel");
+const evalScoreBar = document.getElementById("eval-score-bar");
+const evalScoreLabel = document.getElementById("eval-score-label");
+const evaluationStatus = document.getElementById("evaluation-status");
+const evaluationScoreTrigger = document.getElementById("evaluation-score-trigger");
+const evaluationDetailModal = document.getElementById("evaluation-detail-modal");
+const evaluationDetailBody = document.getElementById("evaluation-detail-body");
+const evaluationDetailClose = document.getElementById("evaluation-detail-close");
+const evaluationActions = document.getElementById("evaluation-actions");
+const reevaluateButton = document.getElementById("reevaluate-button");
+
+/** @typedef {{ criteria: string, passed: boolean, reason: string }} EvalCriterionRow */
+
+/** @type {null | { score: number, overall_verdict: string, evaluation: EvalCriterionRow[] }} */
+let lastEvaluationPayload = null;
+
+/** Last agent `result` payload from the server (for Re-evaluate). @type {Record<string, unknown> | null} */
+let lastAgentResultPayload = null;
 
 /** @type {Map<string, { details: HTMLElement, body: HTMLElement, spinner: HTMLElement, statusEl: HTMLElement, labelEl: HTMLElement, subEl: HTMLElement, agentName: string, lastStatus: string | null }>} */
 const runFrames = new Map();
@@ -95,6 +116,231 @@ function wireTraceDetailModal() {
 }
 
 wireTraceDetailModal();
+
+function wireEvaluationDetailModal() {
+  if (!evaluationDetailModal || !evaluationDetailClose) return;
+  evaluationDetailClose.addEventListener("click", () => evaluationDetailModal.close());
+  evaluationDetailModal.addEventListener("click", (e) => {
+    if (e.target === evaluationDetailModal) evaluationDetailModal.close();
+  });
+}
+
+wireEvaluationDetailModal();
+
+/**
+ * @param {HTMLElement} container
+ * @param {number} score
+ */
+function renderEvalScoreBar(container, score) {
+  if (!container) return;
+  container.innerHTML = "";
+  const s = Math.min(10, Math.max(0, Number(score)));
+  for (let i = 0; i < 10; i++) {
+    const amt = Math.min(1, Math.max(0, s - i));
+    const hue = (i / 9) * 120;
+    const wrap = document.createElement("span");
+    wrap.className = "eval-segment";
+    wrap.style.setProperty("--eval-lit", String(amt));
+    const glow = document.createElement("span");
+    glow.className = "eval-segment-glow";
+    glow.style.background = `hsl(${hue} 82% 48%)`;
+    const inner = document.createElement("span");
+    inner.className = "eval-segment-inner";
+    inner.style.background = `linear-gradient(to bottom, hsl(${hue} 74% 50%), hsl(${hue} 62% 34%))`;
+    wrap.appendChild(glow);
+    wrap.appendChild(inner);
+    container.appendChild(wrap);
+  }
+}
+
+function openEvaluationDetailModal() {
+  if (!evaluationDetailModal || !evaluationDetailBody || !lastEvaluationPayload) return;
+  const parseMd = getMarkedParse();
+  const d = lastEvaluationPayload;
+  evaluationDetailBody.innerHTML = "";
+
+  const hOverall = document.createElement("h4");
+  hOverall.textContent = "Overall result";
+  evaluationDetailBody.appendChild(hOverall);
+  const overallDiv = document.createElement("div");
+  overallDiv.className = "evaluation-detail-section";
+  const ov = d.overall_verdict || "";
+  if (parseMd) {
+    try {
+      overallDiv.innerHTML = parseMd(ov);
+    } catch (_) {
+      overallDiv.textContent = ov;
+    }
+  } else {
+    overallDiv.textContent = ov;
+  }
+  evaluationDetailBody.appendChild(overallDiv);
+
+  const hCrit = document.createElement("h4");
+  hCrit.textContent = "Criteria";
+  evaluationDetailBody.appendChild(hCrit);
+
+  const table = document.createElement("table");
+  table.className = "eval-detail-table";
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  for (const label of ["Criteria", "Passed", "Reason"]) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = label;
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  const rows = Array.isArray(d.evaluation) ? d.evaluation : [];
+  if (rows.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 3;
+    td.className = "eval-detail-empty";
+    td.textContent = "No criteria rows returned.";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  } else {
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      const tdC = document.createElement("td");
+      tdC.className = "eval-detail-criteria";
+      tdC.textContent = row.criteria ?? "";
+      const tdP = document.createElement("td");
+      tdP.className = "eval-detail-passed";
+      const icon = document.createElement("span");
+      const ok = Boolean(row.passed);
+      icon.className = ok ? "eval-pass-icon" : "eval-fail-icon";
+      icon.setAttribute("role", "img");
+      icon.setAttribute("aria-label", ok ? "Passed" : "Failed");
+      icon.textContent = ok ? "\u2713" : "\u2717";
+      tdP.appendChild(icon);
+      const tdR = document.createElement("td");
+      tdR.className = "eval-detail-reason";
+      tdR.textContent = row.reason ?? "";
+      tr.appendChild(tdC);
+      tr.appendChild(tdP);
+      tr.appendChild(tdR);
+      tbody.appendChild(tr);
+    }
+  }
+  table.appendChild(tbody);
+  evaluationDetailBody.appendChild(table);
+
+  evaluationDetailModal.showModal();
+}
+
+function resetEvaluationPanel() {
+  lastEvaluationPayload = null;
+  if (evaluationPanel) evaluationPanel.hidden = true;
+  if (evalScoreBar) evalScoreBar.innerHTML = "";
+  if (evalScoreLabel) evalScoreLabel.textContent = "";
+  if (evaluationStatus) evaluationStatus.textContent = "";
+}
+
+function clearStoredAgentResult() {
+  lastAgentResultPayload = null;
+  updateReevaluateUi();
+}
+
+function hasAgentOutputForEval() {
+  return (
+    lastAgentResultPayload != null && agentMessageOnly(lastAgentResultPayload).trim().length > 0
+  );
+}
+
+function updateReevaluateUi() {
+  const hasOut = hasAgentOutputForEval();
+  const critOk = Boolean(evaluatorPromptInput?.value?.trim());
+  if (evaluationActions) evaluationActions.hidden = !hasOut;
+  if (reevaluateButton) {
+    reevaluateButton.disabled = !hasOut || !critOk;
+  }
+}
+
+/**
+ * Only the user-facing message text is sent for evaluation (no status or other payload fields).
+ * @param {Record<string, unknown> | null | undefined} payload
+ */
+function agentMessageOnly(payload) {
+  if (payload == null) return "";
+  if (typeof payload === "string") return payload;
+  if (typeof payload === "object" && payload !== null && "message" in payload) {
+    const m = /** @type {Record<string, unknown>} */ (payload).message;
+    if (m == null) return "";
+    if (typeof m === "string") return m;
+    try {
+      return JSON.stringify(m);
+    } catch (_) {
+      return String(m);
+    }
+  }
+  return "";
+}
+
+/**
+ * @param {Record<string, unknown> | null | undefined} agentResultPayload
+ */
+async function runPostEvaluation(agentResultPayload) {
+  const crit = evaluatorPromptInput?.value?.trim() ?? "";
+  if (!crit) {
+    resetEvaluationPanel();
+    updateReevaluateUi();
+    return;
+  }
+  if (!evaluationPanel || !evalScoreBar || !evalScoreLabel) return;
+  if (reevaluateButton) reevaluateButton.disabled = true;
+  evaluationPanel.hidden = false;
+  if (evaluationStatus) evaluationStatus.textContent = "Scoring…";
+  renderEvalScoreBar(evalScoreBar, 0);
+  evalScoreLabel.textContent = "…";
+  const agentMessage = agentMessageOnly(agentResultPayload);
+  try {
+    const res = await fetch("/api/evaluate-result", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId ?? "",
+        evaluator_prompt: crit,
+        agent_message: agentMessage,
+      }),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(t || res.statusText);
+    }
+    /** @type {{ score: number, overall_verdict?: string, evaluation?: { criteria?: string, passed?: boolean, reason?: string }[] }} */
+    const data = await res.json();
+    const sc = Number(data.score);
+    const scoreN = Number.isFinite(sc) ? Math.min(10, Math.max(1, sc)) : 7.5;
+    const rawEval = Array.isArray(data.evaluation) ? data.evaluation : [];
+    /** @type {EvalCriterionRow[]} */
+    const evaluation = rawEval.map((row) => ({
+      criteria: String(row?.criteria ?? ""),
+      passed: Boolean(row?.passed),
+      reason: String(row?.reason ?? ""),
+    }));
+    lastEvaluationPayload = {
+      score: scoreN,
+      overall_verdict: String(data.overall_verdict ?? ""),
+      evaluation,
+    };
+    renderEvalScoreBar(evalScoreBar, scoreN);
+    evalScoreLabel.textContent = scoreN.toFixed(1);
+    if (evaluationStatus)
+      evaluationStatus.textContent = "Click the score for the overall result and criteria table.";
+  } catch (err) {
+    lastEvaluationPayload = null;
+    renderEvalScoreBar(evalScoreBar, 0);
+    evalScoreLabel.textContent = "";
+    if (evaluationStatus) evaluationStatus.textContent = `Evaluation failed: ${err}`;
+  } finally {
+    updateReevaluateUi();
+  }
+}
 
 function renderStringInTrace(parent, s, keyHint) {
   const wrap = document.createElement("span");
@@ -300,20 +546,52 @@ function setAwaitingPrompt(promptId) {
   if (active && replyInput) replyInput.focus();
 }
 
-function appendConversationBubble(role, text) {
+/**
+ * @param {"user" | "assistant" | "error"} role
+ * @param {string} text
+ * @param {{ markdown?: boolean } | undefined} opts
+ */
+function appendConversationBubble(role, text, opts) {
   if (!conversationThread || typeof text !== "string") return;
   const wrap = document.createElement("div");
-  wrap.className = `conv-msg conv-msg--${role}`;
+  const roleKey = role === "error" ? "error" : role;
+  wrap.className = `conv-msg conv-msg--${roleKey}`;
   const meta = document.createElement("div");
   meta.className = "conv-msg-meta";
-  meta.textContent = role === "user" ? "You" : "Agent";
+  if (role === "user") meta.textContent = "You";
+  else if (role === "error") meta.textContent = "Error";
+  else meta.textContent = "Agent";
   const body = document.createElement("div");
   body.className = "conv-msg-body";
-  body.textContent = text;
+  const useMd =
+    role === "assistant" && opts && typeof opts === "object" && opts.markdown === true;
+  if (useMd) {
+    const parse = getMarkedParse();
+    body.classList.add("conv-msg-body--markdown");
+    if (parse) {
+      try {
+        body.innerHTML = parse(text);
+      } catch (_) {
+        body.textContent = text;
+      }
+    } else {
+      body.textContent = text;
+    }
+  } else {
+    body.textContent = text;
+  }
   wrap.appendChild(meta);
   wrap.appendChild(body);
   conversationThread.appendChild(wrap);
   conversationThread.scrollTop = conversationThread.scrollHeight;
+}
+
+function setAppStatus(message) {
+  if (appStatus) appStatus.textContent = message || "";
+}
+
+function clearAppStatus() {
+  if (appStatus) appStatus.textContent = "";
 }
 
 /**
@@ -647,10 +925,28 @@ function onSocketMessage(ev) {
     routeTraceEvent(msg.event);
   }
   if (msg.type === "result" && msg.payload) {
-    responseOutput.textContent = JSON.stringify(msg.payload, null, 2);
+    clearAppStatus();
+    const p = /** @type {Record<string, unknown>} */ (msg.payload);
+    lastAgentResultPayload = p;
+    updateReevaluateUi();
+    let messageText = "";
+    let asMarkdown = false;
+    if (typeof p.message === "string") {
+      messageText = p.message;
+      asMarkdown = true;
+    } else if (p.message != null) {
+      try {
+        messageText = JSON.stringify(p.message, null, 2);
+      } catch (_) {
+        messageText = String(p.message);
+      }
+    }
+    appendConversationBubble("assistant", messageText, { markdown: asMarkdown });
     runButton.disabled = false;
+    void runPostEvaluation(p);
   }
   if (msg.type === "error") {
+    clearAppStatus();
     const et = msg.error_type || "Error";
     const lines = [`[${et}] ${msg.message || ""}`];
     if (msg.path) {
@@ -659,8 +955,10 @@ function onSocketMessage(ev) {
     if (msg.hint) {
       lines.push(msg.hint);
     }
-    responseOutput.textContent = lines.join("\n\n");
+    appendConversationBubble("error", lines.join("\n\n"));
     runButton.disabled = false;
+    clearStoredAgentResult();
+    resetEvaluationPanel();
   }
   if (msg.type === "outbox" && msg.item) {
     handleOutboxItem(msg.item);
@@ -707,19 +1005,30 @@ async function connectWebSocket() {
   });
 }
 
+function getEnvPath() {
+  return (envPathInput && envPathInput.value.trim()) || ".env";
+}
+
+async function refreshCatalogs() {
+  const ep = getEnvPath();
+  await loadAgentCatalog(ep);
+  await loadInitializerCatalog(ep);
+}
+
 async function ensureSessionConnected() {
-  const health = await fetch("/api/agents");
+  const ep = getEnvPath();
+  const health = await fetch(`/api/agents?env_path=${encodeURIComponent(ep)}`);
   if (!health.ok) throw new Error("Server unreachable");
   const needNew = !sessionId || !socket || socket.readyState !== WebSocket.OPEN;
   if (needNew) {
     if (sessionId) {
       await fetch(`/api/sessions/${sessionId}/close`, { method: "POST" }).catch(() => {});
     }
-    await loadAgentCatalog();
+    await refreshCatalogs();
     const res = await fetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ env_path: ep }),
     });
     if (!res.ok) throw new Error("Failed to create session");
     const data = await res.json();
@@ -728,9 +1037,10 @@ async function ensureSessionConnected() {
   }
 }
 
-async function loadAgentCatalog() {
+async function loadAgentCatalog(envPath) {
+  if (!agentList) return;
   try {
-    const res = await fetch("/api/agents");
+    const res = await fetch(`/api/agents?env_path=${encodeURIComponent(envPath)}`);
     const data = await res.json();
     agentList.innerHTML = "";
     for (const id of data.agents || []) {
@@ -743,13 +1053,77 @@ async function loadAgentCatalog() {
   }
 }
 
-setupPathInput.addEventListener("change", async () => {
-  const p = setupPathInput.value.trim();
-  if (!p) return;
+async function loadInitializerCatalog(envPath) {
+  if (!initializerList) return;
   try {
-    const res = await fetch(`/api/setup-template?path=${encodeURIComponent(p)}`);
+    const res = await fetch(`/api/initializers?env_path=${encodeURIComponent(envPath)}`);
     const data = await res.json();
-    if (data.template && !promptInput.value.trim()) {
+    initializerList.innerHTML = "";
+    for (const id of data.initializers || []) {
+      const opt = document.createElement("option");
+      opt.value = id;
+      initializerList.appendChild(opt);
+    }
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+/** If prompt and/or evaluator criteria are empty and an initializer is selected, load defaults once. */
+async function maybeApplyInitializerPrompt() {
+  if (!initializerInput) return;
+  const init = initializerInput.value.trim();
+  if (!init) return;
+  const needPrompt = promptInput && !promptInput.value.trim();
+  const needEval = evaluatorPromptInput && !evaluatorPromptInput.value.trim();
+  if (!needPrompt && !needEval) return;
+  try {
+    const r = await fetch(
+      `/api/initializer-template?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(init)}`,
+    );
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data.template && promptInput && !promptInput.value.trim()) {
+      promptInput.value = data.template;
+    }
+    if (data.evaluator_criteria && evaluatorPromptInput && !evaluatorPromptInput.value.trim()) {
+      evaluatorPromptInput.value = data.evaluator_criteria;
+    }
+    updateReevaluateUi();
+  } catch (_) {
+    /* leave fields empty */
+  }
+}
+
+/** Fill prompt / evaluator from initializer module when field changes and fields are still empty. */
+initializerInput?.addEventListener("change", async () => {
+  const raw = initializerInput.value.trim();
+  if (!raw) return;
+  const needPrompt = promptInput && !promptInput.value.trim();
+  const needEval = evaluatorPromptInput && !evaluatorPromptInput.value.trim();
+  if (!needPrompt && !needEval) return;
+  try {
+    const ir = await fetch(
+      `/api/initializer-template?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(raw)}`,
+    );
+    if (ir.ok) {
+      const data = await ir.json();
+      if (data.template && promptInput && !promptInput.value.trim()) {
+        promptInput.value = data.template;
+      }
+      if (data.evaluator_criteria && evaluatorPromptInput && !evaluatorPromptInput.value.trim()) {
+        evaluatorPromptInput.value = data.evaluator_criteria;
+      }
+      updateReevaluateUi();
+      return;
+    }
+  } catch (_) {
+    /* try setup-template for absolute paths */
+  }
+  try {
+    const res = await fetch(`/api/setup-template?path=${encodeURIComponent(raw)}`);
+    const data = await res.json();
+    if (data.template && promptInput && !promptInput.value.trim()) {
       promptInput.value = data.template;
     }
   } catch (_) {
@@ -768,35 +1142,55 @@ window.addEventListener("beforeunload", () => {
 
 async function initSession() {
   try {
+    const dr = await fetch("/api/evaluator-defaults");
+    const defs = await dr.json();
+    if (envPathInput) envPathInput.value = defs.env_path || ".env";
+    if (defs.agent && agentInput) agentInput.value = defs.agent;
+    if (defs.initializer && initializerInput) initializerInput.value = defs.initializer;
+    await refreshCatalogs();
     await ensureSessionConnected();
   } catch (err) {
-    responseOutput.textContent = `Failed to start session: ${err}`;
+    setAppStatus(`Failed to start session: ${err}`);
   }
 }
+
+let envRefreshTimer = null;
+envPathInput?.addEventListener("input", () => {
+  if (envRefreshTimer) clearTimeout(envRefreshTimer);
+  envRefreshTimer = setTimeout(() => {
+    refreshCatalogs().catch(() => {});
+  }, 400);
+});
+envPathInput?.addEventListener("change", () => {
+  refreshCatalogs().catch(() => {});
+});
 
 runButton.addEventListener("click", async () => {
   try {
     await ensureSessionConnected();
+    await maybeApplyInitializerPrompt();
   } catch (err) {
-    responseOutput.textContent = `Cannot reach server: ${err}`;
+    setAppStatus(`Cannot reach server: ${err}`);
     return;
   }
   if (!socket || socket.readyState !== WebSocket.OPEN) {
-    responseOutput.textContent = "No WebSocket after reconnect.";
+    setAppStatus("No WebSocket after reconnect.");
     return;
   }
   const agentId = agentInput.value.trim() || "root";
-  const setupPath = setupPathInput.value.trim();
+  const initializerPath = initializerInput ? initializerInput.value.trim() : "";
   runButton.disabled = true;
+  clearStoredAgentResult();
+  resetEvaluationPanel();
   clearTraceUi();
   appendConversationBubble("user", promptInput.value || "(empty prompt)");
-  responseOutput.textContent = "Running…";
+  setAppStatus("Running…");
   socket.send(
     JSON.stringify({
       type: "run",
       agent_id: agentId,
       prompt: promptInput.value,
-      setup_path: setupPath || null,
+      initializer: initializerPath || null,
     }),
   );
 });
@@ -807,7 +1201,7 @@ sendReplyButton?.addEventListener("click", async () => {
   try {
     await postUserInputHttp(text);
   } catch (err) {
-    responseOutput.textContent = `Reply failed: ${err}`;
+    setAppStatus(`Reply failed: ${err}`);
   }
 });
 
@@ -818,6 +1212,26 @@ replyInput?.addEventListener("keydown", (e) => {
   }
 });
 
+evaluationScoreTrigger?.addEventListener("click", () => {
+  if (lastEvaluationPayload) openEvaluationDetailModal();
+});
+
+evaluationScoreTrigger?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    if (lastEvaluationPayload) openEvaluationDetailModal();
+  }
+});
+
+reevaluateButton?.addEventListener("click", () => {
+  if (!lastAgentResultPayload || reevaluateButton?.disabled) return;
+  void runPostEvaluation(lastAgentResultPayload);
+});
+
+evaluatorPromptInput?.addEventListener("input", () => {
+  updateReevaluateUi();
+});
+
 initSession().catch((err) => {
-  responseOutput.textContent = `Failed to start session: ${err}`;
+  setAppStatus(`Failed to start session: ${err}`);
 });
