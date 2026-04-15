@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 import pytest
 
@@ -23,12 +25,42 @@ async def test_web_user_communication_waits_for_answer() -> None:
 
     async def answer_later() -> None:
         await asyncio.sleep(0.01)
-        comm.submit_user_input("hello")
+        assert comm.submit_user_input("hello") is True
 
     task = asyncio.create_task(comm.read_user_input("Question? "))
     await answer_later()
     result = await task
     assert result == "hello"
+    drained = comm.drain_outbox()
+    assert len(drained) == 1
+    assert drained[0]["kind"] == "prompt"
+    assert "prompt_id" in drained[0]
+
+
+def test_web_user_communication_cross_thread_submit() -> None:
+    """Worker thread runs asyncio.run(read_user_input); main thread submits (evaluator pattern)."""
+    comm = WebUserCommunication(session_id="sess-x")
+    result_holder: dict[str, str | None] = {}
+
+    def worker() -> None:
+        async def run() -> None:
+            result_holder["v"] = await comm.read_user_input("q")
+
+        asyncio.run(run())
+
+    t = threading.Thread(target=worker)
+    t.start()
+    pid = None
+    for _ in range(200):
+        time.sleep(0.01)
+        items = comm.drain_outbox()
+        if items:
+            pid = items[0]["prompt_id"]
+            break
+    assert pid is not None
+    assert comm.submit_user_input("cross", prompt_id=pid) is True
+    t.join(timeout=5.0)
+    assert result_holder.get("v") == "cross"
 
 
 @pytest.mark.asyncio

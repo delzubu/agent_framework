@@ -19,6 +19,7 @@ from agent_framework.audit_trace import AuditTraceSubscriber, InMemoryAuditTrace
 from agent_framework.command import CommandDefinition, CommandRegistry, render as render_command
 from agent_framework.config import HostConfig, load_host_config
 from agent_framework.model import (
+    AsyncModelDriver,
     AsyncToSyncAdapter,
     DEFAULT_RESPONSE_MODE,
     ModelContext,
@@ -36,6 +37,7 @@ from agent_framework.tracing import (
     NullRuntimeTracer,
     RuntimeTracer,
     TraceContext,
+    TraceSubscriber,
     make_trace_event,
 )
 from agent_framework.tracing_bridge import active_tracer_scope
@@ -74,15 +76,15 @@ class AgentHost:
     """
 
     config: HostConfig
-    model_driver: Any | None = None  # ModelDriver | AsyncModelDriver | None
+    model_driver: ModelDriver | AsyncModelDriver | None = None
     tool_registry: ToolRegistry = field(default_factory=lambda: ToolRegistry(directories=()))
     agent_registry: AgentRegistry = field(default_factory=lambda: AgentRegistry(directories=(), config=None))
     command_registry: CommandRegistry = field(default_factory=lambda: CommandRegistry(directories=()))
-    user_comm: Any = None   # UserCommunication | None
-    mcp_manager: Any = None  # McpManager | None
+    user_comm: UserCommunication | None = None
+    mcp_manager: Any = None  # McpManager | None (optional dependency)
     contexts: dict[str, CallContext] = field(default_factory=dict)
-    onPreModel: SequentialHook = field(default_factory=SequentialHook)
-    onPostModel: SequentialHook = field(default_factory=SequentialHook)
+    on_pre_model: SequentialHook = field(default_factory=SequentialHook)
+    on_post_model: SequentialHook = field(default_factory=SequentialHook)
     runtime_tracer: RuntimeTracer = field(default_factory=NullRuntimeTracer)
     trace_context_overlay: TraceContext | None = None
     _audit_jsonl: InMemoryAuditTracer | None = field(default=None, repr=False)
@@ -91,9 +93,10 @@ class AgentHost:
     skill_registry: SkillRegistry | None = None
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=8))
-    _command_fallback: Any = None  # Callable[[str, str], Awaitable[str | None]] | None
+    _command_fallback: Callable[[str, str], Awaitable[str | None]] | None = None
     _started: bool = False
-    _host_receive_log_subscriber: Any | None = field(default=None, repr=False)
+    _registries_discovered: bool = field(default=False, repr=False)
+    _host_receive_log_subscriber: TraceSubscriber | None = field(default=None, repr=False)
     _host_receive_log_path: Path | None = field(default=None, repr=False)
 
     @property
@@ -176,6 +179,7 @@ class AgentHost:
         host.tool_registry.discover()
         host.agent_registry.discover()
         host.command_registry.discover()
+        host._registries_discovered = True
         return host
 
     @classmethod
@@ -292,9 +296,11 @@ class AgentHost:
         if self._started:
             _LOGGER.debug("start() skipped: host already started")
             return
-        self.tool_registry.discover()
-        self.agent_registry.discover()
-        self.command_registry.discover()
+        if not self._registries_discovered:
+            self.tool_registry.discover()
+            self.agent_registry.discover()
+            self.command_registry.discover()
+            self._registries_discovered = True
         # Ensure skill registry is initialized
         self.get_skill_registry()
         # Start MCP if configured
@@ -555,12 +561,7 @@ class AgentHost:
         if conversation_id is None or store is None:
             return
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": response.raw_text}
-        # If this was the first turn, store the initial messages too
-        prior_len = len(all_messages) - len(new_messages)
-        if prior_len == 0:
-            store.append(conversation_id, list(new_messages) + [assistant_msg])
-        else:
-            store.append(conversation_id, list(new_messages) + [assistant_msg])
+        store.append(conversation_id, list(new_messages) + [assistant_msg])
 
     async def _persist_response_async(
         self,
@@ -702,7 +703,7 @@ class AgentHost:
     def load_agent(self, agent_ref: str | Path) -> Agent:
         """Load and cache an agent definition from Markdown."""
         source_path = self._resolve_agent_markdown_path(agent_ref)
-        return self.agent_registry._load_and_cache(source_path)
+        return self.agent_registry.load_from_path(source_path)
 
     def get_agent(self, agent_id: str, *, base_dir: Path | None = None) -> Agent:
         """Resolve an agent by logical id, explicit path, sibling path, or agent directory."""
@@ -774,16 +775,16 @@ class AgentHost:
 
         cloned = replace(
             agent,
-            onPreAgent=_copy_hook(agent.onPreAgent),
-            onPostAgent=_copy_hook(agent.onPostAgent),
-            onPreTool=_copy_hook(agent.onPreTool),
-            onPostTool=_copy_hook(agent.onPostTool),
-            onPreSubagent=_copy_hook(agent.onPreSubagent),
-            onPostSubagent=_copy_hook(agent.onPostSubagent),
-            onPreSkill=_copy_hook(agent.onPreSkill),
-            onPostSkill=_copy_hook(agent.onPostSkill),
-            onPreModel=_copy_hook(agent.onPreModel),
-            onPostModel=_copy_hook(agent.onPostModel),
+            on_pre_agent=_copy_hook(agent.on_pre_agent),
+            on_post_agent=_copy_hook(agent.on_post_agent),
+            on_pre_tool=_copy_hook(agent.on_pre_tool),
+            on_post_tool=_copy_hook(agent.on_post_tool),
+            on_pre_subagent=_copy_hook(agent.on_pre_subagent),
+            on_post_subagent=_copy_hook(agent.on_post_subagent),
+            on_pre_skill=_copy_hook(agent.on_pre_skill),
+            on_post_skill=_copy_hook(agent.on_post_skill),
+            on_pre_model=_copy_hook(agent.on_pre_model),
+            on_post_model=_copy_hook(agent.on_post_model),
         )
         rt_behavior = RuntimeTraceBehavior()
         wired = replace(cloned, behaviors=cloned.behaviors + (rt_behavior,))
@@ -914,12 +915,12 @@ class AgentHost:
 
     def run_pre_model_hooks(self, event: ModelStartEvent) -> None:
         """Execute host-level pre-model callbacks."""
-        for callback in self.onPreModel:
+        for callback in self.on_pre_model:
             callback(event)
 
     def run_post_model_hooks(self, event: ModelEndEvent) -> None:
         """Execute host-level post-model callbacks."""
-        for callback in self.onPostModel:
+        for callback in self.on_post_model:
             callback(event)
 
     def enable_llm_trace_logging(self, *, target: str = "file", output_dir: str | Path = "logs") -> None:
@@ -1114,7 +1115,7 @@ def _normalize_model_names(
     return value if value else default
 
 
-class _TracingUserCommunication:
+class _TracingUserCommunication(UserCommunication):
     """Decorator that adds audit tracing to any UserCommunication implementation."""
 
     def __init__(self, wrapped: Any, tracer: "InMemoryAuditTracer") -> None:

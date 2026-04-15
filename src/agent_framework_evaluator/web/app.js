@@ -7,6 +7,9 @@ const agentInput = document.getElementById("agent-select");
 const setupPathInput = document.getElementById("setup-path");
 const agentList = document.getElementById("agent-list");
 const channelToggles = document.getElementById("channel-toggles");
+const conversationThread = document.getElementById("conversation-thread");
+const replyInput = document.getElementById("reply-input");
+const sendReplyButton = document.getElementById("send-reply-button");
 
 /** @type {Map<string, { details: HTMLElement, body: HTMLElement, spinner: HTMLElement, statusEl: HTMLElement, labelEl: HTMLElement, subEl: HTMLElement, agentName: string, lastStatus: string | null }>} */
 const runFrames = new Map();
@@ -277,6 +280,92 @@ function clearTraceUi() {
   runFrames.clear();
   treeEntries.length = 0;
   logEntries.length = 0;
+  if (conversationThread) conversationThread.innerHTML = "";
+  setAwaitingPrompt(null);
+}
+
+/** @type {string | null} */
+let awaitingPromptId = null;
+
+function setAwaitingPrompt(promptId) {
+  awaitingPromptId = promptId;
+  const active = Boolean(promptId);
+  if (replyInput) {
+    replyInput.disabled = !active;
+    replyInput.placeholder = active
+      ? "Type your answer and press Send (submitted over HTTP)"
+      : "Your answer appears here when the agent asks for input…";
+  }
+  if (sendReplyButton) sendReplyButton.disabled = !active;
+  if (active && replyInput) replyInput.focus();
+}
+
+function appendConversationBubble(role, text) {
+  if (!conversationThread || typeof text !== "string") return;
+  const wrap = document.createElement("div");
+  wrap.className = `conv-msg conv-msg--${role}`;
+  const meta = document.createElement("div");
+  meta.className = "conv-msg-meta";
+  meta.textContent = role === "user" ? "You" : "Agent";
+  const body = document.createElement("div");
+  body.className = "conv-msg-body";
+  body.textContent = text;
+  wrap.appendChild(meta);
+  wrap.appendChild(body);
+  conversationThread.appendChild(wrap);
+  conversationThread.scrollTop = conversationThread.scrollHeight;
+}
+
+/**
+ * @param {Record<string, unknown>} item
+ */
+function handleOutboxItem(item) {
+  const kind = item.kind;
+  const pid = typeof item.prompt_id === "string" ? item.prompt_id : null;
+  if (!pid) return;
+
+  let text = "";
+  if (kind === "prompt") {
+    text = typeof item.prompt === "string" ? item.prompt : "";
+  } else if (kind === "question") {
+    const opts = Array.isArray(item.options) ? item.options.join(", ") : "";
+    text = `${item.prompt || ""}${opts ? `\nOptions: ${opts}` : ""}`;
+  } else if (kind === "confirmation") {
+    text = typeof item.prompt === "string" ? item.prompt : "Confirm?";
+  } else if (kind === "permission") {
+    const req = item.request;
+    if (req && typeof req === "object" && "summary" in req) {
+      text = `Permission: ${String(/** @type {{ summary?: string }} */ (req).summary || "")}`;
+    } else {
+      text = "Permission request";
+    }
+  } else {
+    return;
+  }
+  appendConversationBubble("assistant", text);
+  setAwaitingPrompt(pid);
+}
+
+async function postUserInputHttp(text) {
+  if (!sessionId || !awaitingPromptId) return;
+  const res = await fetch(`/api/sessions/${sessionId}/user-input`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt_id: awaitingPromptId, text }),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const j = await res.json();
+      if (typeof j.detail === "string") detail = j.detail;
+    } catch (_) {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  appendConversationBubble("user", text ?? "");
+  setAwaitingPrompt(null);
+  if (replyInput) replyInput.value = "";
 }
 
 function appendLogLine(event) {
@@ -552,6 +641,93 @@ channelToggles?.addEventListener("change", reapplyFilters);
 let socket = null;
 let sessionId = null;
 
+function onSocketMessage(ev) {
+  const msg = JSON.parse(ev.data);
+  if (msg.type === "trace" && msg.event) {
+    routeTraceEvent(msg.event);
+  }
+  if (msg.type === "result" && msg.payload) {
+    responseOutput.textContent = JSON.stringify(msg.payload, null, 2);
+    runButton.disabled = false;
+  }
+  if (msg.type === "error") {
+    const et = msg.error_type || "Error";
+    const lines = [`[${et}] ${msg.message || ""}`];
+    if (msg.path) {
+      lines.push(`File: ${msg.path}`);
+    }
+    if (msg.hint) {
+      lines.push(msg.hint);
+    }
+    responseOutput.textContent = lines.join("\n\n");
+    runButton.disabled = false;
+  }
+  if (msg.type === "outbox" && msg.item) {
+    handleOutboxItem(msg.item);
+  }
+}
+
+function detachWebSocket() {
+  if (socket) {
+    try {
+      socket.removeEventListener("message", onSocketMessage);
+      socket.close();
+    } catch (_) {
+      /* ignore */
+    }
+    socket = null;
+  }
+}
+
+async function connectWebSocket() {
+  if (!sessionId) throw new Error("no session");
+  detachWebSocket();
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${window.location.host}/ws/${sessionId}`);
+  socket = ws;
+  ws.addEventListener("message", onSocketMessage);
+  await new Promise((resolve, reject) => {
+    const to = setTimeout(() => reject(new Error("WebSocket open timeout")), 15000);
+    ws.addEventListener(
+      "open",
+      () => {
+        clearTimeout(to);
+        resolve(undefined);
+      },
+      { once: true },
+    );
+    ws.addEventListener(
+      "error",
+      () => {
+        clearTimeout(to);
+        reject(new Error("WebSocket error"));
+      },
+      { once: true },
+    );
+  });
+}
+
+async function ensureSessionConnected() {
+  const health = await fetch("/api/agents");
+  if (!health.ok) throw new Error("Server unreachable");
+  const needNew = !sessionId || !socket || socket.readyState !== WebSocket.OPEN;
+  if (needNew) {
+    if (sessionId) {
+      await fetch(`/api/sessions/${sessionId}/close`, { method: "POST" }).catch(() => {});
+    }
+    await loadAgentCatalog();
+    const res = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) throw new Error("Failed to create session");
+    const data = await res.json();
+    sessionId = data.session_id;
+    await connectWebSocket();
+  }
+}
+
 async function loadAgentCatalog() {
   try {
     const res = await fetch("/api/agents");
@@ -591,54 +767,29 @@ window.addEventListener("beforeunload", () => {
 });
 
 async function initSession() {
-  await loadAgentCatalog();
-  const res = await fetch("/api/sessions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
-  });
-  const data = await res.json();
-  sessionId = data.session_id;
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  socket = new WebSocket(`${proto}://${window.location.host}/ws/${sessionId}`);
-  socket.addEventListener("message", (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.type === "trace" && msg.event) {
-      routeTraceEvent(msg.event);
-    }
-    if (msg.type === "result" && msg.payload) {
-      responseOutput.textContent = JSON.stringify(msg.payload, null, 2);
-      runButton.disabled = false;
-    }
-    if (msg.type === "error") {
-      const et = msg.error_type || "Error";
-      const lines = [`[${et}] ${msg.message || ""}`];
-      if (msg.path) {
-        lines.push(`File: ${msg.path}`);
-      }
-      if (msg.hint) {
-        lines.push(msg.hint);
-      }
-      responseOutput.textContent = lines.join("\n\n");
-      runButton.disabled = false;
-    }
-    if (msg.type === "outbox" && msg.item && msg.item.kind === "prompt") {
-      const answer = window.prompt(msg.item.prompt || "Your answer:");
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "user_input", text: answer }));
-      }
-    }
-  });
+  try {
+    await ensureSessionConnected();
+  } catch (err) {
+    responseOutput.textContent = `Failed to start session: ${err}`;
+  }
 }
 
-runButton.addEventListener("click", () => {
+runButton.addEventListener("click", async () => {
+  try {
+    await ensureSessionConnected();
+  } catch (err) {
+    responseOutput.textContent = `Cannot reach server: ${err}`;
+    return;
+  }
   if (!socket || socket.readyState !== WebSocket.OPEN) {
+    responseOutput.textContent = "No WebSocket after reconnect.";
     return;
   }
   const agentId = agentInput.value.trim() || "root";
   const setupPath = setupPathInput.value.trim();
   runButton.disabled = true;
   clearTraceUi();
+  appendConversationBubble("user", promptInput.value || "(empty prompt)");
   responseOutput.textContent = "Running…";
   socket.send(
     JSON.stringify({
@@ -648,6 +799,23 @@ runButton.addEventListener("click", () => {
       setup_path: setupPath || null,
     }),
   );
+});
+
+sendReplyButton?.addEventListener("click", async () => {
+  if (!awaitingPromptId || !replyInput) return;
+  const text = replyInput.value;
+  try {
+    await postUserInputHttp(text);
+  } catch (err) {
+    responseOutput.textContent = `Reply failed: ${err}`;
+  }
+});
+
+replyInput?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendReplyButton?.click();
+  }
 });
 
 initSession().catch((err) => {

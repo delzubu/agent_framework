@@ -23,6 +23,17 @@
         <textarea id="prompt-input"></textarea>
         <button id="run-button" type="button">Run</button>
       </section>
+      <section id="conversation-pane">
+        <h2>Conversation</h2>
+        <div id="conversation-thread" class="conversation-thread" aria-live="polite"></div>
+        <div id="reply-bar" class="reply-bar">
+          <label id="reply-label" class="reply-label" for="reply-input">Reply when prompted</label>
+          <textarea id="reply-input" rows="2" placeholder="Your answer appears here when the agent asks for input…" disabled></textarea>
+          <div class="reply-actions">
+            <button type="button" id="send-reply-button" disabled>Send</button>
+          </div>
+        </div>
+      </section>
       <section id="response-pane">
         <h2>Response</h2>
         <div id="response-output"></div>

@@ -98,7 +98,7 @@ class AgentRegistry:
         # Direct path reference
         path_candidate = Path(agent_id)
         if path_candidate.exists():
-            return self._load_and_cache(path_candidate)
+            return self.load_from_path(path_candidate)
 
         nid = normalize_agent_id(agent_id)
         if nid in self._cache:
@@ -108,11 +108,11 @@ class AgentRegistry:
         if base_dir is not None:
             sibling = (base_dir / f"{nid}.md").resolve()
             if sibling.exists():
-                return self._load_and_cache(sibling)
+                return self.load_from_path(sibling)
 
         # Catalog
         if nid in self._catalog:
-            return self._load_and_cache(self._catalog[nid])
+            return self.load_from_path(self._catalog[nid])
 
         # Default directory fallback
         if self.config is not None:
@@ -120,7 +120,7 @@ class AgentRegistry:
             if agent_dir:
                 default_candidate = (Path(agent_dir) / f"{nid}.md").resolve()
                 if default_candidate.exists():
-                    return self._load_and_cache(default_candidate)
+                    return self.load_from_path(default_candidate)
 
         _LOGGER.warning("unknown agent %r (not in catalog or on disk)", agent_id)
         raise KeyError(f"Unknown agent: {agent_id!r}")
@@ -135,7 +135,7 @@ class AgentRegistry:
         self._cache.clear()
         self.discover()
 
-    def _load_and_cache(self, source_path: Path) -> "Agent":
+    def load_from_path(self, source_path: Path) -> "Agent":
         """Load an Agent from markdown, apply model overrides, and cache it."""
         from agent_framework.agents.agent import Agent
 

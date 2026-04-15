@@ -66,11 +66,11 @@ python -m agent_framework_evaluator web --env .env --host 127.0.0.1 --port 8123
 
 Open **`http://127.0.0.1:8123/`** (or your chosen host/port).
 
-On load, the page:
+On load (and before **Run** if the socket dropped or the server restarted), the page:
 
-1. Calls **`GET /api/agents`** to fill the agent **datalist** (discovered agent ids from your config).
-2. Calls **`POST /api/sessions`** with body **`{}`** — today this uses **`env_path: ".env"`** relative to the server process. For a different file, use the HTTP API manually or start the server from a cwd where `.env` is correct.
-3. Opens a **WebSocket** to **`/ws/{session_id}`** for traces, outbox messages, and runs.
+1. Calls **`GET /api/agents`** as a lightweight health check and to fill the agent **datalist**.
+2. Calls **`POST /api/sessions`** with body **`{}`** — this uses **`env_path: ".env"`** relative to the server process unless you override it in the JSON body. For a different file, use the HTTP API manually or start the server from a cwd where `.env` is correct.
+3. Opens a **WebSocket** to **`/ws/{session_id}`** for **live traces** and **outbox** push. **User replies are not tied to the socket:** they are submitted with **`POST /api/sessions/{id}/user-input`** (see §5.3).
 
 ---
 
@@ -84,7 +84,9 @@ On load, the page:
 
 ### 5.2 Prompt and Run
 
-Enter the user instruction in **Prompt**, then **Run**. The client sends a WebSocket message:
+Enter the user instruction in **Prompt**, then **Run**. If the WebSocket is closed (e.g. after a backend restart), the UI **re-establishes** a session: health check → optional close of the old session id → **`POST /api/sessions`** → new **`/ws/{session_id}`**, then the run proceeds.
+
+The client sends a WebSocket message:
 
 ```json
 { "type": "run", "agent_id": "<id>", "prompt": "<text>", "setup_path": "<optional path>" }
@@ -94,10 +96,23 @@ Enter the user instruction in **Prompt**, then **Run**. The client sends a WebSo
 
 ### 5.3 Clarifications
 
-When the runtime needs input, **`WebUserCommunication`** enqueues a **prompt** item. The UI uses **`window.prompt`**; your answer is sent as:
+When the runtime needs input, **`WebUserCommunication`** enqueues an outbox item (e.g. **`prompt`**, **`question`**, **`confirmation`**, **`permission`**) that includes a **`prompt_id`** (UUID). The **Conversation** pane shows the request; you type in the **Reply** box at the bottom.
+
+**Submit answers over HTTP** (works even if the WebSocket disconnected after the prompt appeared):
+
+```http
+POST /api/sessions/{session_id}/user-input
+Content-Type: application/json
+
+{ "prompt_id": "<uuid>", "text": "<answer>" }
+```
+
+Use **`"text": null`** to cancel that wait if the server still expects the same **`prompt_id`**.
+
+Optionally, the UI can also send a legacy WebSocket message (omit **`prompt_id`** to match the current wait):
 
 ```json
-{ "type": "user_input", "text": "<answer>" }
+{ "type": "user_input", "text": "<answer>", "prompt_id": "<optional uuid>" }
 ```
 
 ### 5.4 Leaving the page
@@ -173,10 +188,11 @@ Full contract: [§9 Setup Module Contract](../architecture/agent-evaluator-web-r
 |--------|------|---------|
 | `GET` | `/` | Static UI |
 | `POST` | `/api/sessions` | Body: `{ "env_path": ".env" }` (optional). Returns `{ "session_id" }`. |
-| `POST` | `/api/sessions/{id}/close` | Finalize session; **`suite_teardown`** if defined. |
+| `POST` | `/api/sessions/{id}/close` | Finalize session; **`suite_teardown`** if defined; cancels a pending input wait. |
+| `POST` | `/api/sessions/{id}/user-input` | Body: `{ "prompt_id": "<uuid>", "text": "<string or null>" }`. Delivers input for the active wait; **`409`** if nothing is waiting or **`prompt_id`** does not match. |
 | `GET` | `/api/agents?env_path=.env` | List agent ids (probe host uses catalog discovery). |
 | `GET` | `/api/setup-template?path=` | Safe load of setup module; returns `{ "template": "..." }`. |
-| WebSocket | `/ws/{session_id}` | Traces, outbox, `run`, `user_input` (see §5). |
+| WebSocket | `/ws/{session_id}` | Traces, outbox push, **`run`**; optional **`user_input`** (HTTP preferred for replies). |
 
 ---
 

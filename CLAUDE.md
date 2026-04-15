@@ -12,6 +12,17 @@ Do **not** add heuristics that reinterpret invalid or non-contract model JSON in
 - Decision JSON must include **`kind`**; both **`subagent_id`** and **`tool_name`** set → **`ValueError`**.
 - **`run_tool_loop`**: bad tool **`arguments`** JSON → **`ValueError`** after error log.
 
+## Structured model responses — no guessing
+
+When working on this repository:
+
+- **Do not** implement repair logic, fuzzy mapping, or heuristics that turn **invalid** or **non-contract** model JSON into valid `AgentDecision` objects (e.g. unknown `kind` values like `gather_context` must **not** be coerced into `call_tool` / `callback`).
+- **Do** enforce the contract: unsupported `kind` → **raise** (`ValueError` from `AgentDecision.from_model_response`) so failures are explicit.
+- **Do** fix invalid output upstream: prompts, `response_format` / JSON mode, provider settings — not silent recovery in Python.
+
+This policy is mirrored in `CLAUDE.md` under **Non-negotiable: structured model output**.
+
+
 ## Commands
 
 ```bash

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import queue
+import uuid
 from collections import deque
+from dataclasses import asdict
 from typing import Any, AsyncIterator
 
 from agent_framework.tracing_bridge import try_publish_trace
@@ -11,15 +14,40 @@ from agent_framework.user_communication import PermissionDecision, PermissionReq
 
 
 class WebUserCommunication:
-    """Queue-based user I/O for driving the agent from a web client."""
+    """Queue-based user I/O for driving the agent from a web client.
+
+    Uses a thread-safe :class:`queue.Queue` so inputs submitted from the FastAPI
+    WebSocket thread unblock :func:`read_user_input` running under
+    ``asyncio.run`` in a worker thread. Each wait is assigned a ``prompt_id`` for
+    HTTP correlation.
+    """
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
-        self._pending_input: asyncio.Queue[str | None] = asyncio.Queue()
+        self._pending_input: queue.Queue[str | None] = queue.Queue()
         self._outbox: deque[dict[str, Any]] = deque()
+        self._pending_prompt_id: str | None = None
 
-    def submit_user_input(self, text: str | None) -> None:
-        self._pending_input.put_nowait(text)
+    def cancel_wait(self) -> bool:
+        """Unblock a pending :meth:`read_user_input` with ``None`` (session closed or disconnect)."""
+        if self._pending_prompt_id is None:
+            return False
+        self._pending_input.put(None)
+        return True
+
+    def submit_user_input(self, text: str | None, *, prompt_id: str | None = None) -> bool:
+        """Deliver one line of user input to the current wait.
+
+        If ``prompt_id`` is given, it must match the active wait. If omitted, any
+        active wait accepts the value (WebSocket / legacy). Returns ``False`` if
+        nothing is waiting or the id does not match.
+        """
+        if self._pending_prompt_id is None:
+            return False
+        if prompt_id is not None and prompt_id != self._pending_prompt_id:
+            return False
+        self._pending_input.put(text)
+        return True
 
     def drain_outbox(self) -> list[dict[str, Any]]:
         items = list(self._outbox)
@@ -43,19 +71,22 @@ class WebUserCommunication:
         options: tuple[str, ...] | None = None,
         allow_freetext: bool = True,
     ) -> str:
-        self._outbox.append(
+        value = await self._read_input_after_enqueue(
             {
                 "kind": "question",
                 "prompt": prompt,
                 "options": list(options or ()),
                 "allow_freetext": allow_freetext,
-            }
+            },
+            prompt,
         )
-        return await self.read_user_input(prompt)
+        return value or ""
 
     async def ask_confirmation(self, prompt: str, *, default: bool = False) -> bool:
-        self._outbox.append({"kind": "confirmation", "prompt": prompt, "default": default})
-        value = await self.read_user_input(prompt)
+        value = await self._read_input_after_enqueue(
+            {"kind": "confirmation", "prompt": prompt, "default": default},
+            prompt,
+        )
         if value is None or value == "":
             return default
         return value.strip().lower() in {"y", "yes", "true", "1"}
@@ -72,8 +103,10 @@ class WebUserCommunication:
                 "summary": request.summary[:500],
             },
         )
-        self._outbox.append({"kind": "permission", "request": request})
-        raw = await self.read_user_input(request.summary)
+        raw = await self._read_input_after_enqueue(
+            {"kind": "permission", "request": asdict(request)},
+            request.summary,
+        )
         allowed = str(raw or "").strip().lower() in {"y", "yes", "allow", "true", "1"}
         try_publish_trace(
             channel="user",
@@ -84,20 +117,34 @@ class WebUserCommunication:
         return PermissionDecision(allowed=allowed, remember_for_session=False)
 
     async def read_user_input(self, prompt: str = "") -> str | None:
+        return await self._read_input_after_enqueue({"kind": "prompt", "prompt": prompt}, prompt)
+
+    async def _read_input_after_enqueue(self, item: dict[str, Any], trace_prompt: str) -> str | None:
+        prompt_id = str(uuid.uuid4())
+        item["prompt_id"] = prompt_id
+        self._pending_prompt_id = prompt_id
         try_publish_trace(
             channel="user",
             kind="user.prompt_requested",
             title="Waiting for user input",
-            summary=prompt[:200],
-            payload={"session_id": self.session_id, "prompt": prompt[:2000]},
+            summary=trace_prompt[:200],
+            payload={"session_id": self.session_id, "prompt": trace_prompt[:2000], "prompt_id": prompt_id},
         )
-        self._outbox.append({"kind": "prompt", "prompt": prompt})
-        result = await self._pending_input.get()
+        self._outbox.append(item)
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(None, self._pending_input.get)
+        finally:
+            self._pending_prompt_id = None
         try_publish_trace(
             channel="user",
             kind="user.prompt_answered",
             title="User input received",
-            payload={"session_id": self.session_id, "text": (result or "")[:2000]},
+            payload={
+                "session_id": self.session_id,
+                "text": (result or "")[:2000],
+                "prompt_id": prompt_id,
+            },
         )
         return result
 

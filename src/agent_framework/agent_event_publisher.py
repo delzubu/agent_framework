@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import traceback
 from typing import Any, Final
+from uuid import uuid4
 
 from agent_framework.agents.agent_decision import AgentDecision
 from agent_framework.agents.agent_run import AgentRun
@@ -93,17 +94,11 @@ class AgentEventPublisher:
                 log.removeHandler(self._log_handler)
         self._attached_loggers.clear()
 
-    def _publish(self, event: TraceEvent, *, host: Any | None = None) -> None:
-        tracer: Any | None = None
-        overlay: Any = None
+    def _publish(self, event: TraceEvent) -> None:
         pair = get_active_tracer()
-        if pair:
-            tracer, overlay = pair
-        elif host is not None:
-            t = getattr(host, "runtime_tracer", None)
-            if t is not None and not isinstance(t, NullRuntimeTracer):
-                tracer = t
-            overlay = getattr(host, "trace_context_overlay", None)
+        if not pair:
+            return
+        tracer, overlay = pair
         if tracer is None or isinstance(tracer, NullRuntimeTracer):
             return
         merged = event
@@ -116,7 +111,6 @@ class AgentEventPublisher:
     def audit_agent_call_started(
         self,
         *,
-        host: Any | None = None,
         run_id: str,
         parent_run_id: str | None = None,
         caller_id: str | None,
@@ -146,10 +140,9 @@ class AgentEventPublisher:
                     "user_prompt_sources": list(user_prompt_sources),
                 },
             ),
-            host=host,
         )
 
-    def audit_agent_call_finished(self, *, host: Any | None = None, run_id: str) -> None:
+    def audit_agent_call_finished(self, *, run_id: str) -> None:
         self._publish(
             make_trace_event(
                 channel="runtime",
@@ -159,10 +152,9 @@ class AgentEventPublisher:
                 context=TraceContext(run_id=run_id),
                 payload={"run_id": run_id},
             ),
-            host=host,
         )
 
-    def audit_decision(self, *, host: Any | None = None, run_id: str, agent_id: str, decision: AgentDecision) -> None:
+    def audit_decision(self, *, run_id: str, agent_id: str, decision: AgentDecision) -> None:
         d: dict[str, Any] = {
             "kind": decision.kind,
             "message": decision.message,
@@ -181,13 +173,11 @@ class AgentEventPublisher:
                 context=TraceContext(run_id=run_id, agent_id=agent_id),
                 payload={"decision": d},
             ),
-            host=host,
         )
 
     def audit_callback(
         self,
         *,
-        host: Any | None = None,
         run_id: str,
         agent_id: str,
         intent: str,
@@ -211,10 +201,9 @@ class AgentEventPublisher:
                     "event": event_dict,
                 },
             ),
-            host=host,
         )
 
-    def audit_named_event(self, *, host: Any | None = None, run_id: str, agent_id: str, event: dict[str, Any]) -> None:
+    def audit_named_event(self, *, run_id: str, agent_id: str, event: dict[str, Any]) -> None:
         self._publish(
             make_trace_event(
                 channel="runtime",
@@ -229,7 +218,6 @@ class AgentEventPublisher:
     def audit_skill_invocation(
         self,
         *,
-        host: Any | None = None,
         run_id: str,
         agent_id: str,
         skill_name: str,
@@ -249,7 +237,6 @@ class AgentEventPublisher:
                     "inventory": list(inventory),
                 },
             ),
-            host=host,
         )
 
     # --- Runtime observability (UI + optional audit) ---
@@ -257,7 +244,6 @@ class AgentEventPublisher:
     def on_context_updated(
         self,
         *,
-        host: Any | None = None,
         run_id: str,
         agent_id: str,
         message: dict[str, Any],
@@ -278,7 +264,6 @@ class AgentEventPublisher:
     def on_model_call_failed(
         self,
         *,
-        host: Any | None = None,
         run_id: str,
         agent_id: str,
         caller_id: str | None,
@@ -307,13 +292,11 @@ class AgentEventPublisher:
                 context=TraceContext(run_id=run_id, agent_id=agent_id, caller_id=caller_id),
                 payload=payload,
             ),
-            host=host,
         )
 
     def on_tool_execution_failed(
         self,
         *,
-        host: Any | None = None,
         run_id: str,
         agent_id: str,
         tool_name: str,
@@ -334,13 +317,11 @@ class AgentEventPublisher:
                     "error": str(exc),
                 },
             ),
-            host=host,
         )
 
     def on_callback_requested(
         self,
         *,
-        host: Any | None = None,
         run_id: str,
         agent_id: str,
         caller_id: str | None,
@@ -348,8 +329,6 @@ class AgentEventPublisher:
         prompt: str,
         to_caller: bool,
     ) -> None:
-        from uuid import uuid4
-
         self._publish(
             make_trace_event(
                 channel="runtime",
@@ -376,8 +355,6 @@ class AgentEventPublisher:
         target: str,
         answer: str,
     ) -> None:
-        from uuid import uuid4
-
         self._publish(
             make_trace_event(
                 channel="runtime",
@@ -392,7 +369,6 @@ class AgentEventPublisher:
                 parent_span_id=run_id,
                 context=TraceContext(run_id=run_id, agent_id=agent_id, caller_id=caller_id),
             ),
-            host=host,
         )
 
 

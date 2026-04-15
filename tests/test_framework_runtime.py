@@ -143,7 +143,7 @@ def test_agent_pre_hook_can_return_final_result(tmp_path: Path) -> None:
             final_result=AgentResult(status='completed', message='done|wrapped', prompt=event.invocation.rendered_prompt)
         )
 
-    agent.onPreAgent += stop_agent_callback
+    agent.on_pre_agent += stop_agent_callback
     result = agent.run(host=host, parameters={'name': 'Ada'}, caller_id='host')
     assert result.message == 'done|wrapped'
 
@@ -687,8 +687,8 @@ def test_agent_has_pre_and_post_skill_hooks() -> None:
         system_prompt="sys", user_prompt_template="Hello",
         parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
     )
-    assert isinstance(agent.onPreSkill, SequentialHook)
-    assert isinstance(agent.onPostSkill, SequentialHook)
+    assert isinstance(agent.on_pre_skill, SequentialHook)
+    assert isinstance(agent.on_post_skill, SequentialHook)
 
 
 def _write_env_with_skills(env_path: Path, skills_dir: Path) -> None:
@@ -764,8 +764,8 @@ def test_skill_hooks_fire_on_invocation(tmp_path: Path) -> None:
         parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
         allowed_skills=(),
     )
-    agent.onPreSkill += lambda event: fired.append(("pre", event.skill_name))
-    agent.onPostSkill += lambda event: fired.append(("post", event.skill_name))
+    agent.on_pre_skill += lambda event: fired.append(("pre", event.skill_name))
+    agent.on_post_skill += lambda event: fired.append(("post", event.skill_name))
 
     host = AgentHost.from_env(
         env_path,

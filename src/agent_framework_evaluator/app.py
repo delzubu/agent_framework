@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,6 +23,11 @@ from agent_framework_evaluator.session_manager import session_manager
 
 _WEB_DIR = Path(__file__).resolve().parent / "web"
 _executor = ThreadPoolExecutor(max_workers=4)
+
+
+class UserInputBody(BaseModel):
+    prompt_id: str = Field(..., min_length=1)
+    text: str | None = None
 
 
 class _AsyncQueueSubscriber:
@@ -126,9 +132,24 @@ def create_app() -> FastAPI:
         """Idempotent: browsers may send duplicate beforeunload closes; unknown id is OK."""
         rec = session_manager.pop(session_id)
         if rec is not None:
+            rec.comm.cancel_wait()
             _finalize_session_record(rec)
             return {"status": "closed"}
         return {"status": "already_closed"}
+
+    @app.post("/api/sessions/{session_id}/user-input")
+    def post_user_input(session_id: str, body: UserInputBody) -> dict[str, str]:
+        """Deliver user text (or cancel with ``text: null``) for the pending ``prompt_id``."""
+        rec = session_manager.get(session_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        ok = rec.comm.submit_user_input(body.text, prompt_id=body.prompt_id)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail="no pending prompt for this session or prompt_id mismatch",
+            )
+        return {"status": "ok"}
 
     @app.get("/api/agents")
     def list_agents(env_path: str = ".env") -> dict[str, list[str]]:
@@ -206,7 +227,9 @@ def create_app() -> FastAPI:
                     )
                     continue
                 if msg.get("type") == "user_input":
-                    rec.comm.submit_user_input(msg.get("text"))
+                    raw_pid = msg.get("prompt_id")
+                    pid = str(raw_pid) if raw_pid else None
+                    rec.comm.submit_user_input(msg.get("text"), prompt_id=pid)
                 elif msg.get("type") == "run":
                     setup_raw = msg.get("setup_path")
 
@@ -244,6 +267,7 @@ def create_app() -> FastAPI:
                 await pumper
             except asyncio.CancelledError:
                 pass
+            rec.comm.cancel_wait()
             _finalize_session_record(rec)
 
     return app

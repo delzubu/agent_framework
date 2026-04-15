@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -29,6 +30,25 @@ def test_api_agents_endpoint_lists_discovered_agents() -> None:
     data = response.json()
     assert "agents" in data
     assert isinstance(data["agents"], list)
+
+
+def test_user_input_http_unknown_session() -> None:
+    client = TestClient(create_app())
+    r = client.post(
+        "/api/sessions/00000000-0000-0000-0000-000000000000/user-input",
+        json={"prompt_id": str(uuid.uuid4()), "text": "x"},
+    )
+    assert r.status_code == 404
+
+
+def test_user_input_http_409_when_nothing_pending() -> None:
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+    r = client.post(
+        f"/api/sessions/{sid}/user-input",
+        json={"prompt_id": str(uuid.uuid4()), "text": "y"},
+    )
+    assert r.status_code == 409
 
 
 def test_cli_run_supports_prompt_file(tmp_path: Path, monkeypatch) -> None:

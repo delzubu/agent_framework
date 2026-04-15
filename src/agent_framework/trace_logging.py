@@ -25,12 +25,12 @@ class TraceLoggingBehavior(AgentBehavior):
 
     def attach(self, agent) -> None:
         """Attach tracing hooks to the supplied agent instance."""
-        agent.onPreAgent += self._log_pre_agent
-        agent.onPostAgent += self._log_post_agent
-        agent.onPreTool += self._log_pre_tool
-        agent.onPostTool += self._log_post_tool
-        agent.onPreSubagent += self._log_pre_subagent
-        agent.onPostSubagent += self._log_post_subagent
+        agent.on_pre_agent += self._log_pre_agent
+        agent.on_post_agent += self._log_post_agent
+        agent.on_pre_tool += self._log_pre_tool
+        agent.on_post_tool += self._log_post_tool
+        agent.on_pre_subagent += self._log_pre_subagent
+        agent.on_post_subagent += self._log_post_subagent
 
     def _log_pre_agent(self, event: AgentStartEvent):
         """Log the prompt about to be sent into the current agent."""

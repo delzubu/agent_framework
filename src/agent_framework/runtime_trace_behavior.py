@@ -55,16 +55,16 @@ class RuntimeTraceBehavior(AgentBehavior):
         self._host = None
 
     def attach(self, agent: Agent) -> None:
-        agent.onPreAgent += self._on_pre_agent
-        agent.onPostAgent += self._on_post_agent
-        agent.onPreTool += self._on_pre_tool
-        agent.onPostTool += self._on_post_tool
-        agent.onPreSubagent += self._on_pre_subagent
-        agent.onPostSubagent += self._on_post_subagent
-        agent.onPreSkill += self._on_pre_skill
-        agent.onPostSkill += self._on_post_skill
-        agent.onPreModel += self._on_pre_model
-        agent.onPostModel += self._on_post_model
+        agent.on_pre_agent += self._on_pre_agent
+        agent.on_post_agent += self._on_post_agent
+        agent.on_pre_tool += self._on_pre_tool
+        agent.on_post_tool += self._on_post_tool
+        agent.on_pre_subagent += self._on_pre_subagent
+        agent.on_post_subagent += self._on_post_subagent
+        agent.on_pre_skill += self._on_pre_skill
+        agent.on_post_skill += self._on_post_skill
+        agent.on_pre_model += self._on_pre_model
+        agent.on_post_model += self._on_post_model
 
     def _tracing_host(self) -> Any | None:
         h = self._host

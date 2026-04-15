@@ -73,7 +73,6 @@ def _emit_context_updated(
     from agent_framework.agent_event_publisher import agent_events
 
     agent_events.on_context_updated(
-        host=host,
         run_id=run.run_id,
         agent_id=agent.agent_id,
         message=dict(message),
@@ -102,14 +101,14 @@ class Agent:
             caller at runtime.
         can_use_host_interaction: Whether the agent may ask the host for user
             input at runtime.
-        onPreAgent: Sequential callbacks executed before the agent run starts.
-        onPostAgent: Sequential callbacks executed after the agent run ends.
-        onPreTool: Sequential callbacks executed before a tool call.
-        onPostTool: Sequential callbacks executed after a tool call.
-        onPreSubagent: Sequential callbacks executed before a child-agent call.
-        onPostSubagent: Sequential callbacks executed after a child-agent call.
-        onPreSkill: Sequential callbacks executed before a skill invocation.
-        onPostSkill: Sequential callbacks executed after a skill invocation.
+        on_pre_agent: Sequential callbacks executed before the agent run starts.
+        on_post_agent: Sequential callbacks executed after the agent run ends.
+        on_pre_tool: Sequential callbacks executed before a tool call.
+        on_post_tool: Sequential callbacks executed after a tool call.
+        on_pre_subagent: Sequential callbacks executed before a child-agent call.
+        on_post_subagent: Sequential callbacks executed after a child-agent call.
+        on_pre_skill: Sequential callbacks executed before a skill invocation.
+        on_post_skill: Sequential callbacks executed after a skill invocation.
         behavior_ids: Optional ordered runtime behavior ids resolved from sidecar JSON.
         source_path: Source Markdown path used to load the agent definition.
     """
@@ -128,16 +127,16 @@ class Agent:
     allowed_skills: tuple[str, ...] = ()
     can_query_caller: bool = True
     can_use_host_interaction: bool = True
-    onPreAgent: SequentialHook = field(default_factory=SequentialHook)
-    onPostAgent: SequentialHook = field(default_factory=SequentialHook)
-    onPreTool: SequentialHook = field(default_factory=SequentialHook)
-    onPostTool: SequentialHook = field(default_factory=SequentialHook)
-    onPreSubagent: SequentialHook = field(default_factory=SequentialHook)
-    onPostSubagent: SequentialHook = field(default_factory=SequentialHook)
-    onPreSkill: SequentialHook = field(default_factory=SequentialHook)
-    onPostSkill: SequentialHook = field(default_factory=SequentialHook)
-    onPreModel: SequentialHook = field(default_factory=SequentialHook)
-    onPostModel: SequentialHook = field(default_factory=SequentialHook)
+    on_pre_agent: SequentialHook = field(default_factory=SequentialHook)
+    on_post_agent: SequentialHook = field(default_factory=SequentialHook)
+    on_pre_tool: SequentialHook = field(default_factory=SequentialHook)
+    on_post_tool: SequentialHook = field(default_factory=SequentialHook)
+    on_pre_subagent: SequentialHook = field(default_factory=SequentialHook)
+    on_post_subagent: SequentialHook = field(default_factory=SequentialHook)
+    on_pre_skill: SequentialHook = field(default_factory=SequentialHook)
+    on_post_skill: SequentialHook = field(default_factory=SequentialHook)
+    on_pre_model: SequentialHook = field(default_factory=SequentialHook)
+    on_post_model: SequentialHook = field(default_factory=SequentialHook)
     behavior_ids: tuple[str, ...] = ()
     behaviors: tuple[AgentBehavior, ...] = field(default=(), repr=False)
     source_path: Path | None = None
@@ -311,7 +310,6 @@ class Agent:
         system_sources.extend(str(path) for path in _runtime_prompt_source_paths(initial_context.response_mode))
         user_sources = (str(self.source_path),) if self.source_path is not None else ()
         agent_events.audit_agent_call_started(
-            host=host,
             run_id=run.run_id,
             parent_run_id=parent_run_id,
             caller_id=caller_id,
@@ -357,7 +355,7 @@ class Agent:
                 result=self.complete_without_result(run),
             )[0]
         finally:
-            agent_events.audit_agent_call_finished(host=host, run_id=run.run_id)
+            agent_events.audit_agent_call_finished(run_id=run.run_id)
 
     def should_continue(self, run: AgentRun) -> bool:
         """Return whether another loop iteration should execute."""
@@ -461,7 +459,6 @@ class Agent:
             sc = exc.status_code if isinstance(exc, ModelDriverError) else None
             ub = exc.upstream_body if isinstance(exc, ModelDriverError) else None
             agent_events.on_model_call_failed(
-                host=host,
                 run_id=run.run_id,
                 agent_id=self.agent_id,
                 caller_id=None,
@@ -494,7 +491,7 @@ class Agent:
         decision = self._normalize_decision_capabilities(decision)
         from agent_framework.agent_event_publisher import agent_events
 
-        agent_events.audit_decision(host=host, run_id=run.run_id, agent_id=self.agent_id, decision=decision)
+        agent_events.audit_decision(run_id=run.run_id, agent_id=self.agent_id, decision=decision)
         handlers = {
             "final_message": self.handle_final_message,
             "callback": self.handle_callback,
@@ -560,7 +557,6 @@ class Agent:
         from agent_framework.agent_event_publisher import agent_events
 
         agent_events.on_callback_requested(
-            host=host,
             run_id=run.run_id,
             agent_id=self.agent_id,
             caller_id=caller_id,
@@ -586,7 +582,6 @@ class Agent:
                 "response": answer,
             }
             agent_events.audit_callback(
-                host=host,
                 run_id=run.run_id,
                 agent_id=self.agent_id,
                 intent=intent,
@@ -602,7 +597,6 @@ class Agent:
             run.conversation_messages.append({"role": "user", "content": answer})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "callback_answer")
             agent_events.on_callback_answered(
-                host=host,
                 run_id=run.run_id,
                 agent_id=self.agent_id,
                 caller_id=caller_id,
@@ -629,7 +623,6 @@ class Agent:
                 "response": answer,
             }
             agent_events.audit_callback(
-                host=host,
                 run_id=run.run_id,
                 agent_id=self.agent_id,
                 intent=intent,
@@ -645,7 +638,6 @@ class Agent:
             run.conversation_messages.append({"role": "user", "content": answer})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "callback_answer")
             agent_events.on_callback_answered(
-                host=host,
                 run_id=run.run_id,
                 agent_id=self.agent_id,
                 caller_id=caller_id,
@@ -714,7 +706,6 @@ class Agent:
         from agent_framework.agent_event_publisher import agent_events
 
         agent_events.audit_named_event(
-            host=host,
             run_id=run.run_id,
             agent_id=self.agent_id,
             event={
@@ -780,7 +771,6 @@ class Agent:
         if pre_decision.system_message:
             run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
         agent_events.audit_named_event(
-            host=host,
             run_id=run.run_id,
             agent_id=self.agent_id,
             event={
@@ -867,7 +857,6 @@ class Agent:
         from agent_framework.agent_event_publisher import agent_events
 
         agent_events.audit_skill_invocation(
-            host=host,
             run_id=run.run_id,
             agent_id=self.agent_id,
             skill_name=skill_def.name,
@@ -947,7 +936,6 @@ class Agent:
         from agent_framework.agent_event_publisher import agent_events
 
         agent_events.audit_named_event(
-            host=host,
             run_id=run.run_id,
             agent_id=self.agent_id,
             event={
@@ -967,14 +955,12 @@ class Agent:
             result = host.execute_tool(event.tool_name, tool_input)
         except Exception as exc:
             agent_events.on_tool_execution_failed(
-                host=host,
                 run_id=run.run_id,
                 agent_id=self.agent_id,
                 tool_name=event.tool_name,
                 exc=exc,
             )
             agent_events.audit_named_event(
-                host=host,
                 run_id=run.run_id,
                 agent_id=self.agent_id,
                 event={
@@ -1012,7 +998,6 @@ class Agent:
         if pre_decision.system_message:
             run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
         agent_events.audit_named_event(
-            host=host,
             run_id=run.run_id,
             agent_id=self.agent_id,
             event={
@@ -1088,7 +1073,7 @@ class Agent:
         """Execute all subscribed pre-tool callbacks sequentially."""
         run.history.append(f"before_tool:{event.tool_name}")
         decision = ToolHookDecision()
-        for callback in self.onPreTool:
+        for callback in self.on_pre_tool:
             outcome = callback(event)
             if outcome is None:
                 continue
@@ -1122,7 +1107,7 @@ class Agent:
     ) -> None:
         """Execute all subscribed post-tool callbacks sequentially."""
         run.history.append(f"after_tool:{event.tool_name}")
-        for callback in self.onPostTool:
+        for callback in self.on_post_tool:
             callback(event)
 
     def _run_pre_subagent_hooks(
@@ -1136,7 +1121,7 @@ class Agent:
         """Execute all subscribed pre-subagent callbacks sequentially."""
         run.history.append(f"before_subagent:{event.subagent_id}")
         decision = SubagentHookDecision()
-        for callback in self.onPreSubagent:
+        for callback in self.on_pre_subagent:
             outcome = callback(event)
             if outcome is None:
                 continue
@@ -1172,19 +1157,19 @@ class Agent:
     ) -> None:
         """Execute all subscribed post-subagent callbacks sequentially."""
         run.history.append(f"after_subagent:{event.subagent_id}")
-        for callback in self.onPostSubagent:
+        for callback in self.on_post_subagent:
             callback(event)
 
     def _run_pre_skill_hooks(self, *, run: AgentRun, event: SkillStartEvent) -> None:
         """Execute all subscribed pre-skill callbacks sequentially."""
         run.history.append(f"before_skill:{event.skill_name}")
-        for callback in self.onPreSkill:
+        for callback in self.on_pre_skill:
             callback(event)
 
     def _run_post_skill_hooks(self, *, run: AgentRun, event: SkillEndEvent) -> None:
         """Execute all subscribed post-skill callbacks sequentially."""
         run.history.append(f"after_skill:{event.skill_name}")
-        for callback in self.onPostSkill:
+        for callback in self.on_post_skill:
             callback(event)
 
     def _run_pre_model_hooks(
@@ -1197,7 +1182,7 @@ class Agent:
         """Execute all subscribed pre-model callbacks sequentially."""
         run.history.append(f"before_model:{self.agent_id}")
         event = ModelStartEvent(invocation=self._hook_invocation(run, caller_id), context=context)
-        for callback in self.onPreModel:
+        for callback in self.on_pre_model:
             callback(event)
 
     def _run_post_model_hooks(
@@ -1215,7 +1200,7 @@ class Agent:
             context=context,
             response=response,
         )
-        for callback in self.onPostModel:
+        for callback in self.on_post_model:
             callback(event)
 
     def _validate_template_contract(self) -> None:
@@ -1324,7 +1309,7 @@ class Agent:
                 return AgentResult(status="stopped", message="", prompt=run.rendered_prompt)
 
         event = AgentStartEvent(invocation=self._hook_invocation(run, caller_id))
-        for callback in self.onPreAgent:
+        for callback in self.on_pre_agent:
             outcome = callback(event)
             if outcome is None:
                 continue
@@ -1368,7 +1353,7 @@ class Agent:
             if outcome.continue_run:
                 continue_run = True
 
-        for callback in self.onPostAgent:
+        for callback in self.on_post_agent:
             event = AgentEndEvent(invocation=self._hook_invocation(run, caller_id), result=current_result)
             outcome = callback(event)
             if isinstance(outcome, AgentResult):

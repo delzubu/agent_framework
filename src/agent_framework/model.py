@@ -732,6 +732,7 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
     on_request_trace: Any | None = None
     on_response_trace: Any | None = None
     _fallback_state: dict[tuple[str, ...], int] = field(default_factory=dict, repr=False)
+    _client: Any = field(default=None, repr=False)
 
     def set_trace_callbacks(
         self,
@@ -742,6 +743,12 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
         """Attach optional trace callbacks for exact provider I/O logging."""
         self.on_request_trace = on_request
         self.on_response_trace = on_response
+
+    def _get_client(self) -> OpenAI:
+        """Return a cached OpenAI client, constructing it lazily on first use."""
+        if self._client is None:
+            self._client = OpenAI(api_key=self.api_key)
+        return self._client
 
     def decide(
         self,
@@ -773,7 +780,7 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
             ]
 
         def _try_model(model_name: str) -> ModelResponse:
-            client = OpenAI(api_key=self.api_key)
+            client = self._get_client()
             fmt_dict = resolved_response_format_dict(context)
             request_trace_payload: Any = model_input
             if fmt_dict is not None:
@@ -821,107 +828,6 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
             return ModelResponse(payload=payload, raw_text=normalized_text)
 
         return self._fallback_decide(model_names, _try_model)
-
-    @staticmethod
-    def _capability_metadata(
-        tools: tuple[ToolDefinition, ...],
-        subagents: tuple[CapabilityDefinition, ...],
-        skills: tuple[CapabilityDefinition, ...],
-    ) -> dict[str, str]:
-        """Build shared capability metadata payloads for prompt injection."""
-        tools_json = json.dumps(
-            [
-                {
-                    "id": tool.tool_id,
-                    "description": tool.description,
-                    "parameters": [
-                        {
-                            "name": parameter.name,
-                            "type": parameter.value_type,
-                            "required": parameter.required,
-                            "description": parameter.description,
-                        }
-                        for parameter in tool.parameters
-                    ],
-                }
-                for tool in tools
-            ],
-            indent=2,
-        )
-        subagents_json = json.dumps(
-            [
-                {
-                    "id": item.capability_id,
-                    "description": item.description,
-                    "parameters": [
-                        {
-                            "name": parameter.name,
-                            "type": parameter.value_type,
-                            "required": parameter.required,
-                            "description": parameter.description,
-                        }
-                        for parameter in item.parameters
-                    ],
-                }
-                for item in subagents
-            ],
-            indent=2,
-        )
-        return {
-            "tools_json": tools_json,
-            "subagents_json": subagents_json,
-        }
-
-    @classmethod
-    def _runtime_prompt(
-        cls,
-        context: ModelContext,
-    ) -> str:
-        """Build the shared and mode-specific runtime prompt block."""
-        metadata = cls._capability_metadata(context.tools, context.subagents, context.skills)
-        shared_prompt = _SYSTEM_TEMPLATE.format(**metadata).strip()
-        mode_templates = {
-            "decision": _SYSTEM_DECISION_TEMPLATE,
-            "text": _SYSTEM_TEXT_TEMPLATE,
-            DEFAULT_RESPONSE_MODE: _SYSTEM_JSON_OBJECT_TEMPLATE,
-        }
-        mode_prompt = mode_templates.get(context.response_mode, _SYSTEM_JSON_OBJECT_TEMPLATE).strip()
-        return f"{shared_prompt}\n\n{mode_prompt}".strip()
-
-    @classmethod
-    def decision_instructions(
-        cls,
-        tools: tuple[ToolDefinition, ...],
-        subagents: tuple[CapabilityDefinition, ...],
-        skills: tuple[CapabilityDefinition, ...],
-    ) -> str:
-        """Return the generic decision envelope instructions as text."""
-        return cls._runtime_prompt(
-            ModelContext(
-                system_prompt="",
-                user_prompt="",
-                tools=tools,
-                subagents=subagents,
-                skills=skills,
-                run_id=None,
-            )
-        )
-
-    @classmethod
-    def _capability_prompt(cls, context: ModelContext) -> str:
-        """Return the provider-side injected capability and mode guidance."""
-        return cls._runtime_prompt(context)
-
-    @classmethod
-    def shared_instructions(
-        cls,
-        tools: tuple[ToolDefinition, ...],
-        subagents: tuple[CapabilityDefinition, ...],
-        skills: tuple[CapabilityDefinition, ...],
-    ) -> str:
-        """Return the shared runtime capability block without a mode suffix."""
-        metadata = cls._capability_metadata(tools, subagents, skills)
-        return _SYSTEM_TEMPLATE.format(**metadata)
 
 __all__ = [
     "AsyncModelDriver",
