@@ -426,11 +426,39 @@ The evaluator will serialise the `parameters` dict to JSON and send that to the 
 
 You can use dot notation for nested fields: `result_field: parameters.address.city`.
 
-Use `result_field: .` to evaluate the entire agent result as-is.
+### Passing the full agent result to the evaluator
+
+Use `result_field: .` (a single dot) to serialise the entire agent result dict as JSON and send it to the evaluator.  This is useful when:
+
+- Your agent returns a rich multi-field object and you want the evaluator to assess the whole thing holistically (not just one field).
+- You are unsure which field matters and want the evaluator to look at everything.
+- You are debugging and want to see the full result in the evaluator trace.
+
+```markdown
+---
+title: Full result holistic check
+result_field: .
+case_run_mode: no_callbacks
+---
+Extract the user's name, email, and subscription tier from the profile text below.
+Profile: "Alice Chen, alice@example.com, subscribed to Pro plan since January 2023."
+---
+- The result must include a name field containing "Alice Chen"
+- The result must include an email field containing "alice@example.com"
+- The result must include a tier or plan field indicating "Pro"
+- All three fields must be present; missing fields are a failure
+- No field should be null or empty
+```
+
+The evaluator LLM will see the entire JSON blob, so your criteria can reference any field by name even without specifying `result_field: parameters.X`.  The tradeoff is that the evaluator receives more text, which can slightly affect scoring accuracy for very large payloads.
 
 **Important:** if the field you name does not exist in the agent result, the evaluator exits with an error (exit code 1) rather than silently scoring an empty payload.  This is intentional — a missing field is a bug, not a "no score" case.
 
 See the full example: [`evaluator-examples/multi-case/cases/03_result_field.md`](evaluator-examples/multi-case/cases/03_result_field.md)
+
+### What about evaluating the full LLM conversation?
+
+There is currently no built-in mechanism to pass the full multi-turn conversation history (all LLM requests, assistant replies, and tool outputs) to the evaluator.  This is a planned feature (see GitHub issue #17 for status).  For now, the evaluator receives only the system prompt and first user turn from the agent's first LLM call, plus the final agent result.
 
 ---
 
@@ -609,52 +637,141 @@ These cases all use `case_run_mode: no_callbacks` to prevent the agent from aski
 
 ---
 
-## Setup modules (advanced)
+## Setting up tools, sub-agents, and MCP
 
-A **setup module** is an optional Python file that can register extra tools, populate a prompt template, and hook into the lifecycle of a test suite.  Most users will not need this, but it is useful for:
+When testing agents that depend on specific tools, external services, or sub-agents, you need a way to register those dependencies before the agent run begins.  This is done through the **setup module** — a Python file with lifecycle hooks that the evaluator calls automatically.
 
-- Registering in-memory mock tools that avoid side effects during testing
-- Seeding a database before a test run and cleaning up after
-- Dynamically generating the prompt from a template based on test case parameters
+### The key insight: your initializer IS the setup module
 
-Create a `setup.py` next to your initializer:
+You do not need two separate files.  The same `init.py` that defines `get_test_cases()` can also define `register()`, `suite_setup()`, and the other hooks.  The evaluator loads the initializer as a setup module automatically.
+
+This means you can put everything — test cases, tool registration, lifecycle hooks — in one file:
+
+```python
+# my_suite/init.py
+
+from __future__ import annotations
+from pathlib import Path
+from typing import Any
+from agent_framework_evaluator.case_markdown import MarkdownCaseLoader
+
+_HERE = Path(__file__).resolve().parent
+CASES_GLOB = "cases/*.md"
+DEFAULT_AGENT = "root"
+DEFAULT_EVAL_MODEL = "gpt-4o-mini"
+
+_LOADER = MarkdownCaseLoader(_HERE, CASES_GLOB)
+
+
+def get_test_cases() -> list[dict[str, Any]]:
+    """Test case discovery — always required."""
+    return _LOADER.get_test_cases()
+
+
+def register(host, session_context):
+    """Called once after the host is created, before any test runs.
+    Use this to register custom tools or override host configuration."""
+    from my_project.tools import MockEmailTool, MockDatabaseTool
+    host.tool_registry.register(MockEmailTool())
+    host.tool_registry.register(MockDatabaseTool(connection_string="sqlite:///:memory:"))
+
+
+def suite_setup(session_context):
+    """Called once at the start of a session (before the first case)."""
+    print(f"Starting test suite for session {session_context.session_id}")
+
+
+def test_setup(case_dict, session_context):
+    """Called before each individual case run."""
+    print(f"Starting case: {case_dict.get('prompt', '')[:60]}")
+
+
+def test_teardown(case_dict, session_context):
+    """Called after each individual case run, even if it failed."""
+    pass
+
+
+def suite_teardown(session_context):
+    """Called when the session closes (browser tab close, CLI completion, etc.)."""
+    print("Suite complete — cleaning up.")
+```
+
+### Why use tool registration in tests?
+
+Agents that call real external services (email, databases, APIs) are problematic to test:
+
+- They may have side effects (sending real emails, modifying real data).
+- They may be unavailable in CI environments.
+- They may be slow or rate-limited.
+
+By registering mock versions in `register()`, your agent runs against a controlled, fast, side-effect-free implementation.  The mock can record what the agent tried to do, which you can then assert in a `code_evaluator`.
+
+### Tool registration API
+
+`register()` receives the live `AgentHost` instance.  The tool registry supports:
 
 ```python
 def register(host, session_context):
-    """Runs once when the host is created.  Register tools here."""
-    from my_tools import MockEmailTool
-    host.tool_registry.register(MockEmailTool())
+    # Register any Tool subclass instance
+    host.tool_registry.register(my_custom_tool_instance)
 
-def suite_setup(session_context):
-    """Runs once at the start of a session."""
-    print("Starting test suite...")
+    # The built-in tools (Read, Write, Bash, etc.) are already registered
+    # by default.  You can add alongside them.
 
-def test_setup(case_dict, session_context):
-    """Runs before each individual case."""
-    pass
-
-def test_teardown(case_dict, session_context):
-    """Runs after each individual case."""
-    pass
-
-def suite_teardown(session_context):
-    """Runs when the session closes."""
-    print("Suite complete.")
-
-# Optional: pre-fill the prompt field in the web UI
-PROMPT_TEMPLATE = "Summarise the following ticket:\n\n{ticket_text}"
+    # You can also adjust host-level configuration:
+    host.config.missing_tool_policy = "graceful"  # skip unloadable tools
 ```
 
-Pass it on the CLI:
+Tool objects must be subclasses of `agent_framework.tool.Tool`.  See the built-in tools in `src/agent_framework/builtin_tools/` for reference implementations.
+
+### Configuring sub-agents
+
+Sub-agents are file-based: the evaluator discovers them from `AGENT_DIRECTORY` in `.env`.  There is currently no programmatic API to register agents dynamically per test.
+
+To test an agent that uses sub-agents, make sure the sub-agent `.md` files are in `AGENT_DIRECTORY` (or a configured path) before the run.  The host will discover them automatically.
+
+If you need different sub-agent configurations per test, the current approach is to use separate `.env` files and separate test suites.
+
+### Configuring MCP servers
+
+MCP (Model Context Protocol) servers are configured at the host level via `.env`, not per test:
+
+```
+# .env
+MCP_ENABLED=true
+MCP_CONFIG_PATH=path/to/.mcp.json    # auto-discovered from cwd upward if omitted
+```
+
+The `.mcp.json` file lists server connections (stdio or HTTP).  All tests in a suite share the same MCP configuration.  There is currently no mechanism to inject different MCP servers per test case.
+
+If your test suite needs MCP tools available, ensure `MCP_ENABLED=true` in your `.env` and the server processes are reachable.  The `register()` hook fires after the MCP bridge is already set up, so MCP tools are already in `host.tool_registry` by the time `register()` runs — you can inspect or supplement them there.
+
+### Lifecycle hooks reference
+
+| Hook | When | Common uses |
+|------|------|-------------|
+| `register(host, session_context)` | After host creation, before first run | Register tools, adjust config |
+| `suite_setup(session_context)` | Once, before the first test case | Start servers, seed databases |
+| `test_setup(case_dict, session_context)` | Before each case | Reset per-case state |
+| `test_teardown(case_dict, session_context)` | After each case (even on failure) | Assert side effects, clean up |
+| `suite_teardown(session_context)` | On session close | Stop servers, final cleanup |
+
+`session_context` carries `session_id`, `agent_id`, `env_path`, and `setup_path` — useful for logging and conditional logic.
+
+`case_dict` in `test_setup` / `test_teardown` contains `{ "prompt": "...", ... }` for the current case.
+
+### When you do need a separate file
+
+If you want to reuse the same setup logic across multiple initializers, put it in a dedicated `setup.py` and pass it explicitly:
 
 ```bash
 python -m agent_framework_evaluator evaluate \
   --env .env \
   --initializer init.py \
-  --setup setup.py
+  --setup shared_setup.py
 ```
 
-Or select it in the **Setup File** field in the web UI.
+Or select it in the **Setup File** field in the web UI.  The separate setup file takes precedence over hooks defined in the initializer.
 
 ---
 
