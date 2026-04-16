@@ -760,6 +760,177 @@ If your test suite needs MCP tools available, ensure `MCP_ENABLED=true` in your 
 
 `case_dict` in `test_setup` / `test_teardown` contains `{ "prompt": "...", ... }` for the current case.
 
+### Verifying tool calls, sub-agent calls, and callbacks (workaround for missing conversation history)
+
+While the [full conversation history feature](#what-about-evaluating-the-full-llm-conversation) is not yet built, there is a clean workaround for the most important use case: **verifying that the agent called the right tools, invoked the right sub-agents, or issued the right callbacks**.
+
+The framework publishes structured trace events for every significant action the agent takes.  You can subscribe a simple recorder object to `host.runtime_tracer` in `register()` — the recorder collects whatever you care about, and your `code_evaluator` then asserts on it.
+
+**Available event kinds** (all carry a `payload` dict with the fields listed):
+
+| Event kind | Fires when | Key payload fields |
+|-----------|-----------|-------------------|
+| `runtime.tool_call_started` | Agent calls a tool | `tool_name`, `tool_input` |
+| `runtime.tool_call_finished` | Tool returns | `tool_name`, `result_preview` |
+| `runtime.subagent_call_started` | Agent delegates to a sub-agent | `subagent_id`, `input` |
+| `runtime.subagent_call_finished` | Sub-agent returns | `subagent_id`, `status` |
+| `runtime.decision_made` | Agent makes any decision | `kind`, `tool_name`, `subagent_id`, `callback_intent` |
+| `runtime.audit.callback` | Agent issues a callback | `intent`, `prompt`, `target`, `response` |
+| `runtime.audit.decision` | Decision recorded in audit trail | `decision.kind`, `decision.tool_name`, `decision.parameters` |
+| `runtime.skill_invoked` | Agent invokes a skill | `skill_name`, `parameters` |
+| `runtime.agent_started` | Any agent (root or sub-agent) starts | `caller_id` |
+| `runtime.agent_finished` | Any agent finishes | `status`, `caller_id` |
+
+> **Tip:** Open the Spans pane in the web UI at log level `debug` after a run to see every event that was published, with its exact `kind` string and payload.  This is the fastest way to discover what to subscribe to.
+
+**Full example — verifying that the agent used specific tools:**
+
+```python
+# my_suite/init.py
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from agent_framework_evaluator.case_markdown import MarkdownCaseLoader
+
+_HERE = Path(__file__).resolve().parent
+CASES_GLOB = "cases/*.md"
+DEFAULT_AGENT = "root"
+
+_LOADER = MarkdownCaseLoader(_HERE, CASES_GLOB)
+
+
+# --- Step 1: define a recorder ---
+
+class _CallRecorder:
+    """Subscribes to host.runtime_tracer and collects events of interest."""
+
+    def __init__(self):
+        self.tool_calls: list[dict[str, Any]] = []
+        self.subagent_calls: list[dict[str, Any]] = []
+        self.decisions: list[dict[str, Any]] = []
+        self.callbacks: list[dict[str, Any]] = []
+
+    def reset(self):
+        self.tool_calls.clear()
+        self.subagent_calls.clear()
+        self.decisions.clear()
+        self.callbacks.clear()
+
+    def consume(self, event) -> None:
+        """Called by the tracer for every published event."""
+        kind = event.kind
+        payload = event.payload or {}
+        if kind == "runtime.tool_call_started":
+            self.tool_calls.append(payload)
+        elif kind == "runtime.subagent_call_started":
+            self.subagent_calls.append(payload)
+        elif kind == "runtime.decision_made":
+            self.decisions.append(payload)
+        elif kind == "runtime.audit.callback":
+            self.callbacks.append(payload)
+
+
+# Module-level singleton — shared between register(), code_evaluators, and teardown
+_recorder = _CallRecorder()
+
+
+# --- Step 2: subscribe in register() ---
+
+def register(host, session_context):
+    _recorder.reset()
+    host.runtime_tracer.subscribe(_recorder)
+
+
+# --- Step 3: use in a code_evaluator ---
+
+_EVALUATORS: dict = {}
+
+def _evaluator(name):
+    def deco(fn):
+        _EVALUATORS[name] = fn
+        return fn
+    return deco
+
+
+@_evaluator("verify_used_search_and_summary")
+def _check_tools(prompt: str, agent_message: str) -> dict[str, Any]:
+    """Assert that the agent called SearchTool then SummaryTool in that order."""
+    names = [c["tool_name"] for c in _recorder.tool_calls]
+    used_search = "SearchTool" in names
+    used_summary = "SummaryTool" in names
+    search_before_summary = (
+        names.index("SearchTool") < names.index("SummaryTool")
+        if used_search and used_summary
+        else False
+    )
+    criteria = [
+        {
+            "criteria": "SearchTool was called",
+            "passed": used_search,
+            "reason": f"tool calls: {names}" if not used_search else "present",
+        },
+        {
+            "criteria": "SummaryTool was called",
+            "passed": used_summary,
+            "reason": f"tool calls: {names}" if not used_summary else "present",
+        },
+        {
+            "criteria": "SearchTool called before SummaryTool",
+            "passed": search_before_summary,
+            "reason": f"order was: {names}",
+        },
+    ]
+    passed = sum(1 for c in criteria if c["passed"])
+    score = round(passed / len(criteria) * 10)
+    return {
+        "score": score,
+        "result": f"{passed}/{len(criteria)} tool-order checks passed.",
+        "evaluation": criteria,
+    }
+
+
+_LOADER_WITH_EVAL = MarkdownCaseLoader(_HERE, CASES_GLOB, _EVALUATORS)
+
+
+def get_test_cases() -> list[dict[str, Any]]:
+    return _LOADER_WITH_EVAL.get_test_cases()
+```
+
+The matching case file:
+
+```markdown
+---
+title: Research and summarise — tool order verification
+code_evaluator: verify_used_search_and_summary
+case_run_mode: no_callbacks
+---
+Research the history of the Eiffel Tower and write a two-paragraph summary.
+---
+- The summary must mention the year 1889
+- The summary must mention Gustave Eiffel
+- The summary must be two paragraphs
+- The summary must be written in professional English
+```
+
+**What you can verify this way:**
+
+- The agent called a specific tool at least once
+- The agent called tools in a specific order
+- A particular sub-agent was (or was not) invoked
+- The agent issued a callback with a specific intent
+- The agent delegated correctly (not hallucinated a tool that does not exist)
+- A mock tool received the expected arguments (`tool_input` in the payload)
+
+**What you cannot verify this way** (these require the full conversation history feature):
+
+- The exact content of LLM reasoning between steps
+- Whether the agent correctly incorporated a tool's return value into its next message
+- Multi-turn dialogue quality
+
+**Important:** `_recorder` is module-level state.  Call `_recorder.reset()` in `register()` (which fires before every `run_once`) so events from a previous case do not bleed into the next one.  This is already shown in the example above.
+
 ### When you do need a separate file
 
 If you want to reuse the same setup logic across multiple initializers, put it in a dedicated `setup.py` and pass it explicitly:
