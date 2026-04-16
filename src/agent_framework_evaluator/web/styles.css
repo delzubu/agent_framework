@@ -82,8 +82,10 @@ body {
 
 .trace-controls {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
   font-size: 0.8rem;
   color: var(--muted);
 }
@@ -100,6 +102,24 @@ body {
   gap: 0.35rem;
   cursor: pointer;
   color: var(--text);
+}
+
+.trace-log-level-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.trace-log-level-select {
+  font: inherit;
+  font-size: 0.8rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 0.15rem 0.35rem;
 }
 
 .trace-feed {

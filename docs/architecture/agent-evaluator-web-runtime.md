@@ -550,7 +550,7 @@ The trace UI should behave like this:
 - Expanded node: reveal JSON payloads, detailed inputs/outputs, callback prompts, tool parameters, model payloads, or log details
 - Near realtime: the user sees new trace nodes as activity happens
 - Status visibility: active node or active operation should be visually obvious
-- Filtering: users should be able to reduce noise, especially for `debug` and `system.log` events
+- Filtering: users should be able to reduce noise with channel filters and a logging-level filter (`error`, `warning`, `info`, `debug`) for `log` events. Evaluator diagnostics use this path so debug mode can reveal the evaluation input, full evaluator LLM prompt, and evaluator result without making those payloads visible by default.
 
 ## 11.3 Clarification UX
 

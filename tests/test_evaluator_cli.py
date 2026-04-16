@@ -144,6 +144,88 @@ def test_evaluator_llm_merge_includes_system_md_and_json_object_template() -> No
     assert "<allowed_tools>" in first
 
 
+def test_run_evaluation_emits_debug_callback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from agent_framework.model import ModelResponse
+    from agent_framework_evaluator import evaluation
+
+    class FakeDriver:
+        def decide(self, **kwargs):
+            assert kwargs["provider_name"] == "fake"
+            return ModelResponse(
+                payload={
+                    "score": 9,
+                    "result": "Looks good.",
+                    "evaluation": [{"criteria": "format", "passed": True, "reason": ""}],
+                },
+                raw_text='{"score":9}',
+            )
+
+    class FakeConfig:
+        default_provider = "fake"
+        default_model = ("fake-model",)
+
+    class FakeHost:
+        config = FakeConfig()
+
+        def get_model_driver_raw(self):
+            return FakeDriver()
+
+    monkeypatch.setattr(evaluation.AgentHost, "from_env", lambda *_, **__: FakeHost())
+    events: list[dict[str, object]] = []
+    result = evaluation.run_evaluation(
+        env_path=tmp_path / ".env",
+        evaluator_prompt="Check it.",
+        agent_message="ok",
+        system_prompt="system",
+        user_prompt="user",
+        log_callback=events.append,
+    )
+
+    assert result["score"] == 9.0
+    kinds = [event["kind"] for event in events]
+    assert "evaluator.input_prepared" in kinds
+    assert "evaluator.llm_prompt_prepared" in kinds
+    assert "evaluator.result" in kinds
+    llm_event = next(event for event in events if event["kind"] == "evaluator.llm_prompt_prepared")
+    assert isinstance(llm_event["payload"], dict)
+    assert llm_event["payload"]["messages"]
+
+
+def test_evaluator_log_callback_filters_by_level() -> None:
+    from agent_framework_evaluator.app import _make_evaluator_log_callback
+
+    class FakeTracer:
+        def __init__(self) -> None:
+            self.events = []
+
+        def publish(self, event) -> None:
+            self.events.append(event)
+
+    tracer = FakeTracer()
+    callback = _make_evaluator_log_callback(
+        tracer=tracer,
+        session_id="sess-1",
+        configured_level="warning",
+    )
+    assert callback is not None
+    callback({"level": "debug", "kind": "evaluator.input_prepared", "payload": {}})
+    callback({"level": "warning", "kind": "evaluator.failed", "payload": {"error": "x"}})
+    assert len(tracer.events) == 1
+    assert tracer.events[0].kind == "evaluator.failed"
+    assert tracer.events[0].context.session_id == "sess-1"
+
+    debug_tracer = FakeTracer()
+    debug_callback = _make_evaluator_log_callback(
+        tracer=debug_tracer,
+        session_id="sess-2",
+        configured_level="debug",
+    )
+    assert debug_callback is not None
+    debug_callback({"level": "debug", "kind": "evaluator.input_prepared", "payload": {}})
+    assert len(debug_tracer.events) == 1
+    assert debug_tracer.events[0].level == "debug"
+
+
 def test_api_evaluate_result(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(**_: object) -> dict[str, object]:
         return {
@@ -173,6 +255,64 @@ def test_api_evaluate_result(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "evaluation" in data
     assert isinstance(data["evaluation"], list)
     assert len(data["evaluation"]) == 2
+
+
+def test_api_evaluate_case_selects_result_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_load_raw_test_cases(*_: object) -> list[dict[str, object]]:
+        return [
+            {
+                "evaluation_criteria": "Check parameters.",
+                "prompt": "prompt",
+                "result_field": "parameters",
+            }
+        ]
+
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "score": 8.0,
+            "overall_verdict": "Good.",
+            "evaluation": [],
+        }
+
+    monkeypatch.setattr("agent_framework_evaluator.app.load_raw_test_cases", fake_load_raw_test_cases)
+    monkeypatch.setattr("agent_framework_evaluator.app.load_initializer_default_eval_model", lambda *_: None)
+    monkeypatch.setattr("agent_framework_evaluator.app.run_evaluation", fake_run)
+    client = TestClient(create_app())
+    r = client.post(
+        "/api/evaluate-case",
+        json={
+            "session_id": "",
+            "initializer": "seed.py",
+            "case_index": 0,
+            "agent_message": "fallback",
+            "agent_result": {"message": "not this", "parameters": {"intent": "inspect"}},
+            "log_level": "debug",
+        },
+    )
+    assert r.status_code == 200
+    assert captured["agent_message"] == '{"intent": "inspect"}'
+
+
+def test_markdown_case_loader_includes_result_field(tmp_path: Path) -> None:
+    from agent_framework_evaluator.case_markdown import MarkdownCaseLoader
+
+    case_file = tmp_path / "case.md"
+    case_file.write_text(
+        "---\n"
+        "title: Parameters case\n"
+        "result_field: parameters\n"
+        "---\n"
+        "Prompt text\n"
+        "---\n"
+        "Criteria text\n",
+        encoding="utf-8",
+    )
+    cases = MarkdownCaseLoader(tmp_path, "*.md").get_test_cases()
+    assert len(cases) == 1
+    assert cases[0]["result_field"] == "parameters"
 
 
 def test_api_evaluator_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

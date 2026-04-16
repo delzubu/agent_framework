@@ -20,6 +20,7 @@ from agent_framework.config import load_host_config
 from agent_framework.tracing import TraceContext, make_trace_event
 from agent_framework_evaluator.auto_user_reply import reply_text_for_outbox_item
 from agent_framework_evaluator.evaluation import (
+    EvaluatorLogCallback,
     extract_first_llm_request_prompts,
     run_code_evaluation,
     run_evaluation,
@@ -42,6 +43,7 @@ from agent_framework_evaluator.session_manager import session_manager
 
 _WEB_DIR = Path(__file__).resolve().parent / "web"
 _executor = ThreadPoolExecutor(max_workers=4)
+_LOG_LEVEL_ORDER = {"debug": 10, "info": 20, "warning": 30, "error": 40}
 
 
 class UserInputBody(BaseModel):
@@ -55,6 +57,7 @@ class EvaluateResultBody(BaseModel):
     session_id: str = ""
     evaluator_prompt: str = ""
     agent_message: str = ""
+    log_level: str = "warning"
 
 
 class EvaluateCaseBody(BaseModel):
@@ -63,7 +66,87 @@ class EvaluateCaseBody(BaseModel):
     session_id: str = ""
     initializer: str = ""
     case_index: int = Field(..., ge=0)
-    agent_message: str = ""
+    agent_message: Any = ""
+    agent_result: Any | None = None
+    log_level: str = "warning"
+
+
+def _normalize_log_level(value: Any) -> str:
+    level = str(value or "warning").strip().lower()
+    return level if level in _LOG_LEVEL_ORDER else "warning"
+
+
+def _level_enabled(event_level: str, configured_level: str) -> bool:
+    return _LOG_LEVEL_ORDER.get(event_level, 20) >= _LOG_LEVEL_ORDER.get(configured_level, 30)
+
+
+def _make_evaluator_log_callback(
+    *,
+    tracer: Any | None,
+    session_id: str,
+    configured_level: str,
+) -> EvaluatorLogCallback | None:
+    """Build a callback that publishes evaluator diagnostics when the level allows it."""
+    if tracer is None:
+        return None
+    selected_level = _normalize_log_level(configured_level)
+
+    def emit(event: dict[str, Any]) -> None:
+        level = str(event.get("level") or "info").strip().lower()
+        if level not in _LOG_LEVEL_ORDER:
+            level = "info"
+        if not _level_enabled(level, selected_level):
+            return
+        raw_payload = event.get("payload")
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        tracer.publish(
+            make_trace_event(
+                channel="log",
+                level=level,  # type: ignore[arg-type]
+                kind=str(event.get("kind") or "evaluator.log"),
+                title=str(event.get("title") or "Evaluator"),
+                summary=str(event.get("summary") or ""),
+                span_id=session_id or None,
+                context=TraceContext(session_id=session_id) if session_id else TraceContext(),
+                payload={
+                    "logger_name": "agent_framework_evaluator.evaluation",
+                    **payload,
+                },
+            )
+        )
+
+    return emit
+
+
+def _stringify_agent_message(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def _select_agent_result_field(agent_result: Any, field_name: Any) -> str:
+    """Select the case-configured result field before sending text to the evaluator."""
+    field = str(field_name or "message").strip() or "message"
+    if field == ".":
+        return _stringify_agent_message(agent_result)
+    if isinstance(agent_result, str):
+        return agent_result
+    if isinstance(agent_result, dict):
+        current: Any = agent_result
+        for part in field.split("."):
+            if not part:
+                continue
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return ""
+        return _stringify_agent_message(current)
+    return _stringify_agent_message(agent_result)
 
 
 class _AsyncQueueSubscriber:
@@ -194,6 +277,11 @@ def create_app() -> FastAPI:
             agent_message=body.agent_message,
             system_prompt=(prompts or {}).get("system_prompt", ""),
             user_prompt=(prompts or {}).get("user_prompt", ""),
+            log_callback=_make_evaluator_log_callback(
+                tracer=rec.tracer if rec else None,
+                session_id=body.session_id,
+                configured_level=body.log_level,
+            ),
         )
         score = float(out["score"])
         out["score"] = min(10.0, max(0.0, score))
@@ -227,13 +315,20 @@ def create_app() -> FastAPI:
         criteria = str(case.get("evaluation_criteria", "") or "")
         prompts = rec.last_run_prompts if rec else None
         eval_model = load_initializer_default_eval_model(env_file, body.initializer)
+        agent_result = body.agent_result if body.agent_result is not None else body.agent_message
+        agent_message = _select_agent_result_field(agent_result, case.get("result_field", "message"))
         llm = run_evaluation(
             env_path=env_file,
             evaluator_prompt=criteria,
-            agent_message=body.agent_message,
+            agent_message=agent_message,
             system_prompt=(prompts or {}).get("system_prompt", ""),
             user_prompt=(prompts or {}).get("user_prompt", ""),
             model_override=eval_model if eval_model else None,
+            log_callback=_make_evaluator_log_callback(
+                tracer=rec.tracer if rec else None,
+                session_id=body.session_id,
+                configured_level=body.log_level,
+            ),
         )
         score = float(llm["score"])
         llm["score"] = min(10.0, max(0.0, score))
@@ -245,7 +340,7 @@ def create_app() -> FastAPI:
                 code_result = run_code_evaluation(
                     ce,
                     prompt=str(case.get("prompt", "")),
-                    agent_message=body.agent_message,
+                    agent_message=agent_message,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

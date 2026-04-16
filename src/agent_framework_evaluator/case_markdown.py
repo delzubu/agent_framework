@@ -39,7 +39,7 @@ def parse_case_markdown_file(
     path: Path,
     evaluator_registry: Mapping[str, Callable[..., Any]],
 ) -> dict[str, Any] | None:
-    """Parse one case file; return dict with ``title``, ``prompt``, ``evaluation_criteria``, ``code_evaluator``."""
+    """Parse one case file; return case metadata, prompt, criteria, and evaluator hooks."""
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -58,6 +58,7 @@ def parse_case_markdown_file(
     fm = parse_simple_frontmatter(parts[1].strip())
     title = fm.get("title", path.stem)
     eval_name = fm.get("code_evaluator", "").strip()
+    result_field = fm.get("result_field", "message").strip() or "message"
     prompt = parts[2].strip()
     criteria = parts[3].strip()
     code_evaluator: Callable[..., Any] | None = None
@@ -76,6 +77,7 @@ def parse_case_markdown_file(
         "prompt": prompt,
         "evaluation_criteria": criteria,
         "code_evaluator": code_evaluator,
+        "result_field": result_field,
     }
 
 

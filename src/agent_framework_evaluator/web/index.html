@@ -154,6 +154,15 @@
           <label><input type="checkbox" id="ch-log" data-channel="log" checked> log</label>
           <label><input type="checkbox" id="ch-user" data-channel="user" checked> user</label>
         </div>
+        <label class="trace-log-level-label" for="trace-log-level">
+          log level
+          <select id="trace-log-level" class="trace-log-level-select">
+            <option value="error">error</option>
+            <option value="warning" selected>warning</option>
+            <option value="info">info</option>
+            <option value="debug">debug</option>
+          </select>
+        </label>
       </div>
       <div id="trace-feed" class="trace-feed" aria-live="polite"></div>
     </aside>

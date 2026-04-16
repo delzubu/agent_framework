@@ -8,6 +8,7 @@ const initializerInput = document.getElementById("initializer-select");
 const agentList = document.getElementById("agent-list");
 const initializerList = document.getElementById("initializer-list");
 const channelToggles = document.getElementById("channel-toggles");
+const traceLogLevel = document.getElementById("trace-log-level");
 const conversationThread = document.getElementById("conversation-thread");
 const caseListSection = document.getElementById("case-list-section");
 const caseList = document.getElementById("case-list");
@@ -112,6 +113,7 @@ const runFrames = new Map();
 const unifiedEntries = [];
 
 const TRACE_STRING_PREVIEW_CHARS = 90;
+const LEVEL_ORDER = { debug: 10, info: 20, warning: 30, error: 40 };
 
 function looksLikeMarkdown(s) {
   if (typeof s !== "string" || s.length < 4) return false;
@@ -489,6 +491,7 @@ async function runPostEvaluation(agentResultPayload) {
         session_id: sessionId ?? "",
         evaluator_prompt: crit,
         agent_message: agentMessage,
+        log_level: selectedTraceLogLevel(),
       }),
     });
     if (!res.ok) {
@@ -1012,6 +1015,8 @@ async function playCase(caseIndex, opts = {}) {
         initializer: init,
         case_index: caseIndex,
         agent_message: agentMsg,
+        agent_result: lastAgentResultPayload,
+        log_level: selectedTraceLogLevel(),
       }),
     });
     if (!res.ok) {
@@ -1248,8 +1253,21 @@ function passesChannelFilters(event) {
   return channelEnabled(ch);
 }
 
+function selectedTraceLogLevel() {
+  const v = traceLogLevel && "value" in traceLogLevel ? String(traceLogLevel.value) : "warning";
+  return Object.prototype.hasOwnProperty.call(LEVEL_ORDER, v) ? v : "warning";
+}
+
+function passesLevelFilter(event) {
+  const channel = typeof event.channel === "string" ? event.channel : "runtime";
+  if (channel !== "log") return true;
+  const level = typeof event.level === "string" ? event.level.toLowerCase() : "info";
+  return (LEVEL_ORDER[level] ?? 20) >= (LEVEL_ORDER[selectedTraceLogLevel()] ?? 30);
+}
+
 function setEntryVisible(entry) {
-  entry.el.style.display = passesChannelFilters(entry.event) ? "" : "none";
+  entry.el.style.display =
+    passesChannelFilters(entry.event) && passesLevelFilter(entry.event) ? "" : "none";
 }
 
 function reapplyFilters() {
@@ -1720,6 +1738,11 @@ function appendTraceEventRow(event) {
 function routeTraceEvent(event) {
   const channel = typeof event.channel === "string" ? event.channel : "runtime";
   if (channel === "log") {
+    const kind = typeof event.kind === "string" ? event.kind : "";
+    if (kind.startsWith("evaluator.")) {
+      appendTraceEventRow(event);
+      return;
+    }
     appendLogLine(event);
     return;
   }
@@ -1745,6 +1768,7 @@ function routeTraceEvent(event) {
 }
 
 channelToggles?.addEventListener("change", reapplyFilters);
+traceLogLevel?.addEventListener("change", reapplyFilters);
 
 let socket = null;
 let sessionId = null;

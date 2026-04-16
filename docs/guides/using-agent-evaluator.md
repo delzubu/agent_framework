@@ -92,7 +92,7 @@ The client sends a WebSocket message:
 { "type": "run", "agent_id": "<id>", "prompt": "<text>", "setup_path": "<optional path>" }
 ```
 
-**Response** and **trace** stream back on the same socket. The **Spans** pane groups events by **agent call**: each `runtime.audit.agent_call_started` opens a collapsible frame (collapsed by default) with a **spinner** while the run is in progress; when `runtime.agent_finished` arrives, the spinner is replaced by the **status** (e.g. completed / failed) and a color cue. Child events for that run (LLM, decisions, tools, etc.) are nested inside the frame. **Sub-agents** nest under the parent because the audit payload includes **`parent_run_id`** (the caller’s `run_id`), which keeps the tree correct even if multiple sub-agents are **forked in parallel** and finish out of order. Session-level rows (`runtime.session_started` / `finished`) stay at the root. Use the **channel** checkboxes to show or hide **runtime**, **llm**, **log**, and **user** events in both panes (trace level on each row is display-only). The **Logs** pane lists only `channel=log` events.
+**Response** and **trace** stream back on the same socket. The **Spans** pane groups events by **agent call**: each `runtime.audit.agent_call_started` opens a collapsible frame (collapsed by default) with a **spinner** while the run is in progress; when `runtime.agent_finished` arrives, the spinner is replaced by the **status** (e.g. completed / failed) and a color cue. Child events for that run (LLM, decisions, tools, etc.) are nested inside the frame. **Sub-agents** nest under the parent because the audit payload includes **`parent_run_id`** (the caller’s `run_id`), which keeps the tree correct even if multiple sub-agents are **forked in parallel** and finish out of order. Session-level rows (`runtime.session_started` / `finished`) stay at the root. Use the **channel** checkboxes to show or hide **runtime**, **llm**, **log**, and **user** events in both panes. The **log level** dropdown filters `channel=log` rows with the framework logging levels (`error`, `warning`, `info`, `debug`) and defaults to `warning`. Set it to `debug` before evaluation to show evaluator input, full evaluator LLM prompt, and evaluator result diagnostics in the Trace pane.
 
 ### 5.3 Clarifications
 
@@ -188,6 +188,8 @@ Full contract: [§9 Setup Module Contract](../architecture/agent-evaluator-web-r
 |--------|------|---------|
 | `GET` | `/` | Static UI |
 | `POST` | `/api/sessions` | Body: `{ "env_path": ".env" }` (optional). Returns `{ "session_id" }`. |
+| `POST` | `/api/evaluate-result` | Score the latest/manual result. Body includes `session_id`, `evaluator_prompt`, `agent_message`, and optional `log_level` (`warning` default). |
+| `POST` | `/api/evaluate-case` | Score one initializer case. Body includes `session_id`, `initializer`, `case_index`, `agent_message` or `agent_result`, and optional `log_level` (`warning` default). Case markdown may set `result_field` such as `message` or `parameters`. |
 | `POST` | `/api/sessions/{id}/close` | Finalize session; **`suite_teardown`** if defined; cancels a pending input wait. |
 | `POST` | `/api/sessions/{id}/user-input` | Body: `{ "prompt_id": "<uuid>", "text": "<string or null>" }`. Delivers input for the active wait; **`409`** if nothing is waiting or **`prompt_id`** does not match. |
 | `GET` | `/api/agents?env_path=.env` | List agent ids (probe host uses catalog discovery). |

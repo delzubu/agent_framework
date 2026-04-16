@@ -56,6 +56,31 @@ Usually, you will reduce it because critical output is missing or format is inco
 there is an adjustment, you must explicitly explain the reason for the adjustment in the result.
 """
 
+EvaluatorLogCallback = Callable[[dict[str, Any]], None]
+
+
+def _emit_evaluator_log(
+    callback: EvaluatorLogCallback | None,
+    *,
+    level: str,
+    kind: str,
+    title: str,
+    summary: str,
+    payload: dict[str, Any],
+) -> None:
+    """Emit a structured evaluator diagnostic if the caller supplied a sink."""
+    if callback is None:
+        return
+    callback(
+        {
+            "level": level,
+            "kind": kind,
+            "title": title,
+            "summary": summary,
+            "payload": payload,
+        }
+    )
+
 
 def _env_key_values(env_path: Path) -> dict[str, str]:
     if not env_path.exists():
@@ -289,6 +314,7 @@ def run_evaluation(
     system_prompt: str = "",
     user_prompt: str = "",
     model_override: str | tuple[str, ...] | None = None,
+    log_callback: EvaluatorLogCallback | None = None,
 ) -> dict[str, Any]:
     """Call the evaluator LLM once. Does not run the agent loop."""
     env_path = Path(env_path)
@@ -299,6 +325,22 @@ def run_evaluation(
         user_prompt,
         evaluator_prompt,
         agent_message,
+    )
+    _emit_evaluator_log(
+        log_callback,
+        level="debug",
+        kind="evaluator.input_prepared",
+        title="Evaluator input prepared",
+        summary="Prepared input for evaluator scoring.",
+        payload={
+            "env_path": str(env_path),
+            "model_override": override,
+            "evaluator_prompt": evaluator_prompt,
+            "agent_message": agent_message,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "formatted_user_content": user_content,
+        },
     )
     # Same assembly as Agent.build_context / AgentHost.complete: evaluator task text plus
     # agents/system.md (tools/agents placeholders) and agents/system.json_object.md for json_object.
@@ -317,25 +359,111 @@ def run_evaluation(
     )
     context = merge_runtime_system_into_messages(raw_ctx)
     driver = _sync_driver_for_evaluator(host)
+    provider_name = host.config.default_provider
+    model_names = host.config.default_model
+    temperature = 0.2
+    _emit_evaluator_log(
+        log_callback,
+        level="debug",
+        kind="evaluator.llm_prompt_prepared",
+        title="Evaluator LLM prompt prepared",
+        summary="Prepared full prompt for evaluator model call.",
+        payload={
+            "provider_name": provider_name,
+            "model_names": model_names,
+            "temperature": temperature,
+            "response_mode": context.response_mode,
+            "messages": list(context.messages),
+            "tools": list(context.tools),
+            "subagents": list(context.subagents),
+            "skills": list(context.skills),
+        },
+    )
     try:
         response = driver.decide(
             agent_id=None,
-            provider_name=host.config.default_provider,
-            model_names=host.config.default_model,
-            temperature=0.2,
+            provider_name=provider_name,
+            model_names=model_names,
+            temperature=temperature,
             context=context,
         )
     except ModelDriverError as exc:
+        _emit_evaluator_log(
+            log_callback,
+            level="warning",
+            kind="evaluator.failed",
+            title="Evaluator failed",
+            summary=str(exc),
+            payload={
+                "stage": "driver.decide",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
         return failed_evaluator_result(str(exc))
     except Exception as exc:
+        _emit_evaluator_log(
+            log_callback,
+            level="warning",
+            kind="evaluator.failed",
+            title="Evaluator failed",
+            summary=str(exc),
+            payload={
+                "stage": "driver.decide",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
         return failed_evaluator_result(str(exc))
     payload = response.payload
     if not isinstance(payload, dict):
-        return failed_evaluator_result(
+        result = failed_evaluator_result(
             "Evaluator response is not a JSON object."
             + (f" Raw: {response.raw_text[:500]}" if getattr(response, "raw_text", None) else "")
         )
+        _emit_evaluator_log(
+            log_callback,
+            level="warning",
+            kind="evaluator.failed",
+            title="Evaluator response was invalid",
+            summary="Evaluator response is not a JSON object.",
+            payload={
+                "stage": "parse_response",
+                "raw_text": getattr(response, "raw_text", ""),
+                "parsed_payload": payload,
+                "result": result,
+            },
+        )
+        return result
     try:
-        return parse_eval_response(payload)
+        result = parse_eval_response(payload)
     except (TypeError, ValueError) as exc:
-        return failed_evaluator_result(str(exc))
+        result = failed_evaluator_result(str(exc))
+        _emit_evaluator_log(
+            log_callback,
+            level="warning",
+            kind="evaluator.failed",
+            title="Evaluator response parsing failed",
+            summary=str(exc),
+            payload={
+                "stage": "parse_eval_response",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "raw_payload": payload,
+                "result": result,
+            },
+        )
+        return result
+    _emit_evaluator_log(
+        log_callback,
+        level="debug",
+        kind="evaluator.result",
+        title="Evaluator result",
+        summary="Evaluator scoring completed.",
+        payload={
+            "result": result,
+            "raw_payload": payload,
+            "raw_text": getattr(response, "raw_text", ""),
+        },
+    )
+    return result
