@@ -362,7 +362,9 @@ def test_api_evaluate_case_selects_result_field(monkeypatch: pytest.MonkeyPatch)
     assert captured["agent_message"] == '{"intent": "inspect"}'
 
 
-def test_markdown_case_loader_includes_result_field(tmp_path: Path) -> None:
+def test_markdown_case_loader_includes_result_field(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
     from agent_framework_evaluator.case_markdown import MarkdownCaseLoader
 
     case_file = tmp_path / "case.md"
@@ -376,9 +378,17 @@ def test_markdown_case_loader_includes_result_field(tmp_path: Path) -> None:
         "Criteria text\n",
         encoding="utf-8",
     )
-    cases = MarkdownCaseLoader(tmp_path, "*.md").get_test_cases()
+    with caplog.at_level(logging.DEBUG, logger="agent_framework_evaluator.case_markdown"):
+        cases = MarkdownCaseLoader(tmp_path, "*.md").get_test_cases()
     assert len(cases) == 1
     assert cases[0]["result_field"] == "parameters"
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "trace_kind", "") == "evaluator.case_markdown.frontmatter_parsed"
+    ]
+    assert records
+    assert records[0].trace_payload["frontmatter"]["result_field"] == "parameters"
 
 
 def test_initializer_catalog_preserves_markdown_result_field(tmp_path: Path) -> None:

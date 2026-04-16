@@ -32,6 +32,14 @@ def parse_simple_frontmatter(text: str) -> dict[str, str]:
         val = v.strip()
         if key:
             out[key] = val
+    _LOGGER.debug(
+        "Parsed evaluator case markdown frontmatter.",
+        extra={
+            "trace_kind": "evaluator.case_markdown.frontmatter_parsed",
+            "trace_title": "Evaluator case frontmatter parsed",
+            "trace_payload": {"frontmatter": dict(out)},
+        },
+    )
     return out
 
 
