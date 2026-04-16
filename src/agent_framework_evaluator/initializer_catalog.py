@@ -214,6 +214,7 @@ def load_raw_test_cases(env_file: Path, initializer_ref: str) -> list[dict[str, 
                 "prompt": prompt,
                 "evaluation_criteria": criteria,
                 "code_evaluator": ce if callable(ce) else None,
+                "result_field": str(item.get("result_field", "message") or "message"),
             }
         )
     return out
@@ -231,6 +232,7 @@ def serialize_test_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "prompt": str(c.get("prompt", "")),
                 "criteria": str(c.get("evaluation_criteria", c.get("criteria", ""))),
                 "has_code_evaluator": bool(callable(ce)),
+                "result_field": str(c.get("result_field", "message") or "message"),
             }
         )
     return rows

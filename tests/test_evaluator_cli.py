@@ -381,6 +381,38 @@ def test_markdown_case_loader_includes_result_field(tmp_path: Path) -> None:
     assert cases[0]["result_field"] == "parameters"
 
 
+def test_initializer_catalog_preserves_markdown_result_field(tmp_path: Path) -> None:
+    from agent_framework_evaluator.initializer_catalog import load_raw_test_cases, load_test_cases
+
+    env_f = tmp_path / ".env"
+    env_f.write_text(f"AGENT_EVAL_INITIALIZER_DIR={tmp_path.as_posix()}\n", encoding="utf-8")
+    init_f = tmp_path / "initializer.py"
+    init_f.write_text(
+        "from pathlib import Path\n"
+        "from agent_framework_evaluator.case_markdown import MarkdownCaseLoader\n"
+        "def get_test_cases():\n"
+        "    return MarkdownCaseLoader(Path(__file__).parent, '*.case.md').get_test_cases()\n",
+        encoding="utf-8",
+    )
+    case_f = tmp_path / "parameters.case.md"
+    case_f.write_text(
+        "---\n"
+        "title: Parameters case\n"
+        "result_field: parameters\n"
+        "---\n"
+        "Prompt text\n"
+        "---\n"
+        "Criteria text\n",
+        encoding="utf-8",
+    )
+
+    raw_cases = load_raw_test_cases(env_f, "initializer.py")
+    serialized_cases = load_test_cases(env_f, "initializer.py")
+
+    assert raw_cases[0]["result_field"] == "parameters"
+    assert serialized_cases[0]["result_field"] == "parameters"
+
+
 def test_api_evaluator_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_ENV_PATH", "/abs/env")
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_AGENT", "agent-x")
