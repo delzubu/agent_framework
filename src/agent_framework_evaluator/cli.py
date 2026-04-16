@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run")
     run.add_argument("--env", default=".env")
-    run.add_argument("--agent", required=True)
+    run.add_argument("--agent", default=None)
     run.add_argument("--setup")
     run.add_argument("--prompt")
     run.add_argument("--prompt-file")
@@ -114,12 +114,27 @@ def _cmd_web(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    setup_module = None
+    if args.setup:
+        from agent_framework_evaluator.runtime.setup_loader import load_setup_module
+
+        setup_module = load_setup_module(Path(args.setup))
+
+    agent_id: str | None = args.agent
+    if agent_id is None and setup_module is not None:
+        agent_id = getattr(setup_module, "DEFAULT_AGENT", None)
+    if agent_id is None:
+        print("error: provide --agent or set DEFAULT_AGENT in --setup script", file=sys.stderr)
+        return 2
+
     if args.prompt_file:
         prompt = Path(args.prompt_file).read_text(encoding="utf-8")
     elif args.prompt:
         prompt = args.prompt
+    elif setup_module is not None and hasattr(setup_module, "get_prompt_template"):
+        prompt = setup_module.get_prompt_template()
     else:
-        print("error: provide --prompt or --prompt-file", file=sys.stderr)
+        print("error: provide --prompt, --prompt-file, or get_prompt_template() in --setup script", file=sys.stderr)
         return 2
 
     from agent_framework.tracing import CompositeRuntimeTracer
@@ -136,7 +151,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     runner = SessionRunner(args.env)
     try:
         result = runner.run_once(
-            agent_id=args.agent,
+            agent_id=agent_id,
             prompt=prompt,
             setup_path=Path(args.setup) if args.setup else None,
             runtime_tracer=merged_tracer,

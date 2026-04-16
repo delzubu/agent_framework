@@ -19,7 +19,29 @@
       "Bash(pip show:*)",
       "Bash(pip install:*)",
       "Bash(python -c \":*)",
-      "Bash(pytest tests/test_framework_runtime.py -x -q)"
+      "Bash(pytest tests/test_framework_runtime.py -x -q)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(curl -s -L --max-time 15 https://raw.githubusercontent.com/codemie-ai/codemie-code/main/README.md)",
+      "Bash(curl -s -L --max-time 15 https://docs.anthropic.com/en/docs/claude-code/skills)",
+      "Bash(curl -s -L --max-time 15 https://api.github.com/repos/codemie-ai/codemie-code/git/trees/main?recursive=1)",
+      "Bash(curl:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(git:*)",
+      "Bash(git checkout:*)",
+      "Bash(pytest:*)",
+      "Bash(git add:*)",
+      "Bash(git -C /c/Users/bmisa/src/agent_framework add src/agent_framework/skill.py tests/test_framework_runtime.py)",
+      "Bash(git -C:*)",
+      "Bash(python3:*)",
+      "Bash(xargs grep:*)",
+      "Bash(/tmp/task7_review.txt:*)",
+      "Read(//tmp/**)",
+      "Bash(\"C:\\\\Users\\\\bmisa\\\\src\\\\agent_framework\\\\tests\\\\test_framework_runtime.py\":*)",
+      "Skill(commit-commands:commit)",
+      "Bash(gh pr:*)"
     ]
   }
 }

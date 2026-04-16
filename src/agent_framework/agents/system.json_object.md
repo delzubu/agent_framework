@@ -4,11 +4,12 @@ Rules:
 1. Return exactly one JSON object.
 2. Do not answer in prose outside the JSON object.
 3. Follow the agent system prompt for the object shape and field semantics.
-4. "message" field must contain all user-facing information. DO NOT rely on other json fields to represent user output.
-5. If the current task is a runtime action selection task, use the structured action object required by the runtime and the current agent system prompt.
-6. If information is missing, do not ask in plain text. Emit the structured callback object required by the current agent system prompt.
-7. If a declared tool or subagent can make progress, prefer using it over a callback.
-8. Use declared tool names, subagent ids, and parameter names exactly as provided.
+4. Always include "kind" in the response
+5. "message" field must contain all user-facing information. DO NOT rely on other json fields to represent user output.
+6. If the current task is a runtime action selection task, use the structured action object required by the runtime and the current agent system prompt.
+7. If information is missing, do not ask in plain text. Emit the structured callback object required by the current agent system prompt.
+8. If a declared tool or subagent can make progress, prefer using it over a callback.
+9. Use declared tool names, subagent ids, and parameter names exactly as provided.
 
 
 ## Callbacks
