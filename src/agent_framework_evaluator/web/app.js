@@ -1253,22 +1253,39 @@ function passesChannelFilters(event) {
   return channelEnabled(ch);
 }
 
+function eventChannel(event, el) {
+  if (event && typeof event.channel === "string" && event.channel) return event.channel;
+  if (el && typeof el.dataset?.channel === "string" && el.dataset.channel) return el.dataset.channel;
+  return "runtime";
+}
+
+function eventLevel(event, el) {
+  if (event && typeof event.level === "string" && event.level) {
+    return event.level.trim().toLowerCase();
+  }
+  if (el && typeof el.dataset?.level === "string" && el.dataset.level) {
+    return el.dataset.level.trim().toLowerCase();
+  }
+  return "info";
+}
+
 function selectedTraceLogLevel() {
   const v = traceLogLevel && "value" in traceLogLevel ? String(traceLogLevel.value) : "warning";
   const normalized = String(v).trim().toLowerCase();
   return Object.prototype.hasOwnProperty.call(LEVEL_ORDER, normalized) ? normalized : "warning";
 }
 
-function passesLevelFilter(event) {
-  const channel = typeof event.channel === "string" ? event.channel : "runtime";
+function passesLevelFilter(event, el) {
+  const channel = eventChannel(event, el);
   if (channel !== "log") return true;
-  const level = typeof event.level === "string" ? event.level.trim().toLowerCase() : "info";
+  const level = eventLevel(event, el);
   return (LEVEL_ORDER[level] ?? 20) >= (LEVEL_ORDER[selectedTraceLogLevel()] ?? 30);
 }
 
 function setEntryVisible(entry) {
-  entry.el.style.display =
-    passesChannelFilters(entry.event) && passesLevelFilter(entry.event) ? "" : "none";
+  const visible = passesChannelFilters(entry.event) && passesLevelFilter(entry.event, entry.el);
+  entry.el.hidden = !visible;
+  entry.el.style.display = visible ? "" : "none";
 }
 
 function reapplyFilters() {
@@ -1509,6 +1526,8 @@ function appendLogLine(event) {
   };
   const row = document.createElement("div");
   row.className = "log-line trace-feed-row";
+  row.dataset.channel = entryEvent.channel;
+  row.dataset.level = entryEvent.level;
   applyRowPadding(row, 0);
   const payload = getPayload(entryEvent);
   const loggerName = typeof payload.logger_name === "string" ? payload.logger_name : "";
@@ -1739,6 +1758,8 @@ function appendTraceEventRow(event) {
     level: typeof event.level === "string" ? event.level.trim().toLowerCase() : "info",
   };
   const node = buildTraceDetails(entryEvent);
+  node.dataset.channel = entryEvent.channel;
+  node.dataset.level = entryEvent.level;
   traceFeed.appendChild(node);
   const entry = { el: node, event: entryEvent };
   unifiedEntries.push(entry);
@@ -1780,6 +1801,7 @@ function routeTraceEvent(event) {
 
 channelToggles?.addEventListener("change", reapplyFilters);
 traceLogLevel?.addEventListener("change", reapplyFilters);
+traceLogLevel?.addEventListener("input", reapplyFilters);
 
 let socket = null;
 let sessionId = null;
