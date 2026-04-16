@@ -1739,7 +1739,7 @@ function routeTraceEvent(event) {
   const channel = typeof event.channel === "string" ? event.channel : "runtime";
   if (channel === "log") {
     const kind = typeof event.kind === "string" ? event.kind : "";
-    if (kind.startsWith("evaluator.")) {
+    if (kind && kind !== "log.record") {
       appendTraceEventRow(event);
       return;
     }

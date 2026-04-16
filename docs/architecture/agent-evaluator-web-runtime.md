@@ -550,7 +550,7 @@ The trace UI should behave like this:
 - Expanded node: reveal JSON payloads, detailed inputs/outputs, callback prompts, tool parameters, model payloads, or log details
 - Near realtime: the user sees new trace nodes as activity happens
 - Status visibility: active node or active operation should be visually obvious
-- Filtering: users should be able to reduce noise with channel filters and a logging-level filter (`error`, `warning`, `info`, `debug`) for `log` events. Evaluator diagnostics use this path so debug mode can reveal the evaluation input, full evaluator LLM prompt, and evaluator result without making those payloads visible by default.
+- Filtering: users should be able to reduce noise with channel filters and a logging-level filter (`error`, `warning`, `info`, `debug`) for `log` events. The evaluator wires regular Python logging into the trace pipeline through the framework log bridge; structured log records carrying `trace_kind` and `trace_payload` render as expandable trace rows. Evaluator diagnostics use this path so debug mode can reveal the evaluation input, full evaluator LLM prompt, and evaluator result without making those payloads visible by default.
 
 ## 11.3 Clarification UX
 

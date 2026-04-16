@@ -169,7 +169,7 @@ Full contract: [§9 Setup Module Contract](../architecture/agent-evaluator-web-r
 
 ## 8. Tracing and logs
 
-- **In the UI** — events are whatever the runner publishes to **`CompositeRuntimeTracer`** (runtime, user, LLM if enabled, **`log`** channel for Python logging when wired). The span view is **hierarchy-first** (agent-call frames + `parent_run_id`), not a flat `span_id` parent chain.
+- **In the UI** — events are whatever the runner publishes to **`CompositeRuntimeTracer`** (runtime, user, LLM if enabled, **`log`** channel for Python logging when wired). The evaluator attaches the framework log bridge to `agent_framework` and `agent_framework_evaluator` loggers, so regular Python logging records are normalized into structured trace events. Plain `log.record` rows render as compact log lines; structured records with `trace_kind` / `trace_payload` render as expandable trace rows. The span view is **hierarchy-first** (agent-call frames + `parent_run_id`), not a flat `span_id` parent chain.
 - **Headless** — use **`--trace-jsonl`** / **`--trace-llm-dir`** on the evaluator CLI.
 - **Main framework CLI** — unified JSONL and optional Python logging mirror:
 

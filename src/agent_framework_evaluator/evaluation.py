@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -398,6 +399,7 @@ def run_evaluation(
                 "stage": "driver.decide",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
+                "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
             },
         )
         return failed_evaluator_result(str(exc))
@@ -412,6 +414,7 @@ def run_evaluation(
                 "stage": "driver.decide",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
+                "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
             },
         )
         return failed_evaluator_result(str(exc))
@@ -449,6 +452,7 @@ def run_evaluation(
                 "stage": "parse_eval_response",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
+                "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
                 "raw_payload": payload,
                 "result": result,
             },

@@ -47,6 +47,9 @@ class _ContextAwareLogHandler(logging.Handler):
                 "exc_text": exc_text,
                 "funcName": record.funcName,
             }
+            extra_payload = getattr(record, "trace_payload", None)
+            if isinstance(extra_payload, dict):
+                payload.update(extra_payload)  # type: ignore[arg-type]
             level = _LOG_LEVEL_TO_TRACE.get(record.levelno, "info")
             pair = get_active_tracer()
             if not pair:
@@ -60,8 +63,8 @@ class _ContextAwareLogHandler(logging.Handler):
             event = make_trace_event(
                 channel="log",
                 level=level,
-                kind="log.record",
-                title=f"{record.name} {record.levelname}",
+                kind=str(getattr(record, "trace_kind", "log.record") or "log.record"),
+                title=str(getattr(record, "trace_title", "") or f"{record.name} {record.levelname}"),
                 summary=record.getMessage()[:500],
                 span_id=None,
                 parent_span_id=None,
@@ -79,11 +82,15 @@ class AgentEventPublisher:
     def __init__(self) -> None:
         self._log_handler = _ContextAwareLogHandler()
         self._attached_loggers: list[logging.Logger] = []
+        self._previous_levels: dict[logging.Logger, int] = {}
 
     def attach_log_sources(self, logger_names: list[str] | None = None) -> None:
         names = list(logger_names) if logger_names is not None else list(_DEFAULT_LOGGERS)
         for name in names:
             log = logging.getLogger(name)
+            if log not in self._previous_levels:
+                self._previous_levels[log] = log.level
+                log.setLevel(logging.DEBUG)
             if self._log_handler not in log.handlers:
                 log.addHandler(self._log_handler)
                 self._attached_loggers.append(log)
@@ -92,6 +99,8 @@ class AgentEventPublisher:
         for log in self._attached_loggers:
             if self._log_handler in log.handlers:
                 log.removeHandler(self._log_handler)
+            if log in self._previous_levels:
+                log.setLevel(self._previous_levels.pop(log))
         self._attached_loggers.clear()
 
     def _publish(self, event: TraceEvent) -> None:

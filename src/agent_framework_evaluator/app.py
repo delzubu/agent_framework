@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,7 @@ from agent_framework.agent_registry import AgentRegistry, normalize_agent_id
 from agent_framework.agents.helpers import AgentMarkdownError
 from agent_framework.config import load_host_config
 from agent_framework.tracing import TraceContext, make_trace_event
+from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework_evaluator.auto_user_reply import reply_text_for_outbox_item
 from agent_framework_evaluator.evaluation import (
     EvaluatorLogCallback,
@@ -44,6 +46,7 @@ from agent_framework_evaluator.session_manager import session_manager
 _WEB_DIR = Path(__file__).resolve().parent / "web"
 _executor = ThreadPoolExecutor(max_workers=4)
 _LOG_LEVEL_ORDER = {"debug": 10, "info": 20, "warning": 30, "error": 40}
+_EVALUATOR_LOGGER = logging.getLogger("agent_framework_evaluator.evaluation")
 
 
 class UserInputBody(BaseModel):
@@ -80,13 +83,46 @@ def _level_enabled(event_level: str, configured_level: str) -> bool:
     return _LOG_LEVEL_ORDER.get(event_level, 20) >= _LOG_LEVEL_ORDER.get(configured_level, 30)
 
 
+def _emit_structured_log(
+    logger: logging.Logger,
+    *,
+    level: str,
+    message: str,
+    kind: str,
+    title: str,
+    payload: dict[str, Any],
+) -> None:
+    level_name = _normalize_log_level(level)
+    levelno = {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+    }[level_name]
+    record = logger.makeRecord(
+        logger.name,
+        levelno,
+        __file__,
+        0,
+        message,
+        args=(),
+        exc_info=None,
+        extra={
+            "trace_kind": kind,
+            "trace_title": title,
+            "trace_payload": payload,
+        },
+    )
+    logger.handle(record)
+
+
 def _make_evaluator_log_callback(
     *,
     tracer: Any | None,
     session_id: str,
     configured_level: str,
 ) -> EvaluatorLogCallback | None:
-    """Build a callback that publishes evaluator diagnostics when the level allows it."""
+    """Build a callback that emits structured evaluator diagnostics as Python logs."""
     if tracer is None:
         return None
     selected_level = _normalize_log_level(configured_level)
@@ -99,20 +135,13 @@ def _make_evaluator_log_callback(
             return
         raw_payload = event.get("payload")
         payload = raw_payload if isinstance(raw_payload, dict) else {}
-        tracer.publish(
-            make_trace_event(
-                channel="log",
-                level=level,  # type: ignore[arg-type]
-                kind=str(event.get("kind") or "evaluator.log"),
-                title=str(event.get("title") or "Evaluator"),
-                summary=str(event.get("summary") or ""),
-                span_id=session_id or None,
-                context=TraceContext(session_id=session_id) if session_id else TraceContext(),
-                payload={
-                    "logger_name": "agent_framework_evaluator.evaluation",
-                    **payload,
-                },
-            )
+        _emit_structured_log(
+            _EVALUATOR_LOGGER,
+            level=level,
+            message=str(event.get("summary") or event.get("title") or "Evaluator"),
+            kind=str(event.get("kind") or "evaluator.log"),
+            title=str(event.get("title") or "Evaluator"),
+            payload=payload,
         )
 
     return emit
@@ -147,6 +176,12 @@ def _select_agent_result_field(agent_result: Any, field_name: Any) -> str:
                 return ""
         return _stringify_agent_message(current)
     return _stringify_agent_message(agent_result)
+
+
+def _evaluation_trace_scope(rec: Any, session_id: str):
+    tracer = rec.tracer if rec else None
+    ctx = TraceContext(session_id=session_id) if session_id else TraceContext()
+    return active_tracer_scope(tracer, ctx)
 
 
 class _AsyncQueueSubscriber:
@@ -271,18 +306,41 @@ def create_app() -> FastAPI:
         rec = session_manager.get(body.session_id) if body.session_id else None
         env_path = rec.env_path if rec else ".env"
         prompts = rec.last_run_prompts if rec else None
-        out = run_evaluation(
-            env_path=env_path,
-            evaluator_prompt=body.evaluator_prompt,
-            agent_message=body.agent_message,
-            system_prompt=(prompts or {}).get("system_prompt", ""),
-            user_prompt=(prompts or {}).get("user_prompt", ""),
-            log_callback=_make_evaluator_log_callback(
-                tracer=rec.tracer if rec else None,
-                session_id=body.session_id,
-                configured_level=body.log_level,
-            ),
-        )
+        with _evaluation_trace_scope(rec, body.session_id):
+            if _level_enabled("debug", body.log_level):
+                _emit_structured_log(
+                    _EVALUATOR_LOGGER,
+                    level="debug",
+                    message="evaluate_result entry",
+                    kind="evaluator.evaluate_result.entry",
+                    title="Evaluate result entry",
+                    payload={
+                        "session_id": body.session_id,
+                        "log_level": body.log_level,
+                        "agent_message": body.agent_message,
+                    },
+                )
+            out = run_evaluation(
+                env_path=env_path,
+                evaluator_prompt=body.evaluator_prompt,
+                agent_message=body.agent_message,
+                system_prompt=(prompts or {}).get("system_prompt", ""),
+                user_prompt=(prompts or {}).get("user_prompt", ""),
+                log_callback=_make_evaluator_log_callback(
+                    tracer=rec.tracer if rec else None,
+                    session_id=body.session_id,
+                    configured_level=body.log_level,
+                ),
+            )
+            if _level_enabled("debug", body.log_level):
+                _emit_structured_log(
+                    _EVALUATOR_LOGGER,
+                    level="debug",
+                    message="evaluate_result exit",
+                    kind="evaluator.evaluate_result.exit",
+                    title="Evaluate result exit",
+                    payload={"session_id": body.session_id, "result": out},
+                )
         score = float(out["score"])
         out["score"] = min(10.0, max(0.0, score))
         return out
@@ -317,19 +375,49 @@ def create_app() -> FastAPI:
         eval_model = load_initializer_default_eval_model(env_file, body.initializer)
         agent_result = body.agent_result if body.agent_result is not None else body.agent_message
         agent_message = _select_agent_result_field(agent_result, case.get("result_field", "message"))
-        llm = run_evaluation(
-            env_path=env_file,
-            evaluator_prompt=criteria,
-            agent_message=agent_message,
-            system_prompt=(prompts or {}).get("system_prompt", ""),
-            user_prompt=(prompts or {}).get("user_prompt", ""),
-            model_override=eval_model if eval_model else None,
-            log_callback=_make_evaluator_log_callback(
-                tracer=rec.tracer if rec else None,
-                session_id=body.session_id,
-                configured_level=body.log_level,
-            ),
-        )
+        with _evaluation_trace_scope(rec, body.session_id):
+            if _level_enabled("debug", body.log_level):
+                _emit_structured_log(
+                    _EVALUATOR_LOGGER,
+                    level="debug",
+                    message="evaluate_case entry",
+                    kind="evaluator.evaluate_case.entry",
+                    title="Evaluate case entry",
+                    payload={
+                        "session_id": body.session_id,
+                        "initializer": body.initializer,
+                        "case_index": body.case_index,
+                        "result_field": case.get("result_field", "message"),
+                        "agent_message": agent_message,
+                        "log_level": body.log_level,
+                    },
+                )
+            llm = run_evaluation(
+                env_path=env_file,
+                evaluator_prompt=criteria,
+                agent_message=agent_message,
+                system_prompt=(prompts or {}).get("system_prompt", ""),
+                user_prompt=(prompts or {}).get("user_prompt", ""),
+                model_override=eval_model if eval_model else None,
+                log_callback=_make_evaluator_log_callback(
+                    tracer=rec.tracer if rec else None,
+                    session_id=body.session_id,
+                    configured_level=body.log_level,
+                ),
+            )
+            if _level_enabled("debug", body.log_level):
+                _emit_structured_log(
+                    _EVALUATOR_LOGGER,
+                    level="debug",
+                    message="evaluate_case llm result",
+                    kind="evaluator.evaluate_case.llm_result",
+                    title="Evaluate case LLM result",
+                    payload={
+                        "session_id": body.session_id,
+                        "case_index": body.case_index,
+                        "result": llm,
+                    },
+                )
         score = float(llm["score"])
         llm["score"] = min(10.0, max(0.0, score))
 

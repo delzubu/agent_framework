@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from agent_framework.agent_event_publisher import agent_events
 from agent_framework.tracing import CompositeRuntimeTracer
 from agent_framework.web_communication import WebUserCommunication
 
@@ -35,6 +36,7 @@ class SessionManager:
         tracer = CompositeRuntimeTracer()
         debugger = DebuggerSubscriber()
         tracer.subscribe(debugger)
+        agent_events.attach_log_sources()
         runner = SessionRunner(env_path)
         rec = SessionRecord(
             session_id=session_id,

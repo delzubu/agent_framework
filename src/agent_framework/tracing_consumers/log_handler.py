@@ -37,12 +37,15 @@ class LoggingTraceHandler(logging.Handler):
                 "exc_text": exc_text,
                 "funcName": record.funcName,
             }
+            extra_payload = getattr(record, "trace_payload", None)
+            if isinstance(extra_payload, dict):
+                payload.update(extra_payload)
             level = _LEVEL_MAP.get(record.levelno, "info")
             event = make_trace_event(
                 channel="log",
                 level=level,  # type: ignore[arg-type]
-                kind="log.record",
-                title=f"{record.name} {record.levelname}",
+                kind=str(getattr(record, "trace_kind", "log.record") or "log.record"),
+                title=str(getattr(record, "trace_title", "") or f"{record.name} {record.levelname}"),
                 summary=record.getMessage(),
                 span_id=None,
                 parent_span_id=None,

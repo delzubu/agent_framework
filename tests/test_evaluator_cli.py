@@ -193,6 +193,9 @@ def test_run_evaluation_emits_debug_callback(monkeypatch: pytest.MonkeyPatch, tm
 
 def test_evaluator_log_callback_filters_by_level() -> None:
     from agent_framework_evaluator.app import _make_evaluator_log_callback
+    from agent_framework.agent_event_publisher import agent_events
+    from agent_framework.tracing import TraceContext
+    from agent_framework.tracing_bridge import active_tracer_scope
 
     class FakeTracer:
         def __init__(self) -> None:
@@ -202,28 +205,34 @@ def test_evaluator_log_callback_filters_by_level() -> None:
             self.events.append(event)
 
     tracer = FakeTracer()
-    callback = _make_evaluator_log_callback(
-        tracer=tracer,
-        session_id="sess-1",
-        configured_level="warning",
-    )
-    assert callback is not None
-    callback({"level": "debug", "kind": "evaluator.input_prepared", "payload": {}})
-    callback({"level": "warning", "kind": "evaluator.failed", "payload": {"error": "x"}})
-    assert len(tracer.events) == 1
-    assert tracer.events[0].kind == "evaluator.failed"
-    assert tracer.events[0].context.session_id == "sess-1"
-
     debug_tracer = FakeTracer()
-    debug_callback = _make_evaluator_log_callback(
-        tracer=debug_tracer,
-        session_id="sess-2",
-        configured_level="debug",
-    )
-    assert debug_callback is not None
-    debug_callback({"level": "debug", "kind": "evaluator.input_prepared", "payload": {}})
-    assert len(debug_tracer.events) == 1
-    assert debug_tracer.events[0].level == "debug"
+    try:
+        agent_events.attach_log_sources()
+        with active_tracer_scope(tracer, TraceContext(session_id="sess-1")):
+            callback = _make_evaluator_log_callback(
+                tracer=tracer,
+                session_id="sess-1",
+                configured_level="warning",
+            )
+            assert callback is not None
+            callback({"level": "debug", "kind": "evaluator.input_prepared", "payload": {}})
+            callback({"level": "warning", "kind": "evaluator.failed", "payload": {"error": "x"}})
+        assert len(tracer.events) == 1
+        assert tracer.events[0].kind == "evaluator.failed"
+        assert tracer.events[0].context.session_id == "sess-1"
+
+        with active_tracer_scope(debug_tracer, TraceContext(session_id="sess-2")):
+            debug_callback = _make_evaluator_log_callback(
+                tracer=debug_tracer,
+                session_id="sess-2",
+                configured_level="debug",
+            )
+            assert debug_callback is not None
+            debug_callback({"level": "debug", "kind": "evaluator.input_prepared", "payload": {}})
+        assert len(debug_tracer.events) == 1
+        assert debug_tracer.events[0].level == "debug"
+    finally:
+        agent_events.detach_log_sources()
 
 
 def test_api_evaluate_result(monkeypatch: pytest.MonkeyPatch) -> None:
