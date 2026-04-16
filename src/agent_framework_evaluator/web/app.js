@@ -1255,13 +1255,14 @@ function passesChannelFilters(event) {
 
 function selectedTraceLogLevel() {
   const v = traceLogLevel && "value" in traceLogLevel ? String(traceLogLevel.value) : "warning";
-  return Object.prototype.hasOwnProperty.call(LEVEL_ORDER, v) ? v : "warning";
+  const normalized = String(v).trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(LEVEL_ORDER, normalized) ? normalized : "warning";
 }
 
 function passesLevelFilter(event) {
   const channel = typeof event.channel === "string" ? event.channel : "runtime";
   if (channel !== "log") return true;
-  const level = typeof event.level === "string" ? event.level.toLowerCase() : "info";
+  const level = typeof event.level === "string" ? event.level.trim().toLowerCase() : "info";
   return (LEVEL_ORDER[level] ?? 20) >= (LEVEL_ORDER[selectedTraceLogLevel()] ?? 30);
 }
 
@@ -1501,10 +1502,15 @@ async function postUserInputHttp(text) {
 }
 
 function appendLogLine(event) {
+  const entryEvent = {
+    ...event,
+    channel: typeof event.channel === "string" ? event.channel : "log",
+    level: typeof event.level === "string" ? event.level.trim().toLowerCase() : "info",
+  };
   const row = document.createElement("div");
   row.className = "log-line trace-feed-row";
   applyRowPadding(row, 0);
-  const payload = getPayload(event);
+  const payload = getPayload(entryEvent);
   const loggerName = typeof payload.logger_name === "string" ? payload.logger_name : "";
   const message =
     typeof payload.message === "string"
@@ -1512,7 +1518,7 @@ function appendLogLine(event) {
       : typeof event.title === "string"
         ? event.title
         : "";
-  const lvl = typeof event.level === "string" ? event.level : "info";
+  const lvl = typeof entryEvent.level === "string" ? entryEvent.level : "info";
 
   const badge = document.createElement("span");
   badge.className = `log-badge log-${lvl}`;
@@ -1532,7 +1538,7 @@ function appendLogLine(event) {
   row.appendChild(msg);
 
   traceFeed.appendChild(row);
-  const entry = { el: row, event };
+  const entry = { el: row, event: entryEvent };
   unifiedEntries.push(entry);
   setEntryVisible(entry);
   traceFeed.scrollTop = traceFeed.scrollHeight;
@@ -1727,9 +1733,14 @@ function buildTraceDetails(event) {
 }
 
 function appendTraceEventRow(event) {
-  const node = buildTraceDetails(event);
+  const entryEvent = {
+    ...event,
+    channel: typeof event.channel === "string" ? event.channel : "runtime",
+    level: typeof event.level === "string" ? event.level.trim().toLowerCase() : "info",
+  };
+  const node = buildTraceDetails(entryEvent);
   traceFeed.appendChild(node);
-  const entry = { el: node, event };
+  const entry = { el: node, event: entryEvent };
   unifiedEntries.push(entry);
   setEntryVisible(entry);
   traceFeed.scrollTop = traceFeed.scrollHeight;

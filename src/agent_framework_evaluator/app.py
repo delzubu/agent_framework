@@ -317,7 +317,13 @@ def create_app() -> FastAPI:
                     payload={
                         "session_id": body.session_id,
                         "log_level": body.log_level,
-                        "agent_message": body.agent_message,
+                        "evaluator_input": {
+                            "env_path": str(env_path),
+                            "evaluator_prompt": body.evaluator_prompt,
+                            "agent_message": body.agent_message,
+                            "system_prompt": (prompts or {}).get("system_prompt", ""),
+                            "user_prompt": (prompts or {}).get("user_prompt", ""),
+                        },
                     },
                 )
             out = run_evaluation(
@@ -388,8 +394,15 @@ def create_app() -> FastAPI:
                         "initializer": body.initializer,
                         "case_index": body.case_index,
                         "result_field": case.get("result_field", "message"),
-                        "agent_message": agent_message,
                         "log_level": body.log_level,
+                        "evaluator_input": {
+                            "env_path": str(env_file),
+                            "evaluator_prompt": criteria,
+                            "agent_message": agent_message,
+                            "system_prompt": (prompts or {}).get("system_prompt", ""),
+                            "user_prompt": (prompts or {}).get("user_prompt", ""),
+                            "model_override": eval_model if eval_model else None,
+                        },
                     },
                 )
             llm = run_evaluation(

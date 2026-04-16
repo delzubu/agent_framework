@@ -266,6 +266,58 @@ def test_api_evaluate_result(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(data["evaluation"]) == 2
 
 
+def test_api_evaluate_result_logs_full_evaluator_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_framework_evaluator.session_manager import session_manager
+
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        callback = kwargs.get("log_callback")
+        assert callable(callback)
+        callback(
+            {
+                "level": "debug",
+                "kind": "evaluator.input_prepared",
+                "title": "Evaluator input prepared",
+                "summary": "Prepared input for evaluator scoring.",
+                "payload": {
+                    "evaluator_prompt": kwargs["evaluator_prompt"],
+                    "agent_message": kwargs["agent_message"],
+                    "system_prompt": kwargs["system_prompt"],
+                    "user_prompt": kwargs["user_prompt"],
+                    "formatted_user_content": "<evaluation payload>",
+                },
+            }
+        )
+        return {"score": 8.0, "overall_verdict": "Good.", "evaluation": []}
+
+    monkeypatch.setattr("agent_framework_evaluator.app.run_evaluation", fake_run)
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+    rec = session_manager.get(sid)
+    assert rec is not None
+    rec.last_run_prompts = {"system_prompt": "system-full", "user_prompt": "user-full"}
+
+    r = client.post(
+        "/api/evaluate-result",
+        json={
+            "session_id": sid,
+            "evaluator_prompt": "criteria-full",
+            "agent_message": "agent-full",
+            "log_level": "debug",
+        },
+    )
+
+    assert r.status_code == 200
+    events = rec.debugger.drain(sid)
+    input_events = [event for event in events if event.kind == "evaluator.input_prepared"]
+    assert len(input_events) == 1
+    payload = input_events[0].payload
+    assert payload["evaluator_prompt"] == "criteria-full"
+    assert payload["agent_message"] == "agent-full"
+    assert payload["system_prompt"] == "system-full"
+    assert payload["user_prompt"] == "user-full"
+    assert payload["formatted_user_content"] == "<evaluation payload>"
+
+
 def test_api_evaluate_case_selects_result_field(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
