@@ -22,10 +22,12 @@ from agent_framework.tracing import TraceContext, make_trace_event
 from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework_evaluator.auto_user_reply import reply_text_for_outbox_item
 from agent_framework_evaluator.evaluation import (
+    CASE_NO_CALLBACKS_POSTFIX,
     EvaluatorLogCallback,
     extract_first_llm_request_prompts,
     run_code_evaluation,
     run_evaluation,
+    select_agent_result_field,
 )
 from agent_framework_evaluator.initializer_catalog import (
     evaluator_initializer_root,
@@ -59,7 +61,7 @@ class EvaluateResultBody(BaseModel):
 
     session_id: str = ""
     evaluator_prompt: str = ""
-    agent_message: str = ""
+    result_field: str = "message"
     log_level: str = "warning"
 
 
@@ -69,8 +71,15 @@ class EvaluateCaseBody(BaseModel):
     session_id: str = ""
     initializer: str = ""
     case_index: int = Field(..., ge=0)
-    agent_message: Any = ""
-    agent_result: Any | None = None
+    log_level: str = "warning"
+
+
+class EvaluateBatchBody(BaseModel):
+    """POST body for server-side batch evaluation of all (or selected) initializer cases."""
+
+    session_id: str = ""
+    initializer: str = ""
+    case_indices: list[int] | None = None
     log_level: str = "warning"
 
 
@@ -188,35 +197,8 @@ def _make_evaluator_log_callback(
     return emit
 
 
-def _stringify_agent_message(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except TypeError:
-        return str(value)
-
-
-def _select_agent_result_field(agent_result: Any, field_name: Any) -> str:
-    """Select the case-configured result field before sending text to the evaluator."""
-    field = str(field_name or "message").strip() or "message"
-    if field == ".":
-        return _stringify_agent_message(agent_result)
-    if isinstance(agent_result, str):
-        return agent_result
-    if isinstance(agent_result, dict):
-        current: Any = agent_result
-        for part in field.split("."):
-            if not part:
-                continue
-            if isinstance(current, dict) and part in current:
-                current = current[part]
-            else:
-                return ""
-        return _stringify_agent_message(current)
-    return _stringify_agent_message(agent_result)
+# Alias for backward compat within this module; new code uses select_agent_result_field directly.
+_select_agent_result_field = select_agent_result_field
 
 
 def _evaluation_trace_scope(rec: Any, session_id: str):
@@ -345,8 +327,20 @@ def create_app() -> FastAPI:
     def evaluate_result(body: EvaluateResultBody) -> dict[str, Any]:
         """Score the agent run after the fact. Does not invoke the agent."""
         rec = session_manager.get(body.session_id) if body.session_id else None
-        env_path = rec.env_path if rec else ".env"
-        prompts = rec.last_run_prompts if rec else None
+        if rec is None or rec.last_run_result is None:
+            raise HTTPException(
+                status_code=400,
+                detail="no run result for this session — run the agent first",
+            )
+        env_path = rec.env_path
+        prompts = rec.last_run_prompts
+        result_field = body.result_field or "message"
+        agent_message = select_agent_result_field(rec.last_run_result, result_field)
+        if agent_message is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"result_field '{result_field}' not present in agent result",
+            )
         with _evaluation_trace_scope(rec, body.session_id):
             if _level_enabled("debug", body.log_level):
                 _emit_structured_log(
@@ -358,23 +352,26 @@ def create_app() -> FastAPI:
                     payload={
                         "session_id": body.session_id,
                         "log_level": body.log_level,
+                        "result_field": result_field,
+                        "selected_payload_preview": agent_message[:200],
+                        "last_run_result": rec.last_run_result,
                         "evaluator_input": {
                             "env_path": str(env_path),
                             "evaluator_prompt": body.evaluator_prompt,
-                            "agent_message": body.agent_message,
+                            "agent_message": agent_message,
                             "system_prompt": (prompts or {}).get("system_prompt", ""),
                             "user_prompt": (prompts or {}).get("user_prompt", ""),
                         },
                     },
                 )
             out = run_evaluation(
-                env_path=env_path,
+                env_path=resolve_env_path(env_path),
                 evaluator_prompt=body.evaluator_prompt,
-                agent_message=body.agent_message,
+                agent_message=agent_message,
                 system_prompt=(prompts or {}).get("system_prompt", ""),
                 user_prompt=(prompts or {}).get("user_prompt", ""),
                 log_callback=_make_evaluator_log_callback(
-                    tracer=rec.tracer if rec else None,
+                    tracer=rec.tracer,
                     session_id=body.session_id,
                     configured_level=body.log_level,
                 ),
@@ -411,17 +408,27 @@ def create_app() -> FastAPI:
     def evaluate_case(body: EvaluateCaseBody) -> dict[str, Any]:
         """LLM + optional programmatic evaluation for one test case index."""
         rec = session_manager.get(body.session_id) if body.session_id else None
-        env_path = rec.env_path if rec else ".env"
+        if rec is None or rec.last_run_result is None:
+            raise HTTPException(
+                status_code=400,
+                detail="no run result for this session — run the agent first",
+            )
+        env_path = rec.env_path
         env_file = resolve_env_path(env_path)
         cases = load_raw_test_cases(env_file, body.initializer)
         if body.case_index >= len(cases):
             raise HTTPException(status_code=400, detail="invalid case_index for this initializer")
         case = cases[body.case_index]
         criteria = str(case.get("evaluation_criteria", "") or "")
-        prompts = rec.last_run_prompts if rec else None
+        prompts = rec.last_run_prompts
         eval_model = load_initializer_default_eval_model(env_file, body.initializer)
-        agent_result = body.agent_result if body.agent_result is not None else body.agent_message
-        agent_message = _select_agent_result_field(agent_result, case.get("result_field", "message"))
+        result_field = str(case.get("result_field", "message") or "message")
+        agent_message = select_agent_result_field(rec.last_run_result, result_field)
+        if agent_message is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"result_field '{result_field}' not present in agent result",
+            )
         with _evaluation_trace_scope(rec, body.session_id):
             if _level_enabled("debug", body.log_level):
                 _emit_structured_log(
@@ -434,7 +441,9 @@ def create_app() -> FastAPI:
                         "session_id": body.session_id,
                         "initializer": body.initializer,
                         "case_index": body.case_index,
-                        "result_field": case.get("result_field", "message"),
+                        "result_field": result_field,
+                        "selected_payload_preview": agent_message[:200],
+                        "last_run_result": rec.last_run_result,
                         "log_level": body.log_level,
                         "evaluator_input": {
                             "env_path": str(env_file),
@@ -619,6 +628,99 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/evaluate-batch")
+    async def evaluate_batch(body: EvaluateBatchBody) -> Any:
+        """Run and evaluate all (or selected) initializer cases server-side, streaming NDJSON progress."""
+        from fastapi.responses import StreamingResponse
+
+        rec = session_manager.get(body.session_id) if body.session_id else None
+        if rec is None:
+            raise HTTPException(status_code=400, detail="unknown session — create a session first")
+        env_file = resolve_env_path(rec.env_path)
+        cases = load_raw_test_cases(env_file, body.initializer)
+        if not cases:
+            raise HTTPException(status_code=400, detail="no cases found for this initializer")
+        indices = body.case_indices if body.case_indices is not None else list(range(len(cases)))
+        setup_path = resolve_setup_path_for_run(env_file, body.initializer)
+        default_agent = load_initializer_default_agent(env_file, body.initializer) or "root"
+        eval_model = load_initializer_default_eval_model(env_file, body.initializer)
+
+        async def stream() -> Any:
+            loop = asyncio.get_running_loop()
+            for idx in indices:
+                if idx >= len(cases):
+                    yield json.dumps({"case_index": idx, "error": "invalid case_index"}) + "\n"
+                    continue
+                case = cases[idx]
+                result_field = str(case.get("result_field", "message") or "message")
+                raw_prompt = str(case.get("prompt", ""))
+                prompt_for_run = (
+                    raw_prompt.rstrip() + CASE_NO_CALLBACKS_POSTFIX
+                    if rec.case_run_mode == "no_callbacks"
+                    else raw_prompt
+                )
+                criteria = str(case.get("evaluation_criteria", "") or "")
+
+                def run_case(p: str = prompt_for_run) -> dict[str, object]:
+                    return rec.runner.run_once(
+                        agent_id=default_agent,
+                        prompt=p,
+                        setup_path=setup_path,
+                        user_comm=rec.comm,
+                        runtime_tracer=rec.tracer,
+                        session_id=body.session_id,
+                    )
+
+                try:
+                    run_result = await loop.run_in_executor(_executor, run_case)
+                    rec.last_run_result = run_result
+                    agent_msg = select_agent_result_field(run_result, result_field)
+                    if agent_msg is None:
+                        raise ValueError(f"result_field '{result_field}' not present in agent result")
+                    prompts = rec.last_run_prompts or {}
+
+                    def do_eval(am: str = agent_msg, cr: str = criteria) -> dict[str, Any]:
+                        return run_evaluation(
+                            env_path=env_file,
+                            evaluator_prompt=cr,
+                            agent_message=am,
+                            system_prompt=prompts.get("system_prompt", ""),
+                            user_prompt=prompts.get("user_prompt", ""),
+                            model_override=eval_model if eval_model else None,
+                        )
+
+                    llm: dict[str, Any] = await loop.run_in_executor(_executor, do_eval)
+                    llm["score"] = min(10.0, max(0.0, float(llm["score"])))
+
+                    code_result: dict[str, Any] | None = None
+                    ce = case.get("code_evaluator")
+                    if callable(ce):
+                        code_result = run_code_evaluation(
+                            ce, prompt=raw_prompt, agent_message=agent_msg
+                        )
+                        code_result["score"] = min(10.0, max(0.0, float(code_result["score"])))
+
+                    parts = [float(llm["score"])]
+                    if code_result is not None:
+                        parts.append(float(code_result["score"]))
+                    average = sum(parts) / len(parts)
+
+                    yield json.dumps({
+                        "case_index": idx,
+                        "title": case.get("title", f"Case {idx}"),
+                        "llm_result": llm,
+                        "code_result": code_result,
+                        "average_score": average,
+                    }) + "\n"
+                except Exception as exc:
+                    yield json.dumps({
+                        "case_index": idx,
+                        "title": case.get("title", f"Case {idx}"),
+                        "error": str(exc),
+                    }) + "\n"
+
+        return StreamingResponse(stream(), media_type="application/x-ndjson")
+
     @app.websocket("/ws/{session_id}")
     async def session_socket(websocket: WebSocket, session_id: str) -> None:
         await websocket.accept()
@@ -691,6 +793,9 @@ def create_app() -> FastAPI:
                     rec.case_run_mode = crm if crm in ("standard", "no_callbacks") else "standard"
                     init_raw = msg.get("initializer") if msg.get("initializer") is not None else msg.get("setup_path")
                     instruction_entered = str(msg.get("prompt", ""))
+                    prompt_for_run = instruction_entered
+                    if rec.case_run_mode == "no_callbacks":
+                        prompt_for_run = prompt_for_run.rstrip() + CASE_NO_CALLBACKS_POSTFIX
                     # Seed so the UI always has composer text even if no LLM request fires;
                     # on_first_llm_call replaces this with full trace-derived snapshots.
                     rec.last_run_prompts = {
@@ -699,6 +804,7 @@ def create_app() -> FastAPI:
                         "user_prompt": "",
                         "user_messages": [],
                     }
+                    rec.last_run_result = None
 
                     def on_first_llm_call(trace: Any) -> None:
                         payload = getattr(trace, "input_payload", None)
@@ -711,7 +817,7 @@ def create_app() -> FastAPI:
                         sp = resolve_setup_path_for_run(env_fp, str(init_raw).strip() if init_raw else None)
                         return rec.runner.run_once(
                             agent_id=str(msg["agent_id"]),
-                            prompt=str(msg["prompt"]),
+                            prompt=prompt_for_run,
                             setup_path=sp,
                             user_comm=rec.comm,
                             runtime_tracer=rec.tracer,
@@ -721,6 +827,7 @@ def create_app() -> FastAPI:
 
                     try:
                         result = await asyncio.get_running_loop().run_in_executor(_executor, work)
+                        rec.last_run_result = result
                     except Exception as exc:
                         _publish_evaluator_run_failure(rec.tracer, session_id, exc)
                         await websocket.send_text(

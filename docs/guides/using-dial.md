@@ -239,13 +239,13 @@ The `DialChatCompletionsDriver` automatically converts `image_url` content parts
 
 ---
 
-## 7. JSON Validation with Retry
+## 7. Structured JSON Output
 
-Use `validate_and_retry()` when you need typed, validated JSON output from the model:
+Use `response_mode="json_object"` to get reliable structured output, then parse and validate strictly — let the exception propagate if the model returns something invalid:
 
 ```python
-from pydantic import BaseModel, ValidationError
-from agent_framework.validation import validate_and_retry
+import json
+from pydantic import BaseModel
 
 class AnalysisResult(BaseModel):
     summary: str
@@ -257,31 +257,13 @@ result = await host.complete_async(
     response_mode="json_object",
 )
 
-async def retry_fn(error_description: str) -> str:
-    """Re-ask the model when validation fails."""
-    retry_result = await host.complete_async(
-        messages=[
-            {"role": "user", "content": "Analyze this text: ..."},
-            {"role": "assistant", "content": result.raw_text},
-            {"role": "user", "content": f"Your response was invalid: {error_description}. Please fix it."},
-        ],
-        response_mode="json_object",
-    )
-    return retry_result.raw_text
-
-analysis = await validate_and_retry(
-    result.raw_text,
-    validator=lambda d: AnalysisResult(**d),
-    retry_fn=retry_fn,
-)
+# Raises json.JSONDecodeError or pydantic.ValidationError on malformed output.
+# Fix malformed output upstream: refine the prompt or tighten response_mode constraints.
+analysis = AnalysisResult(**json.loads(result.raw_text))
 print(analysis.score)
 ```
 
-`validate_and_retry()`:
-1. Parses the JSON (stripping markdown fences if present)
-2. Calls `validator(parsed_dict)` — if it raises, calls `retry_fn(error_description)`
-3. Tries the validator one more time on the retry output
-4. If retry also fails, re-raises the validator exception
+The framework does not provide a retry wrapper. Python-side retries expand token usage with no budget control and mask upstream prompt or provider configuration problems. If output is regularly malformed, the correct fix is to improve the system prompt or switch to a provider that natively enforces a JSON schema.
 
 ---
 

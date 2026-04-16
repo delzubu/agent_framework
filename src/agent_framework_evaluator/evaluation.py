@@ -18,6 +18,13 @@ from agent_framework.model import (
     merge_runtime_system_into_messages,
 )
 
+CASE_NO_CALLBACKS_POSTFIX = """
+
+## MANDATORY ASSUMPTIONS RULE
+YOU MUST NOT ask for any further questions or clarification from the user.
+Make assumptions to provide the best answer possible, given this input.
+"""
+
 EVALUATOR_SYSTEM_PROMPT = """
 Evaluate the LLM agent output very critically. The input contains the agent's system prompt, the user \
 prompt, optional evaluation criteria, and the agent result, each in XML tags. \
@@ -215,6 +222,42 @@ def _coerce_str(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _stringify_result_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)
+
+
+def select_agent_result_field(agent_result: Any, field_name: Any) -> str | None:
+    """Select *field_name* (dot-delimited path) from *agent_result*.
+
+    Returns ``None`` when the path does not exist in the result dict, so callers
+    can distinguish a missing field from an empty value and raise an appropriate
+    error.  Returns the full stringified payload when *field_name* is ``"."``.
+    """
+    field = str(field_name or "message").strip() or "message"
+    if field == ".":
+        return _stringify_result_value(agent_result)
+    if isinstance(agent_result, str):
+        return agent_result
+    if isinstance(agent_result, dict):
+        current: Any = agent_result
+        for part in field.split("."):
+            if not part:
+                continue
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        return _stringify_result_value(current)
+    return _stringify_result_value(agent_result)
 
 
 def failed_evaluator_result(error_message: str) -> dict[str, Any]:

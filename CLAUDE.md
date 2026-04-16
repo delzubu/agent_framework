@@ -79,7 +79,7 @@ Model/LLM layering (merged `ModelContext`, `ModelDriverBase`, ADR): see [`docs/a
 
 **Conversation store** (`conversation.py`): `ConversationStore` and `AsyncConversationStore` are `typing.Protocol` classes for storage-agnostic multi-turn conversation history. `InMemoryConversationStore` is the reference implementation with optional TTL and thread-safety.
 
-**Validation** (`validation.py`): `parse_json_content(content)` strips markdown fences and parses JSON. `validate_and_retry(content, validator, retry_fn)` parses, validates, and retries once on failure.
+**Validation** (`validation.py`): `_normalize_json_text(raw)` strips markdown fences — private primitive used by `model.py` drivers and `parse_json_object_model_output`. No public parsing API; structured output correctness is enforced upstream via `response_format` / JSON mode, not Python-side retries.
 
 **Drivers** (`drivers/`): Optional provider drivers. `DialChatCompletionsDriver` (async, DIAL/OpenAI-compatible chat completions) requires `[dial]` extra. Uses `aidial-sdk` for typed request construction.
 
@@ -154,6 +154,21 @@ MCP_ENABLED=true                        # set false to disable MCP entirely
 **`DriverCapabilities`**: Drivers declare capabilities via `ClassVar[DriverCapabilities]` with flags `is_async`, `supports_multimodal`, `supports_response_format`, `supports_tools`, `supports_streaming`. Query with `get_driver_capabilities(driver)`.
 
 **`AsyncModelDriver`**: Protocol for async drivers. `SyncToAsyncAdapter` and `AsyncToSyncAdapter` bridge sync/async worlds. `AgentHost.get_model_driver()` auto-wraps async drivers for the sync agent loop.
+
+### Agent Evaluator (`agent_framework_evaluator`)
+
+Three CLI subcommands (all use `python -m agent_framework_evaluator <cmd>`):
+- `web` — starts the local FastAPI UI with WebSocket trace streaming
+- `run` — headless single-agent invocation
+- `evaluate` — runs and evaluates one or all cases from an initializer (or a standalone `.md` case file) entirely CLI-side; no web UI required. Key flags: `--initializer`, `--case N`, `--case-file`, `--output`, `--verbose`, `--agent`
+
+All evaluation orchestration is **server-side**:
+- `result_field` selection from `last_run_result` — both in `/api/evaluate-result` and `/api/evaluate-case`. Returns HTTP 400 (or CLI exit 1) if the field is missing.
+- `case_run_mode: no_callbacks` postfix applied server-side in the WS `run` handler (constant `CASE_NO_CALLBACKS_POSTFIX` in `evaluation.py`).
+- Batch iteration in `/api/evaluate-batch` (NDJSON streaming) and `evaluate` CLI — not client-side.
+- `SessionRecord.last_run_result` stores the payload dict from `_agent_result_payload(result)` after each run; the evaluate endpoints read from it. **Do not re-introduce client-side agent result forwarding.**
+
+Key evaluator files: `app.py` (FastAPI endpoints + WS handler), `session_manager.py` (`SessionRecord`), `runtime/session_runner.py` (`run_once`), `evaluation.py` (`run_evaluation`, `select_agent_result_field`, `CASE_NO_CALLBACKS_POSTFIX`), `cli.py` (subcommands including `evaluate`), `web/app.js` (thin observer — no payload extraction, no batch loop, no postfix).
 
 ### Tracing & Audit
 

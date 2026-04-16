@@ -189,7 +189,7 @@ Infrastructure layer — entry points, orchestration, and cross-cutting concerns
 | `errors.py` | `ModelDriverError`, `ConversationNotFoundError` — structured error types |
 | `messages.py` | `ChatMessage`, `ContentPart`, `ImageUrl`, `FunctionCall`, `ToolCallMessage` — typed multimodal message model |
 | `conversation.py` | `ConversationStore`, `AsyncConversationStore` protocols, `InMemoryConversationStore` |
-| `validation.py` | `parse_json_content`, `validate_and_retry` — JSON parse and retry utility |
+| `validation.py` | `_normalize_json_text` — private fence-stripping primitive used by drivers |
 | `audit_trace.py` | `InMemoryAuditTracer`, `AgentCallAuditRecord` — immutable JSONL audit trail |
 | `tracing.py` | `TraceEvent`, `TraceContext`, `CompositeRuntimeTracer`, `NullRuntimeTracer` — unified observability pipeline |
 | `tracing_bridge.py` | `active_tracer_scope`, `try_publish_trace` — contextvar for tracer + overlay during runs |

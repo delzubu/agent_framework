@@ -7,8 +7,9 @@ This guide is for **interactive debugging and headless runs** using the **`agent
 ## 1. What it does
 
 - **Web UI** — local FastAPI app with a three-pane layout: agent/setup/prompt, final JSON result, and a **hierarchical trace** fed by unified **`TraceEvent`** streaming over WebSocket.
-- **Headless CLI** — same execution path as the UI (`SessionRunner` + `AgentHost`) without a browser; optional **JSONL** and **LLM trace directory** output.
+- **Headless CLI** — `run` subcommand runs a single agent prompt; `evaluate` subcommand runs and evaluates one or all cases from an initializer (or a standalone `.md` case file) without a browser.
 - **Setup modules** — optional Python files that can register tools, expose prompt templates, and run **`suite_setup` / `test_setup` / `test_teardown` / `suite_teardown`** hooks (see [Setup module contract](../architecture/agent-evaluator-web-runtime.md#9-setup-module-contract)).
+- **Server-side orchestration** — all evaluation logic (result-field selection, batch iteration, no-callbacks prompt postfix) runs on the server; the web client is a thin observer.
 
 Regression **XML/JSON evaluation** (`python -m agent_framework --evaluate …`) is a **different** subsystem; this guide does not cover it.
 
@@ -123,6 +124,8 @@ Optionally, the UI can also send a legacy WebSocket message (omit **`prompt_id`*
 
 ## 6. Headless CLI
 
+### 6.1 `run` — single agent invocation
+
 ```bash
 python -m agent_framework_evaluator run \
   --env .env \
@@ -146,6 +149,55 @@ Stdout (or **`--output`**) is JSON like:
   "message": "..."
 }
 ```
+
+### 6.2 `evaluate` — run and score test cases
+
+Run **all** cases from an initializer, **one** case by index, or a **standalone `.md`** file — entirely server-side, no web UI required.
+
+```bash
+# All cases in an initializer
+python -m agent_framework_evaluator evaluate \
+  --env .env --initializer path/to/init.py
+
+# Single case by 0-based index
+python -m agent_framework_evaluator evaluate \
+  --env .env --initializer path/to/init.py --case 0
+
+# Standalone .md case file (result_field and criteria from frontmatter)
+python -m agent_framework_evaluator evaluate \
+  --env .env --case-file path/to/case.md
+
+# Save full JSON and show per-case run details
+python -m agent_framework_evaluator evaluate \
+  --env .env --initializer path/to/init.py --output results.json --verbose
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--initializer PATH` | Initializer `.py`; runs all cases unless `--case N` is set |
+| `--case-file PATH` | Standalone case `.md` (mutually exclusive with `--initializer`) |
+| `--case N` | 0-based case index (requires `--initializer`) |
+| `--agent ID` | Override agent id (default: initializer `DEFAULT_AGENT` or `root`) |
+| `--output FILE` | Write full JSON result(s) to file |
+| `--verbose` | Batch only: include per-case run result in stdout summary |
+| `--env FILE` | Path to `.env` (default: `.env`) |
+
+**Single-case output** (JSON, stdout or `--output`):
+
+```json
+{
+  "run_result": { "status": "completed", "message": "..." },
+  "llm_result":  { "score": 8.5, "overall_verdict": "...", "evaluation": [...] },
+  "code_result": null,
+  "average_score": 8.5,
+  "selected_payload": "<text actually sent to the evaluator>",
+  "result_field": "message"
+}
+```
+
+**Batch output** — summary table on stdout; `--output` writes a JSON array with one object per case.
+
+**`result_field`** is read from the case frontmatter (or defaults to `message`). The server selects the field from the agent result and raises an error (exit 1) if the field is not present — there is no silent fallback to an empty payload.
 
 ---
 
@@ -188,8 +240,9 @@ Full contract: [§9 Setup Module Contract](../architecture/agent-evaluator-web-r
 |--------|------|---------|
 | `GET` | `/` | Static UI |
 | `POST` | `/api/sessions` | Body: `{ "env_path": ".env" }` (optional). Returns `{ "session_id" }`. |
-| `POST` | `/api/evaluate-result` | Score the latest/manual result. Body includes `session_id`, `evaluator_prompt`, `agent_message`, and optional `log_level` (`warning` default). |
-| `POST` | `/api/evaluate-case` | Score one initializer case. Body includes `session_id`, `initializer`, `case_index`, `agent_message` or `agent_result`, and optional `log_level` (`warning` default). Case markdown may set `result_field` such as `message` or `parameters`. |
+| `POST` | `/api/evaluate-result` | Score the last run result. Body: `session_id`, `evaluator_prompt`, optional `result_field` (default `message`), optional `log_level`. Reads from session `last_run_result`; returns **400** if the session has no run result yet or the field is missing. |
+| `POST` | `/api/evaluate-case` | Score one initializer case. Body: `session_id`, `initializer`, `case_index`, optional `log_level`. `result_field` comes from the case frontmatter; agent result read from session `last_run_result`. Returns **400** on missing session result or missing field. |
+| `POST` | `/api/evaluate-batch` | Run and evaluate all (or selected) initializer cases server-side. Body: `session_id`, `initializer`, optional `case_indices` list, optional `log_level`. Streams **NDJSON** — one line per case with `case_index`, `title`, `llm_result`, `code_result`, `average_score` (or `error`). |
 | `POST` | `/api/sessions/{id}/close` | Finalize session; **`suite_teardown`** if defined; cancels a pending input wait. |
 | `POST` | `/api/sessions/{id}/user-input` | Body: `{ "prompt_id": "<uuid>", "text": "<string or null>" }`. Delivers input for the active wait; **`409`** if nothing is waiting or **`prompt_id`** does not match. |
 | `GET` | `/api/agents?env_path=.env` | List agent ids (probe host uses catalog discovery). |

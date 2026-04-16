@@ -15,9 +15,8 @@ Generic markdown-defined agent runtime, orchestration host, tracing, and evaluat
 - **Terminal tools** — declare tool names in agent frontmatter that exit the decision loop immediately without executing
 - **Skills** — directory-discovered markdown instruction sets, injected into the model conversation on demand
 - **Tracing & audit** — unified **`TraceEvent`** pipeline (`tracing.py`, optional JSONL / debugger subscribers), `InMemoryAuditTracer` (JSONL), `LlmTraceLogger` (console/file)
-- **Agent evaluator** — local web UI + WebSocket trace stream (`python -m agent_framework_evaluator`), headless `run` subcommand; see [Using the agent evaluator](docs/guides/using-agent-evaluator.md)
+- **Agent evaluator** — local web UI + WebSocket trace stream (`python -m agent_framework_evaluator web`), headless `run` subcommand, and `evaluate` subcommand for full CLI batch evaluation without the UI; all evaluation orchestration (result-field selection, batch iteration, no-callbacks postfix) is server-side; see [Using the agent evaluator](docs/guides/using-agent-evaluator.md)
 - **Evaluation** — XML-based and conversation-based regression evaluation harnesses (`python -m agent_framework --evaluate …`)
-- **JSON validation retry** — `validate_and_retry()` utility for typed, validated model output with one automatic retry
 
 ---
 
@@ -143,7 +142,10 @@ python -m agent_framework --runtime-trace-jsonl path.jsonl ... # unified TraceEv
 
 ```bash
 python -m agent_framework_evaluator web --env .env --port 8123   # local debugger UI
-python -m agent_framework_evaluator run --env .env --agent root --prompt "..."  # headless
+python -m agent_framework_evaluator run --env .env --agent root --prompt "..."  # headless run
+python -m agent_framework_evaluator evaluate --env .env --initializer path/to/init.py  # full batch eval (no UI)
+python -m agent_framework_evaluator evaluate --env .env --initializer path/to/init.py --case 0  # single case
+python -m agent_framework_evaluator evaluate --env .env --case-file path/to/case.md  # standalone .md
 ```
 
 See [Using the agent evaluator](docs/guides/using-agent-evaluator.md) for setup files, trace export, and configuration.

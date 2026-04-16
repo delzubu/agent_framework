@@ -433,13 +433,7 @@ function clearStoredAgentResult() {
 }
 
 function hasAgentOutputForEval() {
-  if (lastAgentResultPayload == null) return false;
-  if (agentMessageOnly(lastAgentResultPayload).trim().length > 0) return true;
-  if (typeof lastAgentResultPayload !== "object") return false;
-  const p = /** @type {Record<string, unknown>} */ (lastAgentResultPayload).parameters;
-  if (p == null) return false;
-  if (typeof p === "string") return p.trim().length > 0;
-  return true;
+  return lastAgentResultPayload != null;
 }
 
 function updateEvaluateUi() {
@@ -449,29 +443,7 @@ function updateEvaluateUi() {
   if (evaluateButton) evaluateButton.disabled = !canRun;
 }
 
-/**
- * @param {Record<string, unknown> | null | undefined} payload
- */
-function agentMessageOnly(payload) {
-  if (payload == null) return "";
-  if (typeof payload === "string") return payload;
-  if (typeof payload === "object" && payload !== null && "message" in payload) {
-    const m = /** @type {Record<string, unknown>} */ (payload).message;
-    if (m == null) return "";
-    if (typeof m === "string") return m;
-    try {
-      return JSON.stringify(m);
-    } catch (_) {
-      return String(m);
-    }
-  }
-  return "";
-}
-
-/**
- * @param {Record<string, unknown> | null | undefined} agentResultPayload
- */
-async function runPostEvaluation(agentResultPayload) {
+async function runPostEvaluation() {
   const crit = evaluatorPromptInput?.value?.trim() ?? "";
   if (!crit) {
     resetEvaluationPanel();
@@ -486,7 +458,6 @@ async function runPostEvaluation(agentResultPayload) {
   if (evaluationStatus) evaluationStatus.textContent = "Scoring…";
   renderEvalScoreBar(evalScoreBar, 0);
   evalScoreLabel.textContent = "…";
-  const agentMessage = agentMessageOnly(agentResultPayload);
   try {
     const res = await fetch("/api/evaluate-result", {
       method: "POST",
@@ -494,7 +465,6 @@ async function runPostEvaluation(agentResultPayload) {
       body: JSON.stringify({
         session_id: sessionId ?? "",
         evaluator_prompt: crit,
-        agent_message: agentMessage,
         log_level: selectedTraceLogLevel(),
       }),
     });
@@ -534,23 +504,6 @@ async function runPostEvaluation(agentResultPayload) {
   }
 }
 
-/** Postfix for &quot;No callbacks&quot; mode (test-case runs only). */
-const CASE_NO_CALLBACKS_POSTFIX = `
-
-## MANDATORY ASSUMPTIONS RULE
-YOU MUST NOT ask for any further questions or clarification from the user.
-Make assumptions to provide the best answer possible, given this input.
-`;
-
-/**
- * @param {string} prompt
- */
-function augmentCasePromptForRun(prompt) {
-  if (caseRunMode !== "no_callbacks" || typeof prompt !== "string") {
-    return prompt;
-  }
-  return prompt.replace(/\s*$/, "") + CASE_NO_CALLBACKS_POSTFIX;
-}
 
 function hideCaseEvalSubpanels() {
   if (evalLlmSection) evalLlmSection.hidden = true;
@@ -992,7 +945,7 @@ async function playCase(caseIndex, opts = {}) {
     }
     await recreateSessionForNewRun();
     clearTraceUi();
-    const runPrompt = augmentCasePromptForRun(c.prompt || "");
+    const runPrompt = c.prompt || "";
     appendConversationBubble("user", runPrompt || "(empty prompt)");
     agentRunInProgress = true;
     refreshComposerState();
@@ -1010,7 +963,6 @@ async function playCase(caseIndex, opts = {}) {
       }),
     );
     await pRun;
-    const agentMsg = agentMessageOnly(lastAgentResultPayload);
     const res = await fetch("/api/evaluate-case", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1018,8 +970,6 @@ async function playCase(caseIndex, opts = {}) {
         session_id: sessionId ?? "",
         initializer: init,
         case_index: caseIndex,
-        agent_message: agentMsg,
-        agent_result: lastAgentResultPayload,
         log_level: selectedTraceLogLevel(),
       }),
     });
@@ -1056,36 +1006,70 @@ async function runAllCasesPlay() {
   caseControlsDisabled(true);
   if (batchProgress) {
     batchProgress.hidden = false;
-    batchProgress.textContent = "";
+    batchProgress.textContent = "Batch running…";
   }
   /** @type {BatchSummaryRow[]} */
   const summaryRows = [];
   try {
-    for (let i = 0; i < loadedCases.length; i++) {
-      const c = loadedCases[i];
-      if (batchProgress) {
-        batchProgress.textContent = `Batch run — ${i + 1} / ${loadedCases.length}: ${c.title || "case"}`;
-      }
-      try {
-        const data = await playCase(c.index, { batch: true });
-        const raw = data && typeof data === "object" ? /** @type {Record<string, unknown>} */ (data) : null;
-        const av = raw && "average_score" in raw ? Number(raw.average_score) : NaN;
-        summaryRows.push({
-          title: c.title || `Case ${c.index}`,
-          average_score: Number.isFinite(av) ? av : null,
-          detail: raw,
-        });
-      } catch (e) {
-        summaryRows.push({
-          title: c.title || `Case ${c.index}`,
-          average_score: null,
-          error: String(e),
-          detail: { __batchError: true, message: String(e) },
-        });
+    await ensureSessionConnected();
+    const res = await fetch("/api/evaluate-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId ?? "",
+        initializer: init,
+        log_level: selectedTraceLogLevel(),
+      }),
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(t || res.statusText);
+    }
+    const reader = res.body?.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const row = /** @type {Record<string, unknown>} */ (JSON.parse(line));
+            const idx = typeof row.case_index === "number" ? row.case_index : -1;
+            const caseEntry = loadedCases.find((x) => x.index === idx);
+            const title = String(row.title || caseEntry?.title || `Case ${idx}`);
+            if (batchProgress) {
+              batchProgress.textContent = `Batch run — ${summaryRows.length + 1} / ${loadedCases.length}: ${title}`;
+            }
+            if (row.error) {
+              summaryRows.push({
+                title,
+                average_score: null,
+                error: String(row.error),
+                detail: { __batchError: true, message: String(row.error) },
+              });
+            } else {
+              const av = typeof row.average_score === "number" ? row.average_score : NaN;
+              summaryRows.push({
+                title,
+                average_score: Number.isFinite(av) ? av : null,
+                detail: row,
+              });
+            }
+          } catch (_) {
+            // skip malformed NDJSON line
+          }
+        }
       }
     }
     displayBatchSummary(summaryRows);
     setActiveTab("evaluation");
+  } catch (err) {
+    if (evaluationStatus) evaluationStatus.textContent = String(err);
   } finally {
     if (batchProgress) batchProgress.hidden = true;
     caseControlsDisabled(false);
@@ -1850,7 +1834,7 @@ function onSocketMessage(ev) {
       pr.resolve(msg);
       return;
     }
-    void runPostEvaluation(p);
+    void runPostEvaluation();
   }
   if (msg.type === "error") {
     clearAppStatus();
@@ -2175,7 +2159,7 @@ promptInput?.addEventListener("keydown", (e) => {
 
 evaluateButton?.addEventListener("click", () => {
   if (!lastAgentResultPayload || evaluateButton?.disabled) return;
-  void runPostEvaluation(lastAgentResultPayload);
+  void runPostEvaluation();
 });
 
 evaluatorPromptInput?.addEventListener("input", () => {

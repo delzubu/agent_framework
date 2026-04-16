@@ -51,6 +51,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write llm-channel events to per-agent logs under DIR.",
     )
 
+    evaluate = subparsers.add_parser(
+        "evaluate",
+        help="Run and evaluate test cases without the web UI.",
+    )
+    evaluate.add_argument("--env", default=".env", help="Path to .env file.")
+    src = evaluate.add_mutually_exclusive_group(required=True)
+    src.add_argument(
+        "--initializer",
+        metavar="PATH",
+        help="Initializer .py; runs all cases unless --case is set.",
+    )
+    src.add_argument(
+        "--case-file",
+        metavar="PATH",
+        help="Standalone case .md file (no initializer required).",
+    )
+    evaluate.add_argument(
+        "--case",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Select a single case by 0-based index (requires --initializer).",
+    )
+    evaluate.add_argument(
+        "--agent",
+        default=None,
+        help="Agent id to run (default: initializer DEFAULT_AGENT or 'root').",
+    )
+    evaluate.add_argument("--output", metavar="FILE", help="Write full JSON result to file.")
+    evaluate.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Batch only: include per-case run result in addition to summary table.",
+    )
+
     return parser
 
 
@@ -119,6 +154,164 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_evaluate(args: argparse.Namespace) -> int:
+    from agent_framework_evaluator.case_markdown import parse_case_markdown_file
+    from agent_framework_evaluator.evaluation import (
+        run_code_evaluation,
+        run_evaluation,
+        select_agent_result_field,
+    )
+    from agent_framework_evaluator.initializer_catalog import (
+        load_initializer_default_agent,
+        load_initializer_default_eval_model,
+        load_raw_test_cases,
+        resolve_env_path,
+        resolve_setup_path_for_run,
+    )
+
+    env_file = resolve_env_path(args.env)
+
+    def _run_single_case(
+        *,
+        agent_id: str,
+        prompt: str,
+        criteria: str,
+        result_field: str,
+        code_evaluator: object,
+        setup_path: "Path | None",
+        eval_model: "str | tuple | None",
+    ) -> dict[str, object]:
+        runner = SessionRunner(args.env)
+        run_result = runner.run_once(
+            agent_id=agent_id,
+            prompt=prompt,
+            setup_path=setup_path,
+        )
+        selected = select_agent_result_field(run_result, result_field)
+        if selected is None:
+            print(
+                f"error: result_field '{result_field}' not present in agent result",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        llm = run_evaluation(
+            env_path=env_file,
+            evaluator_prompt=criteria,
+            agent_message=selected,
+            model_override=eval_model if eval_model else None,
+        )
+        llm["score"] = min(10.0, max(0.0, float(llm["score"])))
+        code_result: dict[str, object] | None = None
+        if callable(code_evaluator):
+            code_result = run_code_evaluation(code_evaluator, prompt=prompt, agent_message=selected)
+            code_result["score"] = min(10.0, max(0.0, float(code_result["score"])))
+        parts = [float(llm["score"])]
+        if code_result is not None:
+            parts.append(float(code_result["score"]))
+        average = sum(parts) / len(parts)
+        return {
+            "run_result": run_result,
+            "llm_result": llm,
+            "code_result": code_result,
+            "average_score": average,
+            "selected_payload": selected,
+            "result_field": result_field,
+        }
+
+    if args.case_file:
+        # --case-file: standalone .md, no initializer
+        case_path = Path(args.case_file)
+        if not case_path.exists():
+            print(f"error: case file not found: {case_path}", file=sys.stderr)
+            return 1
+        case = parse_case_markdown_file(case_path, {})
+        if case is None:
+            print(f"error: could not parse case file: {case_path}", file=sys.stderr)
+            return 1
+        agent_id = args.agent or "root"
+        result = _run_single_case(
+            agent_id=agent_id,
+            prompt=case["prompt"],
+            criteria=str(case.get("evaluation_criteria", "") or ""),
+            result_field=str(case.get("result_field", "message") or "message"),
+            code_evaluator=case.get("code_evaluator"),
+            setup_path=None,
+            eval_model=None,
+        )
+        text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
+        if args.output:
+            Path(args.output).write_text(text + "\n", encoding="utf-8")
+        else:
+            print(text)
+        return 0
+
+    # --initializer path
+    initializer = args.initializer
+    cases = load_raw_test_cases(env_file, initializer)
+    if not cases:
+        print(f"error: no cases found for initializer: {initializer}", file=sys.stderr)
+        return 1
+    setup_path = resolve_setup_path_for_run(env_file, initializer)
+    default_agent = args.agent or load_initializer_default_agent(env_file, initializer) or "root"
+    eval_model = load_initializer_default_eval_model(env_file, initializer)
+
+    if args.case is not None:
+        # Single case by index
+        if args.case >= len(cases):
+            print(
+                f"error: --case {args.case} out of range (0..{len(cases)-1})", file=sys.stderr
+            )
+            return 1
+        case = cases[args.case]
+        result = _run_single_case(
+            agent_id=default_agent,
+            prompt=str(case.get("prompt", "")),
+            criteria=str(case.get("evaluation_criteria", "") or ""),
+            result_field=str(case.get("result_field", "message") or "message"),
+            code_evaluator=case.get("code_evaluator"),
+            setup_path=setup_path,
+            eval_model=eval_model,
+        )
+        text = json.dumps(result, indent=2, ensure_ascii=False, default=str)
+        if args.output:
+            Path(args.output).write_text(text + "\n", encoding="utf-8")
+        else:
+            print(text)
+        return 0
+
+    # Full batch
+    batch_results: list[dict[str, object]] = []
+    for i, case in enumerate(cases):
+        title = str(case.get("title", f"Case {i}"))
+        print(f"[{i+1}/{len(cases)}] {title} …", flush=True)
+        try:
+            result = _run_single_case(
+                agent_id=default_agent,
+                prompt=str(case.get("prompt", "")),
+                criteria=str(case.get("evaluation_criteria", "") or ""),
+                result_field=str(case.get("result_field", "message") or "message"),
+                code_evaluator=case.get("code_evaluator"),
+                setup_path=setup_path,
+                eval_model=eval_model,
+            )
+            avg = result["average_score"]
+            verdict = "PASS" if float(avg) >= 7.0 else "FAIL"
+            print(f"  score={float(avg):.1f}  {verdict}")
+            if args.verbose:
+                print(f"  run_result={json.dumps(result['run_result'], ensure_ascii=False, default=str)}")
+            batch_results.append({"case_index": i, "title": title, **result})
+        except Exception as exc:
+            print(f"  ERROR: {exc}", file=sys.stderr)
+            batch_results.append({"case_index": i, "title": title, "error": str(exc)})
+
+    if args.output:
+        text = json.dumps(batch_results, indent=2, ensure_ascii=False, default=str)
+        Path(args.output).write_text(text + "\n", encoding="utf-8")
+        print(f"\nFull results written to {args.output}")
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -126,4 +319,6 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_web(args)
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "evaluate":
+        return _cmd_evaluate(args)
     return 0
