@@ -1,61 +1,533 @@
-# Using the agent evaluator
+# Using the Agent Evaluator
 
-This guide is for **interactive debugging and headless runs** using the **`agent_framework_evaluator`** package shipped alongside `agent_framework`. For authoring agents, tools, and `.env` setup, start with **[Using the agent framework](using-agent-framework.md)**. Architecture reference: [Agent Evaluator & Web Runtime](../architecture/agent-evaluator-web-runtime.md).
+This is a practical, beginner-friendly guide to testing AI agents with the **`agent_framework_evaluator`** package.  No prior prompt engineering experience is required — if you can describe what a "good answer" looks like in plain English, you can write evaluation tests.
 
----
-
-## 1. What it does
-
-- **Web UI** — local FastAPI app with a three-pane layout: agent/setup/prompt, final JSON result, and a **hierarchical trace** fed by unified **`TraceEvent`** streaming over WebSocket.
-- **Headless CLI** — `run` subcommand runs a single agent prompt; `evaluate` subcommand runs and evaluates one or all cases from an initializer (or a standalone `.md` case file) without a browser.
-- **Setup modules** — optional Python files that can register tools, expose prompt templates, and run **`suite_setup` / `test_setup` / `test_teardown` / `suite_teardown`** hooks (see [Setup module contract](../architecture/agent-evaluator-web-runtime.md#9-setup-module-contract)).
-- **Server-side orchestration** — all evaluation logic (result-field selection, batch iteration, no-callbacks prompt postfix) runs on the server; the web client is a thin observer.
-
-Regression **XML/JSON evaluation** (`python -m agent_framework --evaluate …`) is a **different** subsystem; this guide does not cover it.
+For agent and tool authoring basics, start with [Using the agent framework](using-agent-framework.md).  For architecture internals, see [Agent Evaluator & Web Runtime](../architecture/agent-evaluator-web-runtime.md).
 
 ---
 
-## 2. Installation
+## What problem does this solve?
 
-Install the framework with **web** dependencies (FastAPI, Uvicorn):
+Imagine you have built an AI agent that summarises customer support tickets.  You run it manually a few times, it looks fine, and you move on.  A week later someone changes the system prompt to improve tone — and without realising it, the agent now occasionally leaves out the urgency level.  Nobody catches it until a customer complains.
+
+Manual testing does not scale.  You need a way to:
+
+1. Define precisely what a "good" answer looks like for a representative set of inputs.
+2. Run those inputs against your agent automatically.
+3. Get a score that tells you whether the agent is still meeting your quality bar.
+
+That is exactly what the agent evaluator does.  You write **test cases** — a prompt and a checklist of criteria — and the evaluator uses a second LLM to judge whether the agent's response meets those criteria.  You get a score from 1 to 10 for each case, a list of which criteria passed or failed, and a written verdict.
+
+The key insight is that you write your criteria in plain English:
+
+> - The summary must mention the wrong colour
+> - The summary must not exceed two sentences
+> - The tone must be professional and neutral
+
+No code.  No regex.  Just descriptions of what you care about.
+
+---
+
+## How it works — the big picture
+
+```
+  Your test case (.md file)
+  ┌─────────────────────────┐
+  │ Prompt for the agent    │
+  │ Evaluation criteria     │
+  └────────────┬────────────┘
+               │ run
+               ▼
+  ┌─────────────────────────┐
+  │  Your agent             │  ← runs as normal
+  └────────────┬────────────┘
+               │ agent result
+               ▼
+  ┌─────────────────────────┐
+  │  Evaluator LLM          │  ← a second LLM call
+  │  (reads system prompt,  │
+  │   user prompt, criteria,│
+  │   and agent result)     │
+  └────────────┬────────────┘
+               │
+               ▼
+  Score 1–10 + per-criteria pass/fail + written verdict
+```
+
+The evaluator LLM is strict — it is instructed to be critical and find gaps.  A score of 8 or 9 means all explicit requirements are covered with minor room for improvement.  A score of 6–7 means something is missing.  Below 5 means significant failure.
+
+---
+
+## Installation
+
+Install with web dependencies (FastAPI, Uvicorn):
 
 ```bash
 pip install "agent_framework[web]"
 ```
 
-For development, `pip install "agent_framework[dev]"` already includes the same web stack.
+For development, `pip install "agent_framework[dev]"` already includes the same stack.
 
-The console script **`agent-eval`** is equivalent to **`python -m agent_framework_evaluator`**:
+The console script `agent-eval` is equivalent to `python -m agent_framework_evaluator`:
 
 ```bash
-agent-eval web --env .env
+agent-eval evaluate --env .env --initializer path/to/init.py
+# same as:
+python -m agent_framework_evaluator evaluate --env .env --initializer path/to/init.py
 ```
 
 ---
 
-## 3. Configuration (`.env`)
+## Configuration
 
-The evaluator uses the **same** `HostConfig` / `.env` as the core runtime ([Host & Orchestration](../architecture/host-orchestration.md#3-configuration-hostconfig)). Minimum expectations:
+The evaluator reads the same `.env` file as the main framework.  At minimum you need:
 
-| Variable | Purpose |
-|----------|---------|
-| `AGENT_DIRECTORY` | Directory of agent `.md` files |
-| `TOOLS_DIRECTORY` | Tool definitions |
-| `WORLD_DIRECTORY` | Sandboxed file root for tools |
-| `ROOT_AGENT` | Default root agent id |
-| `OPENAI_API_KEY` / `DEFAULT_PROVIDER` / `DEFAULT_MODEL` | Or DIAL variables if using DIAL |
-| `MISSING_TOOL_POLICY` | `graceful` (default) or `strict` — see [Host & Orchestration](../architecture/host-orchestration.md#3-configuration-hostconfig) |
+```
+# Which LLM provider to use
+DEFAULT_PROVIDER=openai
+OPENAI_API_KEY=sk-...
 
-Paths in `.env` are resolved **relative to the directory containing the env file**.
+# Which model to use for your agent
+DEFAULT_MODEL=gpt-4o-mini
 
-**Tip:** Start the web server from the directory where your `.env` lives, or pass an absolute `--env` path on the CLI.
+# Directories
+AGENT_DIRECTORY=agents
+TOOLS_DIRECTORY=tools
+WORLD_DIRECTORY=sandbox
+ROOT_AGENT=root
+```
+
+All directory paths are resolved relative to the folder that contains the `.env` file.
+
+**Two models are in play** during an evaluation run:
+
+| Model | Configuration | Purpose |
+|-------|--------------|---------|
+| Agent model | `DEFAULT_MODEL` | Runs your agent |
+| Evaluator model | `AGENT_EVAL_MODEL` (optional) | Scores the result |
+
+If `AGENT_EVAL_MODEL` is not set, the evaluator uses `DEFAULT_MODEL`.  You can also pin the evaluator model per initializer by setting `DEFAULT_EVAL_MODEL` in the initializer file (see below).
+
+A good rule of thumb: use a fast, cheap model (like `gpt-4o-mini`) as the evaluator and your production model as the agent.  The evaluator task is straightforward JSON output; it does not need a frontier model.
 
 ---
 
-## 4. Starting the web UI
+## Your first test case — a standalone `.md` file
+
+The simplest way to run an evaluation is with a single Markdown file.  No initializer needed.
+
+**File:** `docs/guides/evaluator-examples/quickstart/cases/hello.md`
+
+```markdown
+---
+title: Basic greeting
+---
+Say hello to Alice and tell her today is a great day to learn something new.
+---
+- The response must address Alice by name
+- The response must contain a greeting (hello, hi, hey, or similar)
+- The response must mention learning or something new
+- The response must be friendly and positive in tone
+- The response must be concise — no more than three sentences
+```
+
+The file has three sections, separated by a line containing only `---`:
+
+1. **Frontmatter** — metadata like `title`
+2. **Prompt** — what gets sent to your agent
+3. **Criteria** — one bullet per thing you want to check
+
+Run it:
 
 ```bash
-python -m agent_framework_evaluator web --env .env --host 127.0.0.1 --port 8123
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --case-file docs/guides/evaluator-examples/quickstart/cases/hello.md
+```
+
+You will see output like:
+
+```json
+{
+  "run_result": {
+    "status": "completed",
+    "message": "Hello Alice! Today is a wonderful day to learn something new..."
+  },
+  "llm_result": {
+    "score": 9,
+    "overall_verdict": "The response addresses Alice by name, contains a friendly greeting, mentions learning, maintains a positive tone, and is concise.",
+    "evaluation": [
+      { "criteria": "Addresses Alice by name", "passed": true, "reason": "Response opens with 'Hello Alice'" },
+      { "criteria": "Contains a greeting", "passed": true, "reason": "Uses 'Hello'" },
+      ...
+    ]
+  },
+  "average_score": 9.0,
+  "result_field": "message",
+  "selected_payload": "Hello Alice! Today is a wonderful day..."
+}
+```
+
+That is all you need to run your first evaluation.
+
+---
+
+## Understanding the case file format
+
+Every case file follows the same structure:
+
+```
+---
+<frontmatter>
+---
+<prompt>
+---
+<evaluation criteria>
+```
+
+### The frontmatter section
+
+Frontmatter contains `key: value` pairs.  Supported fields:
+
+| Field | Required | Default | Meaning |
+|-------|----------|---------|---------|
+| `title` | no | filename | Short human-readable name shown in reports |
+| `result_field` | no | `message` | Which field of the agent result to evaluate (see [Evaluating structured output](#evaluating-structured-output)) |
+| `code_evaluator` | no | none | Name of a programmatic evaluator function (see [Programmatic evaluators](#programmatic-evaluators)) |
+| `case_run_mode` | no | `standard` | Set to `no_callbacks` to prevent the agent from asking clarifying questions during batch runs |
+
+Example with all fields:
+
+```markdown
+---
+title: Extract order details
+result_field: parameters
+code_evaluator: check_order_schema
+case_run_mode: no_callbacks
+---
+```
+
+### The prompt section
+
+This is the instruction that gets sent to your agent verbatim.  Write it exactly as you would type it into a chat interface.  Be as specific as your real users would be — if your users often send vague instructions, your test prompts should sometimes be vague too.
+
+### The criteria section
+
+Each line that starts with `-` is one criterion.  The evaluator LLM checks each one independently and marks it passed or failed.  The score is roughly proportional to the number that pass (scaled 1–10), with the evaluator allowed to adjust by up to ±2 when something critical is missing or surprisingly good.
+
+**Writing good criteria is the most important skill in evaluation.**  Here are the principles:
+
+**Be specific and verifiable.**  The evaluator LLM can only check what it can read.  Vague criteria produce unreliable scores.
+
+| Weak | Strong |
+|------|--------|
+| The response is good | The response mentions the customer's order number |
+| The answer is correct | The answer states 1889 as the completion year |
+| Proper format | The response is a Markdown table with exactly three columns |
+
+**Cover both what should be present and what should not.**  Omission bugs are common.
+
+```markdown
+- The summary must mention the delivery delay
+- The summary must NOT include the customer's personal address
+- The summary must not add information not present in the original ticket
+```
+
+**Include format requirements explicitly.**
+
+```markdown
+- The response must be two sentences or fewer
+- The response must use bullet points, not prose
+- The response must be in JSON format with keys: name, email, date
+```
+
+**Add at least 4–5 criteria per case.**  The evaluator is instructed to check at least 8–10 things total, so it will supplement yours with its own reasoning — but having more explicit criteria gives you more control over what matters.
+
+**Think about edge cases and failure modes for your specific agent.**
+
+```markdown
+- The response must not hallucinate facts not provided in the context
+- The response must handle the misspelled word "teh" gracefully
+- The agent must not ask clarifying questions — it should make reasonable assumptions
+```
+
+---
+
+## Running multiple cases with an initializer
+
+For more than one or two cases, you need an **initializer** — a Python file that tells the evaluator where to find your case files and how to configure the run.
+
+Here is the minimal initializer from the quickstart example:
+
+**File:** `docs/guides/evaluator-examples/quickstart/init.py`
+
+```python
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from agent_framework_evaluator.case_markdown import MarkdownCaseLoader
+
+_HERE = Path(__file__).resolve().parent
+
+CASES_GLOB = "cases/*.md"    # relative to this file
+DEFAULT_AGENT = "root"       # the agent id to invoke
+DEFAULT_EVAL_MODEL = ""      # leave empty to use DEFAULT_MODEL from .env
+
+_LOADER = MarkdownCaseLoader(_HERE, CASES_GLOB)
+
+
+def get_test_cases() -> list[dict[str, Any]]:
+    return _LOADER.get_test_cases()
+```
+
+That is the complete file.  `MarkdownCaseLoader` discovers all `.md` files matching the glob, parses them, and caches the results.  The cache invalidates automatically when any file changes.
+
+**`get_test_cases()`** is the one function the evaluator always calls.  You must define it.
+
+### Naming and organising case files
+
+Case files are loaded in sorted order by filename.  Use numeric prefixes to control ordering:
+
+```
+cases/
+  01_happy_path.md
+  02_edge_case_empty_input.md
+  03_edge_case_long_input.md
+  04_regression_ticket_8823.md
+```
+
+Name your cases descriptively.  When a batch run fails at score 5, you want to immediately know which scenario failed without opening the file.
+
+### Running with an initializer
+
+```bash
+# Run all cases
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --initializer docs/guides/evaluator-examples/quickstart/init.py
+
+# Run only case 0 (0-based index, sorted by filename)
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --initializer docs/guides/evaluator-examples/quickstart/init.py \
+  --case 0
+
+# Verbose: show per-case run result details in the summary
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --initializer docs/guides/evaluator-examples/quickstart/init.py \
+  --verbose
+
+# Save full results to a JSON file
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --initializer docs/guides/evaluator-examples/quickstart/init.py \
+  --output results.json
+```
+
+A batch run prints a summary table:
+
+```
+Case                                  Score  Verdict
+------------------------------------  -----  -------
+Basic greeting                          9.0  PASS
+Capital cities — accuracy check         8.5  PASS
+```
+
+### All CLI flags
+
+| Flag | Meaning |
+|------|---------|
+| `--env FILE` | Path to `.env` (default: `.env`) |
+| `--initializer PATH` | Initializer `.py` — runs all cases unless `--case N` is set |
+| `--case-file PATH` | Standalone case `.md` — mutually exclusive with `--initializer` |
+| `--case N` | 0-based case index (requires `--initializer`) |
+| `--agent ID` | Override the agent id from the initializer |
+| `--output FILE` | Write full JSON result(s) to this file |
+| `--verbose` | Include per-case run result detail in stdout summary |
+
+---
+
+## Single-case output format
+
+When you run a single case (with `--case-file` or `--initializer --case N`), the output is a JSON object:
+
+```json
+{
+  "run_result": {
+    "status": "completed",
+    "message": "The agent's response text..."
+  },
+  "llm_result": {
+    "score": 8.5,
+    "overall_verdict": "All core requirements met; minor phrasing improvement possible.",
+    "evaluation": [
+      {
+        "criteria": "Mentions the customer's name",
+        "passed": true,
+        "reason": "Response opens with 'Dear Alice'"
+      },
+      {
+        "criteria": "Summary is two sentences or fewer",
+        "passed": false,
+        "reason": "Response contains four sentences."
+      }
+    ]
+  },
+  "code_result": null,
+  "average_score": 8.5,
+  "result_field": "message",
+  "selected_payload": "The agent's response text..."
+}
+```
+
+`average_score` averages `llm_result.score` and `code_result.score` when both are present, otherwise it equals the one that ran.
+
+`selected_payload` is the exact text that was sent to the evaluator LLM — it comes from the field named in `result_field` (default: `message`).
+
+---
+
+## Evaluating structured output
+
+Some agents return structured data rather than a prose response.  For example, an extraction agent might return:
+
+```json
+{
+  "status": "completed",
+  "message": "Extracted successfully.",
+  "parameters": {
+    "order_number": 4821,
+    "customer_name": "John Smith",
+    "order_date": "2024-03-15",
+    "amount": 149.99
+  }
+}
+```
+
+In this case, evaluating the `message` field ("Extracted successfully.") tells you nothing useful.  You want to evaluate `parameters`.
+
+Set `result_field: parameters` in the frontmatter:
+
+```markdown
+---
+title: Extract order details
+result_field: parameters
+---
+Extract the order details from: "Order #4821 placed by John Smith..."
+---
+- The result must contain an order_number field with value 4821
+- The result must contain a customer_name field with value "John Smith"
+- All four fields must be present in the structured output
+```
+
+The evaluator will serialise the `parameters` dict to JSON and send that to the scoring LLM.
+
+You can use dot notation for nested fields: `result_field: parameters.address.city`.
+
+Use `result_field: .` to evaluate the entire agent result as-is.
+
+**Important:** if the field you name does not exist in the agent result, the evaluator exits with an error (exit code 1) rather than silently scoring an empty payload.  This is intentional — a missing field is a bug, not a "no score" case.
+
+See the full example: [`evaluator-examples/multi-case/cases/03_result_field.md`](evaluator-examples/multi-case/cases/03_result_field.md)
+
+---
+
+## Preventing the agent from asking questions
+
+Agents sometimes ask clarifying questions instead of answering directly.  During interactive use that is fine, but in a batch evaluation run there is nobody to answer them — the run will hang.
+
+Add `case_run_mode: no_callbacks` to the frontmatter:
+
+```markdown
+---
+title: Summarise a ticket
+case_run_mode: no_callbacks
+---
+```
+
+This appends a mandatory instruction to the prompt telling the agent to make assumptions and not ask questions.  Use it whenever your agent might stall.
+
+---
+
+## Programmatic evaluators
+
+The LLM evaluator is good at open-ended quality judgement, but some checks are better done in code.  For example:
+
+- Does the output parse as valid JSON?
+- Is a numeric value within an acceptable range?
+- Does a URL in the response resolve to a 200 OK?
+
+Add a `code_evaluator` to your initializer:
+
+```python
+from collections.abc import Callable
+from typing import Any
+
+_EVALUATORS: dict[str, Callable[..., Any]] = {}
+
+def _evaluator(name: str):
+    def deco(fn):
+        _EVALUATORS[name] = fn
+        return fn
+    return deco
+
+@_evaluator("check_non_empty")
+def _check_non_empty(prompt: str, agent_message: str) -> dict[str, Any]:
+    ok = bool(str(agent_message).strip())
+    return {
+        "score": 8 if ok else 2,
+        "result": "Non-empty." if ok else "Empty response — fail.",
+        "evaluation": [
+            {
+                "criteria": "Agent produced non-empty output",
+                "passed": ok,
+                "reason": "ok" if ok else "Response was blank.",
+            }
+        ],
+    }
+```
+
+Pass the registry to the loader:
+
+```python
+_LOADER = MarkdownCaseLoader(_HERE, CASES_GLOB, _EVALUATORS)
+```
+
+Reference it in a case file's frontmatter:
+
+```markdown
+---
+title: Non-empty check
+code_evaluator: check_non_empty
+---
+Reply with a single word: hello
+---
+- The response should be non-empty
+- The response should be exactly one word
+```
+
+The code evaluator function receives:
+- `prompt: str` — the prompt that was sent to the agent
+- `agent_message: str` — the agent result (the field named by `result_field`)
+
+It must return a dict with the same shape as the LLM evaluator output: `score`, `result`, `evaluation`.
+
+When both a code evaluator and LLM criteria are present, both run independently.  `average_score` in the output averages the two scores.  If you only want code evaluation and no LLM scoring, leave the criteria section empty.
+
+The complete working example is in [`evaluator-examples/multi-case/init.py`](evaluator-examples/multi-case/init.py) and [`evaluator-examples/multi-case/cases/02_programmatic_check.md`](evaluator-examples/multi-case/cases/02_programmatic_check.md).
+
+---
+
+## Using the web UI
+
+The web UI is ideal for interactive debugging — running a single case, watching the agent's trace in real time, and checking evaluation results step by step before you commit to a full batch run.
+
+### Starting the server
+
+```bash
+python -m agent_framework_evaluator web --env .env
 ```
 
 | Flag | Default | Meaning |
@@ -63,207 +535,235 @@ python -m agent_framework_evaluator web --env .env --host 127.0.0.1 --port 8123
 | `--env` | `.env` | Path to environment file |
 | `--host` | `127.0.0.1` | Bind address |
 | `--port` | `8123` | Port |
-| `--open-browser` | off | Open the default browser after start |
+| `--open-browser` | off | Open the default browser automatically |
 
-Open **`http://127.0.0.1:8123/`** (or your chosen host/port).
+Open `http://127.0.0.1:8123/` in your browser.
 
-On load (and before **Run** if the socket dropped or the server restarted), the page:
+### Running a case interactively
 
-1. Calls **`GET /api/agents`** as a lightweight health check and to fill the agent **datalist**.
-2. Calls **`POST /api/sessions`** with body **`{}`** — this uses **`env_path: ".env"`** relative to the server process unless you override it in the JSON body. For a different file, use the HTTP API manually or start the server from a cwd where `.env` is correct.
-3. Opens a **WebSocket** to **`/ws/{session_id}`** for **live traces** and **outbox** push. **User replies are not tied to the socket:** they are submitted with **`POST /api/sessions/{id}/user-input`** (see §5.3).
+1. **Agent field** — type the agent id you want to test (e.g. `root`).  The field autocompletes from your agent catalog.
+2. **Prompt field** — paste the prompt from a case file (or type a new one).
+3. Click **Run**.
 
----
+The **Spans** pane on the right shows a live trace of everything that happened: each LLM call, each tool invocation, each sub-agent, and any decisions the agent made.  This is invaluable for understanding why an agent produced a particular output.
 
-## 5. Using the UI
+The **Conversation** pane shows the final result and any messages.
 
-### 5.1 Left rail
+### Running a batch from the UI
 
-- **Agent** — type an agent id (autocomplete from catalog). This is the id passed to **`run_agent`**.
-- **Setup File** — optional filesystem path to a **`setup.py`** (see §7). When the field **changes**, the UI fetches **`GET /api/setup-template?path=...`** and, if the prompt area is empty, fills it from **`PROMPT_TEMPLATE`** or **`get_prompt_template()`**.
-- **Mode** — “Test Set” is reserved; **Single Run** is what the Run button uses.
+Open an initializer in the UI.  The **Run all cases** button streams results progressively — you see each case appear as it finishes, which is much faster to review than waiting for a full batch to complete before seeing anything.
 
-### 5.2 Prompt and Run
+### Evaluating a result
 
-Enter the user instruction in **Prompt**, then **Run**. If the WebSocket is closed (e.g. after a backend restart), the UI **re-establishes** a session: health check → optional close of the old session id → **`POST /api/sessions`** → new **`/ws/{session_id}`**, then the run proceeds.
+After a run, click **Evaluate**.  The UI sends the stored result to the evaluator LLM using the criteria from the case file.  You will see the score, per-criteria pass/fail, and the verdict appear in the Conversation pane.
 
-The client sends a WebSocket message:
+**Tip:** set the log-level dropdown to `debug` before evaluating.  The Spans pane will show the full evaluator input (system prompt, user prompt, criteria, agent result) and the raw LLM response.  This is the fastest way to diagnose a surprising score.
 
-```json
-{ "type": "run", "agent_id": "<id>", "prompt": "<text>", "setup_path": "<optional path>" }
-```
+### Debugging with traces
 
-**Response** and **trace** stream back on the same socket. The **Spans** pane groups events by **agent call**: each `runtime.audit.agent_call_started` opens a collapsible frame (collapsed by default) with a **spinner** while the run is in progress; when `runtime.agent_finished` arrives, the spinner is replaced by the **status** (e.g. completed / failed) and a color cue. Child events for that run (LLM, decisions, tools, etc.) are nested inside the frame. **Sub-agents** nest under the parent because the audit payload includes **`parent_run_id`** (the caller’s `run_id`), which keeps the tree correct even if multiple sub-agents are **forked in parallel** and finish out of order. Session-level rows (`runtime.session_started` / `finished`) stay at the root. Use the **channel** checkboxes to show or hide **runtime**, **llm**, **log**, and **user** events in both panes. The **log level** dropdown filters `channel=log` rows with the framework logging levels (`error`, `warning`, `info`, `debug`) and defaults to `warning`. Set it to `debug` before evaluation to show evaluator input, full evaluator LLM prompt, and evaluator result diagnostics in the Trace pane.
+The channel checkboxes control what appears in the Spans pane:
 
-### 5.3 Clarifications
+| Channel | What it shows |
+|---------|--------------|
+| `runtime` | Agent start/finish, decisions, tool calls |
+| `llm` | Every LLM request and response |
+| `tool` | Tool execution details |
+| `log` | Python log messages |
+| `user` | User-facing messages |
 
-When the runtime needs input, **`WebUserCommunication`** enqueues an outbox item (e.g. **`prompt`**, **`question`**, **`confirmation`**, **`permission`**) that includes a **`prompt_id`** (UUID). The **Conversation** pane shows the request; you type in the **Reply** box at the bottom.
+If your agent is producing a wrong answer, turn on the `llm` channel at `debug` level and inspect the first LLM request — check whether the system prompt is being assembled correctly.  Most prompt issues are immediately visible there.
 
-**Submit answers over HTTP** (works even if the WebSocket disconnected after the prompt appeared):
+### Answering clarification requests
+
+If your agent asks a clarifying question during a run, the **Conversation** pane will show the question with a **Reply** box.  Type your answer and press Enter.  You can also answer over HTTP if the WebSocket disconnects:
 
 ```http
 POST /api/sessions/{session_id}/user-input
 Content-Type: application/json
 
-{ "prompt_id": "<uuid>", "text": "<answer>" }
+{ "prompt_id": "<uuid shown in the UI>", "text": "Your answer" }
 ```
-
-Use **`"text": null`** to cancel that wait if the server still expects the same **`prompt_id`**.
-
-Optionally, the UI can also send a legacy WebSocket message (omit **`prompt_id`** to match the current wait):
-
-```json
-{ "type": "user_input", "text": "<answer>", "prompt_id": "<optional uuid>" }
-```
-
-### 5.4 Leaving the page
-
-**`beforeunload`** sends **`POST /api/sessions/{id}/close`** with **`keepalive`** so **suite teardown** runs (see architecture doc). The WebSocket **`finally`** path also finalizes the session when the socket disconnects; teardown is **idempotent** per runner.
 
 ---
 
-## 6. Headless CLI
+## Realistic example walkthrough
 
-### 6.1 `run` — single agent invocation
+The [`evaluator-examples/realistic/`](evaluator-examples/realistic/) folder contains three cases that exercise common real-world quality concerns:
+
+**01 — Summarise a support ticket** ([`cases/01_summarize.md`](evaluator-examples/realistic/cases/01_summarize.md))**:**  Tests that the agent summarises accurately, strips emotional language, and stays within two sentences.
+
+**02 — Reformat data as a table** ([`cases/02_format_check.md`](evaluator-examples/realistic/cases/02_format_check.md))**:**  Tests format compliance (Markdown table), completeness (all four rows), and character encoding.
+
+**03 — No hallucination** ([`cases/03_no_hallucination.md`](evaluator-examples/realistic/cases/03_no_hallucination.md))**:**  Tests that the agent answers only from provided context and does not invent facts.
+
+Run them all:
+
+```bash
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --initializer docs/guides/evaluator-examples/realistic/init.py \
+  --verbose
+```
+
+These cases all use `case_run_mode: no_callbacks` to prevent the agent from asking questions in batch mode.
+
+---
+
+## Setup modules (advanced)
+
+A **setup module** is an optional Python file that can register extra tools, populate a prompt template, and hook into the lifecycle of a test suite.  Most users will not need this, but it is useful for:
+
+- Registering in-memory mock tools that avoid side effects during testing
+- Seeding a database before a test run and cleaning up after
+- Dynamically generating the prompt from a template based on test case parameters
+
+Create a `setup.py` next to your initializer:
+
+```python
+def register(host, session_context):
+    """Runs once when the host is created.  Register tools here."""
+    from my_tools import MockEmailTool
+    host.tool_registry.register(MockEmailTool())
+
+def suite_setup(session_context):
+    """Runs once at the start of a session."""
+    print("Starting test suite...")
+
+def test_setup(case_dict, session_context):
+    """Runs before each individual case."""
+    pass
+
+def test_teardown(case_dict, session_context):
+    """Runs after each individual case."""
+    pass
+
+def suite_teardown(session_context):
+    """Runs when the session closes."""
+    print("Suite complete.")
+
+# Optional: pre-fill the prompt field in the web UI
+PROMPT_TEMPLATE = "Summarise the following ticket:\n\n{ticket_text}"
+```
+
+Pass it on the CLI:
+
+```bash
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --initializer init.py \
+  --setup setup.py
+```
+
+Or select it in the **Setup File** field in the web UI.
+
+---
+
+## Tracing and saving run logs
+
+### Saving traces to files (headless)
+
+```bash
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --initializer init.py \
+  --trace-jsonl logs/run.jsonl
+```
+
+The JSONL file contains one event per line and can be opened with `trace_viewer.html` (bundled in the package).
+
+### The `run` subcommand — single agent invocation
+
+The `evaluate` subcommand always calls the evaluator LLM.  If you just want to run the agent without scoring, use `run`:
 
 ```bash
 python -m agent_framework_evaluator run \
   --env .env \
   --agent root \
-  --prompt "Your instruction"
-```
-
-| Flag | Required | Meaning |
-|------|----------|---------|
-| `--prompt` or `--prompt-file` | one of them | Instruction text |
-| `--setup` | no | Path to setup `.py` |
-| `--output` | no | Write JSON result to file instead of only stdout |
-| `--trace-jsonl` | no | Append all unified trace events to a JSONL file |
-| `--trace-llm-dir` | no | Write **`llm`** channel events to per-agent logs under this directory |
-
-Stdout (or **`--output`**) is JSON like:
-
-```json
-{
-  "status": "completed",
-  "message": "..."
-}
-```
-
-### 6.2 `evaluate` — run and score test cases
-
-Run **all** cases from an initializer, **one** case by index, or a **standalone `.md`** file — entirely server-side, no web UI required.
-
-```bash
-# All cases in an initializer
-python -m agent_framework_evaluator evaluate \
-  --env .env --initializer path/to/init.py
-
-# Single case by 0-based index
-python -m agent_framework_evaluator evaluate \
-  --env .env --initializer path/to/init.py --case 0
-
-# Standalone .md case file (result_field and criteria from frontmatter)
-python -m agent_framework_evaluator evaluate \
-  --env .env --case-file path/to/case.md
-
-# Save full JSON and show per-case run details
-python -m agent_framework_evaluator evaluate \
-  --env .env --initializer path/to/init.py --output results.json --verbose
+  --prompt "Your instruction here"
 ```
 
 | Flag | Meaning |
 |------|---------|
-| `--initializer PATH` | Initializer `.py`; runs all cases unless `--case N` is set |
-| `--case-file PATH` | Standalone case `.md` (mutually exclusive with `--initializer`) |
-| `--case N` | 0-based case index (requires `--initializer`) |
-| `--agent ID` | Override agent id (default: initializer `DEFAULT_AGENT` or `root`) |
-| `--output FILE` | Write full JSON result(s) to file |
-| `--verbose` | Batch only: include per-case run result in stdout summary |
-| `--env FILE` | Path to `.env` (default: `.env`) |
-
-**Single-case output** (JSON, stdout or `--output`):
-
-```json
-{
-  "run_result": { "status": "completed", "message": "..." },
-  "llm_result":  { "score": 8.5, "overall_verdict": "...", "evaluation": [...] },
-  "code_result": null,
-  "average_score": 8.5,
-  "selected_payload": "<text actually sent to the evaluator>",
-  "result_field": "message"
-}
-```
-
-**Batch output** — summary table on stdout; `--output` writes a JSON array with one object per case.
-
-**`result_field`** is read from the case frontmatter (or defaults to `message`). The server selects the field from the agent result and raises an error (exit 1) if the field is not present — there is no silent fallback to an empty payload.
+| `--prompt TEXT` or `--prompt-file PATH` | Instruction to the agent |
+| `--setup PATH` | Optional setup module |
+| `--output FILE` | Write JSON result to file |
+| `--trace-jsonl FILE` | Append trace events to JSONL |
+| `--trace-llm-dir DIR` | Write LLM channel events to per-agent log files |
 
 ---
 
-## 7. Setup module (optional)
+## Iterating on your evaluation suite
 
-A setup file is a normal Python module loaded from disk. Supported **optional** callables:
+Here is a practical workflow for building up a test suite from scratch:
 
-| Hook | When |
-|------|------|
-| `register(host, session_context)` | After host creation; use to register tools or configure host |
-| `suite_setup(session_context)` | Once per session/suite scope |
-| `test_setup(case_dict, session_context)` | Before each run |
-| `test_teardown(case_dict, session_context)` | After each run |
-| `suite_teardown(session_context)` | When the session is closed / finalized |
+**1. Start with one happy-path case.**  Pick the most common input your agent will receive and write 5–8 criteria for it.  Run it against your current agent.  If it scores below 7, fix the agent before adding more cases.
 
-Expose a prompt default via **`PROMPT_TEMPLATE`** (string) and/or **`get_prompt_template()`**.
+**2. Add edge cases one at a time.**  Think about what could go wrong: empty input, very long input, input with special characters, ambiguous phrasing, input that is close to a failure mode.  Add one case per scenario.
 
-Full contract: [§9 Setup Module Contract](../architecture/agent-evaluator-web-runtime.md#9-setup-module-contract).
+**3. Add regression cases for bugs you fix.**  Every time you find and fix a bug, add a case that would have caught it.  Name it with the bug or ticket reference: `04_regression_ticket_8823.md`.
 
----
+**4. Use `no_callbacks` for batch runs.**  Most cases should use `case_run_mode: no_callbacks` unless you are specifically testing the agent's ability to ask good clarifying questions.
 
-## 8. Tracing and logs
+**5. Review surprising scores.**  When a case scores lower or higher than expected, run it in the web UI with log level `debug` and look at the full evaluator input.  Common causes:
+- The criteria are too vague (the evaluator cannot tell if they are met)
+- The `result_field` is wrong (you are evaluating the wrong part of the output)
+- The agent's system prompt changed and now does something different
 
-- **In the UI** — events are whatever the runner publishes to **`CompositeRuntimeTracer`** (runtime, user, LLM if enabled, **`log`** channel for Python logging when wired). The evaluator attaches the framework log bridge to `agent_framework` and `agent_framework_evaluator` loggers, so regular Python logging records are normalized into structured trace events. Plain `log.record` rows render as compact log lines; structured records with `trace_kind` / `trace_payload` render as expandable trace rows. The span view is **hierarchy-first** (agent-call frames + `parent_run_id`), not a flat `span_id` parent chain.
-- **Headless** — use **`--trace-jsonl`** / **`--trace-llm-dir`** on the evaluator CLI.
-- **Main framework CLI** — unified JSONL and optional Python logging mirror:
-
-  ```bash
-  python -m agent_framework --runtime-trace-jsonl ./logs/run.jsonl --instruction "..."
-  python -m agent_framework --runtime-trace-jsonl ./logs/run.jsonl --runtime-trace-python-logs --instruction "..."
-  ```
-
-- **Audit JSONL** (`logs/trace-*.jsonl`) and **unified** traces are **separate** pipelines; see [Tracing & Evaluation](../architecture/tracing-evaluation.md).
+**6. Aim for a "baseline" batch that all passes at 8+.**  Once you have that, you can run the batch after every change to your agent and immediately see regressions.
 
 ---
 
-## 9. HTTP API (reference)
+## HTTP API (reference)
+
+If you are building tooling around the evaluator or calling it programmatically, here are the relevant endpoints:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/` | Static UI |
-| `POST` | `/api/sessions` | Body: `{ "env_path": ".env" }` (optional). Returns `{ "session_id" }`. |
-| `POST` | `/api/evaluate-result` | Score the last run result. Body: `session_id`, `evaluator_prompt`, optional `result_field` (default `message`), optional `log_level`. Reads from session `last_run_result`; returns **400** if the session has no run result yet or the field is missing. |
-| `POST` | `/api/evaluate-case` | Score one initializer case. Body: `session_id`, `initializer`, `case_index`, optional `log_level`. `result_field` comes from the case frontmatter; agent result read from session `last_run_result`. Returns **400** on missing session result or missing field. |
-| `POST` | `/api/evaluate-batch` | Run and evaluate all (or selected) initializer cases server-side. Body: `session_id`, `initializer`, optional `case_indices` list, optional `log_level`. Streams **NDJSON** — one line per case with `case_index`, `title`, `llm_result`, `code_result`, `average_score` (or `error`). |
-| `POST` | `/api/sessions/{id}/close` | Finalize session; **`suite_teardown`** if defined; cancels a pending input wait. |
-| `POST` | `/api/sessions/{id}/user-input` | Body: `{ "prompt_id": "<uuid>", "text": "<string or null>" }`. Delivers input for the active wait; **`409`** if nothing is waiting or **`prompt_id`** does not match. |
-| `GET` | `/api/agents?env_path=.env` | List agent ids (probe host uses catalog discovery). |
-| `GET` | `/api/setup-template?path=` | Safe load of setup module; returns `{ "template": "..." }`. |
-| WebSocket | `/ws/{session_id}` | Traces, outbox push, **`run`**; optional **`user_input`** (HTTP preferred for replies). |
+| `POST` | `/api/sessions` | Create a session. Body: `{ "env_path": ".env" }`. Returns `{ "session_id" }`. |
+| `POST` | `/api/evaluate-result` | Score the last run. Body: `session_id`, `evaluator_prompt`, optional `result_field`, optional `log_level`. Returns 400 if no run result or field missing. |
+| `POST` | `/api/evaluate-case` | Score one initializer case. Body: `session_id`, `initializer`, `case_index`, optional `log_level`. |
+| `POST` | `/api/evaluate-batch` | Run and score all cases. Body: `session_id`, `initializer`, optional `case_indices`, optional `log_level`. Streams NDJSON — one line per case. |
+| `POST` | `/api/sessions/{id}/close` | Finalize session; runs `suite_teardown`. |
+| `POST` | `/api/sessions/{id}/user-input` | Deliver input for an active clarification wait. Body: `{ "prompt_id": "<uuid>", "text": "answer" }`. |
+| `GET` | `/api/agents` | List available agent ids. |
+| `WebSocket` | `/ws/{session_id}` | Live trace stream; send `{ "type": "run", ... }` to start a run. |
+
+The evaluate endpoints always read the agent result from the **server-side session** (`last_run_result`).  They do not accept an agent result in the request body — you must run the agent first.
 
 ---
 
-## 10. Troubleshooting
+## Troubleshooting
 
-| Issue | What to check |
-|-------|----------------|
-| `ModuleNotFoundError: fastapi` / `uvicorn` | Install **`agent_framework[web]`** or **`[dev]`**. |
-| Empty agent list | `.env` path, **`AGENT_DIRECTORY`**, run **`GET /api/agents`** with correct **`env_path`**. |
-| Run fails immediately | API keys, model id, MCP optional; see server stderr. |
-| No trace nodes | Ensure agents use behaviors / hooks that emit activity; **`NullRuntimeTracer`** is not used in evaluator sessions (a composite tracer is always attached). |
+| Symptom | What to check |
+|---------|--------------|
+| `ModuleNotFoundError: fastapi` | Install `agent_framework[web]` or `[dev]`. |
+| Empty agent list in the web UI | Check `.env` path and `AGENT_DIRECTORY`.  Try `GET /api/agents?env_path=.env` directly. |
+| Run fails immediately | Check API key, model name, and server stderr. |
+| Agent hangs waiting for input | Add `case_run_mode: no_callbacks` to the case frontmatter. |
+| Score is 0 with "Evaluator failed" verdict | The evaluator LLM call failed.  Set log level to `debug` and look at the evaluator trace for the error. |
+| Score is surprisingly low | Open the case in the web UI, set log level `debug`, run, and click Evaluate.  Check `selected_payload_preview` in the trace — confirm the evaluator received the text you expected. |
+| `result field 'X' not found` error | The `result_field` in frontmatter does not match the agent's output structure.  Check the agent result in the `run_result` field of the CLI output. |
+| Case file not discovered | Check the `CASES_GLOB` pattern in your initializer.  The glob is relative to the initializer file's directory.  Run `python -c "from pathlib import Path; print(list(Path('path/to/init').parent.glob('cases/*.md')))"` to debug. |
 
 ---
 
-## 11. Further reading
+## Examples reference
+
+All examples live in [`evaluator-examples/`](evaluator-examples/) next to this file:
+
+| Folder | What it demonstrates |
+|--------|---------------------|
+| [`quickstart/`](evaluator-examples/quickstart/) | Minimal two-case setup: a greeting and a factual question |
+| [`multi-case/`](evaluator-examples/multi-case/) | LLM scoring, programmatic code evaluator, and `result_field` for structured output |
+| [`realistic/`](evaluator-examples/realistic/) | Real-world scenarios: summarisation, table formatting, hallucination resistance |
+
+Start with `quickstart/` to verify your setup works, then copy `multi-case/` as the base for your own test suite.
+
+---
+
+## Further reading
 
 - [Agent Evaluator & Web Runtime (architecture)](../architecture/agent-evaluator-web-runtime.md)
 - [Tracing & Evaluation](../architecture/tracing-evaluation.md)
 - [Host & Orchestration](../architecture/host-orchestration.md)
+- [Using the agent framework](using-agent-framework.md)
