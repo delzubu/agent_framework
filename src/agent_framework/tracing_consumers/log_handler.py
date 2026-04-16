@@ -25,6 +25,8 @@ class LoggingTraceHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            if bool(getattr(record, "trace_skip_bridge", False)):
+                return
             exc_text = None
             if record.exc_info:
                 exc_text = "".join(traceback.format_exception(*record.exc_info))

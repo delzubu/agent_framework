@@ -191,7 +191,7 @@ def test_run_evaluation_emits_debug_callback(monkeypatch: pytest.MonkeyPatch, tm
     assert llm_event["payload"]["messages"]
 
 
-def test_evaluator_log_callback_filters_by_level() -> None:
+def test_evaluator_log_callback_emits_structured_trace_events() -> None:
     from agent_framework_evaluator.app import _make_evaluator_log_callback
     from agent_framework.agent_event_publisher import agent_events
     from agent_framework.tracing import TraceContext
@@ -217,9 +217,14 @@ def test_evaluator_log_callback_filters_by_level() -> None:
             assert callback is not None
             callback({"level": "debug", "kind": "evaluator.input_prepared", "payload": {}})
             callback({"level": "warning", "kind": "evaluator.failed", "payload": {"error": "x"}})
-        assert len(tracer.events) == 1
-        assert tracer.events[0].kind == "evaluator.failed"
+        assert [event.kind for event in tracer.events] == [
+            "evaluator.input_prepared",
+            "evaluator.failed",
+        ]
+        assert tracer.events[0].level == "debug"
+        assert tracer.events[1].level == "warning"
         assert tracer.events[0].context.session_id == "sess-1"
+        assert tracer.events[1].context.session_id == "sess-1"
 
         with active_tracer_scope(debug_tracer, TraceContext(session_id="sess-2")):
             debug_callback = _make_evaluator_log_callback(

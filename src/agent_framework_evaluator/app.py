@@ -111,9 +111,40 @@ def _emit_structured_log(
             "trace_kind": kind,
             "trace_title": title,
             "trace_payload": payload,
+            "trace_skip_bridge": True,
         },
     )
     logger.handle(record)
+
+
+def _publish_structured_log_event(
+    *,
+    tracer: Any | None,
+    session_id: str,
+    level: str,
+    kind: str,
+    title: str,
+    summary: str,
+    payload: dict[str, Any],
+) -> None:
+    if tracer is None:
+        return
+    tracer.publish(
+        make_trace_event(
+            channel="log",
+            level=_normalize_log_level(level),  # type: ignore[arg-type]
+            kind=kind,
+            title=title,
+            summary=summary,
+            span_id=session_id or None,
+            context=TraceContext(session_id=session_id) if session_id else TraceContext(),
+            payload={
+                "logger_name": _EVALUATOR_LOGGER.name,
+                "message": summary,
+                **payload,
+            },
+        )
+    )
 
 
 def _make_evaluator_log_callback(
@@ -122,25 +153,35 @@ def _make_evaluator_log_callback(
     session_id: str,
     configured_level: str,
 ) -> EvaluatorLogCallback | None:
-    """Build a callback that emits structured evaluator diagnostics as Python logs."""
+    """Build a callback that emits evaluator diagnostics to logging and trace."""
     if tracer is None:
         return None
-    selected_level = _normalize_log_level(configured_level)
+    _normalize_log_level(configured_level)
 
     def emit(event: dict[str, Any]) -> None:
         level = str(event.get("level") or "info").strip().lower()
         if level not in _LOG_LEVEL_ORDER:
             level = "info"
-        if not _level_enabled(level, selected_level):
-            return
         raw_payload = event.get("payload")
         payload = raw_payload if isinstance(raw_payload, dict) else {}
+        kind = str(event.get("kind") or "evaluator.log")
+        title = str(event.get("title") or "Evaluator")
+        summary = str(event.get("summary") or event.get("title") or "Evaluator")
         _emit_structured_log(
             _EVALUATOR_LOGGER,
             level=level,
-            message=str(event.get("summary") or event.get("title") or "Evaluator"),
-            kind=str(event.get("kind") or "evaluator.log"),
-            title=str(event.get("title") or "Evaluator"),
+            message=summary,
+            kind=kind,
+            title=title,
+            payload=payload,
+        )
+        _publish_structured_log_event(
+            tracer=tracer,
+            session_id=session_id,
+            level=level,
+            kind=kind,
+            title=title,
+            summary=summary,
             payload=payload,
         )
 
