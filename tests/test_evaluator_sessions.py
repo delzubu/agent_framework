@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent_framework.agents.agent_decision import AgentDecision
 from agent_framework.agent import AgentResult
 from agent_framework.tracing import TraceContext, TraceEvent
 from agent_framework_evaluator.runtime.debug_subscriber import DebuggerSubscriber
@@ -51,6 +52,33 @@ def test_session_runner_returns_final_message(tmp_path: Path) -> None:
     result = runner.run_once(agent_id="root", prompt="hello", setup_path=setup_path)
     assert result["status"] == "completed"
     assert result["message"] == "root:hello"
+
+
+class _FakeStructuredHost:
+    trace_context_overlay = None
+
+    def run_agent(self, agent_id: str, initial_instruction: str):
+        del agent_id, initial_instruction
+        decision = AgentDecision(
+            kind="final_message",
+            message="human text",
+            parameters={"status": "ready", "declared_intents": [{"actor_id": "actor.player"}]},
+        )
+        return AgentResult(status="completed", message=decision.message, decision=decision)
+
+
+def test_session_runner_returns_decision_parameters(tmp_path: Path) -> None:
+    setup_path = tmp_path / "setup.py"
+    setup_path.write_text("", encoding="utf-8")
+    runner = SessionRunner(env_path=tmp_path / ".env", host_factory=lambda **_: _FakeStructuredHost())
+    result = runner.run_once(agent_id="root", prompt="hello", setup_path=setup_path)
+    assert result["status"] == "completed"
+    assert result["message"] == "human text"
+    assert result["kind"] == "final_message"
+    assert result["parameters"] == {
+        "status": "ready",
+        "declared_intents": [{"actor_id": "actor.player"}],
+    }
 
 
 def test_session_runner_suite_teardown_if_any(tmp_path: Path) -> None:

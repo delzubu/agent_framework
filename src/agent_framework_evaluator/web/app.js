@@ -433,9 +433,13 @@ function clearStoredAgentResult() {
 }
 
 function hasAgentOutputForEval() {
-  return (
-    lastAgentResultPayload != null && agentMessageOnly(lastAgentResultPayload).trim().length > 0
-  );
+  if (lastAgentResultPayload == null) return false;
+  if (agentMessageOnly(lastAgentResultPayload).trim().length > 0) return true;
+  if (typeof lastAgentResultPayload !== "object") return false;
+  const p = /** @type {Record<string, unknown>} */ (lastAgentResultPayload).parameters;
+  if (p == null) return false;
+  if (typeof p === "string") return p.trim().length > 0;
+  return true;
 }
 
 function updateEvaluateUi() {

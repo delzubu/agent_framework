@@ -19,6 +19,25 @@ HostFactory = Callable[..., Any]
 _LOGGER = logging.getLogger(__name__)
 
 
+def _agent_result_payload(result: AgentResult) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "status": result.status,
+        "message": result.message,
+    }
+    if result.decision is not None:
+        payload["kind"] = result.decision.kind
+        payload["parameters"] = dict(result.decision.parameters)
+        if result.decision.subagent_id is not None:
+            payload["subagent_id"] = result.decision.subagent_id
+        if result.decision.tool_name is not None:
+            payload["tool_name"] = result.decision.tool_name
+        if result.decision.callback_intent is not None:
+            payload["intent"] = result.decision.callback_intent
+        if result.decision.skill_name is not None:
+            payload["skill_name"] = result.decision.skill_name
+    return payload
+
+
 def _wire_one_shot_capture(host: Any, callback: Callable[[Any], None]) -> None:
     """Invoke ``callback`` once on the first ``on_request_trace`` (LLM request), then chain."""
     try:
@@ -225,6 +244,7 @@ class SessionRunner:
             raise
         finally:
             host.trace_context_overlay = prev_overlay
+        payload = _agent_result_payload(result)
         if runtime_tracer is not None:
             runtime_tracer.publish(
                 make_trace_event(
@@ -261,11 +281,11 @@ class SessionRunner:
                     "trace_payload": {
                         "session_id": sid,
                         "agent_id": resolved_agent_id,
-                        "result": {"status": result.status, "message": result.message},
+                        "result": payload,
                     },
                 },
             )
-        return {"status": result.status, "message": result.message}
+        return payload
 
     def suite_teardown_if_any(self) -> None:
         """Invoke ``suite_teardown`` on the last loaded setup module, if present."""
