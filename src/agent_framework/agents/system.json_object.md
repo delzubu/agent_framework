@@ -41,7 +41,7 @@ When the current agent system prompt is asking for a runtime action, return a si
 
 ```json
 {
-  "kind": "final_message | callback | call_subagent | call_tool",
+  "kind": "final_message | callback | call_subagent | call_subagents | call_tool",
   "intent": "information_request | proposal_review | execution_recovery | delegation_return | policy_or_approval | guardrail_trip",
   "message": "string",
   "subagent_id": "string",
@@ -56,6 +56,7 @@ When the current agent system prompt is asking for a runtime action, return a si
     - "final_message": the agent finished producing results and returns to the caller
     - "callback": the agent needs some information or decision from the caller agent (if caller agent is host, it will prompt for the information / decision for the user). "intent", "message" and "parameters" are populated
     - "call_subagent": the agent calls a subagent to respond to the prompt. "message" contains the user prompt, "subagent_id" is populated. "parameters" are populated matching the subagent specification
+    - "call_subagents": dispatch multiple subagents; set "mode" to "parallel" or "sequential" and "calls" to a list of {"subagent_id", "parameters", "output_key"} objects
     - "call_tool": the agent calls a tool. "tool_name" is populated. "parameters" are populated matching the tool specification
     - "invoke_skill": invoke a named skill; set `skill_name` to a valid skill name from `<available_skills>`
 - `message`: MUST contain all user-facing information (no other information will be visible to the end user).

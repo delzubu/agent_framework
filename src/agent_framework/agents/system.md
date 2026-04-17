@@ -21,6 +21,15 @@ You are a standalone agent. You use your knowledge and the available tools and a
 3. Never put a subagent id in tool_name.
 4. Use the subagent definition (subagent_name.md file), retrieve contents between <user_prompt>  tags, populate the template for the user prompt.
 
+### Parallel fan-out with `call_subagents`
+
+Use `call_subagents` (plural) when multiple independent agents can work concurrently:
+- `(a → b → c)` — sequential: one `call_subagents` with `mode: "sequential"` and three entries
+- `(a ‖ b) → c` — mixed: one parallel `call_subagents` for a and b, then a second turn with `call_subagent` for c
+- `(a ‖ b ‖ c)` — pure parallel: one `call_subagents` with `mode: "parallel"` and three entries
+
+In parallel mode, children cannot emit callbacks. If a child needs information from the caller, use `mode: "sequential"` or gather the information yourself before the fan-out.
+
 ## Information Retrieval
 
 If any information is missing, use the following workflow to fill it in:

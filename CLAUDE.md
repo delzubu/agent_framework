@@ -90,7 +90,8 @@ Each agent runs a loop: call model → parse `AgentDecision` → act → repeat.
 Decision kinds (closed set; any other top-level `kind` after alias normalization is invalid):
 - `final_message` — agent is done, returns `AgentResult`
 - `call_tool` — invoke a registered tool, add result to context
-- `call_subagent` — delegate to a child agent via `host.call_subagent`
+- `call_subagent` — delegate to a single child agent via `host.call_subagent`
+- `call_subagents` — dispatch a batch of child agents (parallel or sequential) via `host.call_subagent_batch`; each entry specifies `subagent_id`, `parameters`, `output_key`
 - `callback` — escalate to caller (human or parent agent)
 - `invoke_skill` — invoke a named skill from the catalog
 
@@ -140,6 +141,11 @@ COMMANDS_DIRECTORIES=path/a,path/b     # multiple commands directories (comma-se
 # MCP
 MCP_CONFIG_PATH=path/to/mcp.json       # explicit .mcp.json path (default: auto-discover)
 MCP_ENABLED=true                        # set false to disable MCP entirely
+
+# Parallel sub-agents
+SUBAGENT_BATCH_TIMEOUT_SECONDS=300     # wall-clock deadline per call_subagents batch (default: 300)
+SUBAGENT_MAX_PARALLELISM=8             # max entries per call_subagents decision (default: 8)
+SUBAGENT_BATCH_MAX_CALLBACK_ROUNDS=5   # max callback-resolve-resume rounds per batch (default: 5)
 ```
 
 ### Extensibility

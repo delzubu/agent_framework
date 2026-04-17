@@ -41,7 +41,15 @@
       "Read(//tmp/**)",
       "Bash(\"C:\\\\Users\\\\bmisa\\\\src\\\\agent_framework\\\\tests\\\\test_framework_runtime.py\":*)",
       "Skill(commit-commands:commit)",
-      "Bash(gh pr:*)"
+      "Bash(gh pr:*)",
+      "WebFetch(domain:docs.claude.com)",
+      "WebFetch(domain:www.anthropic.com)",
+      "WebFetch(domain:openai.github.io)",
+      "WebFetch(domain:google.github.io)",
+      "WebFetch(domain:claude.com)",
+      "WebFetch(domain:adk.dev)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:trio.readthedocs.io)"
     ]
   }
 }

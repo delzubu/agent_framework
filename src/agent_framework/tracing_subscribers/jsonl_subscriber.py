@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import asdict
 from pathlib import Path
 
@@ -13,10 +14,12 @@ class JsonlTraceSubscriber:
     def __init__(self, output_path: Path) -> None:
         self.output_path = Path(output_path)
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     def consume(self, event: TraceEvent) -> None:
-        with self.output_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(asdict(event), ensure_ascii=False) + "\n")
+        with self._lock:
+            with self.output_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(asdict(event), ensure_ascii=False) + "\n")
 
 
 __all__ = ["JsonlTraceSubscriber"]
