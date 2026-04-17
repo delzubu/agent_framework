@@ -122,6 +122,8 @@ class AgentHost:
     # Checkpoint storage for blocked parallel children (run_id → (messages, timestamp)).
     _checkpoints: dict[str, tuple[list, float]] = field(default_factory=dict, repr=False)
     _checkpoint_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _timed_out_run_ids: set[str] = field(default_factory=set, repr=False)
+    _timed_out_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def audit_tracer(self) -> InMemoryAuditTracer | None:
@@ -920,7 +922,14 @@ class AgentHost:
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, run_id: str, messages: list[dict]) -> None:
-        """Persist conversation state for a blocked parallel child."""
+        """Persist conversation state for a blocked parallel child.
+
+        Skipped if the run was already marked as timed-out by the parent batch
+        (orphaned thread finishing after parent abandoned the wait).
+        """
+        with self._timed_out_lock:
+            if run_id in self._timed_out_run_ids:
+                return
         with self._checkpoint_lock:
             self._checkpoints[run_id] = (list(messages), time.monotonic())
 
@@ -936,12 +945,20 @@ class AgentHost:
             self._checkpoints.pop(run_id, None)
 
     def cleanup_checkpoints(self, ttl_seconds: float = 3600.0) -> int:
-        """Remove checkpoints older than ttl_seconds.  Returns count removed."""
+        """Remove checkpoints older than ttl_seconds.  Returns count removed.
+
+        Also purges the timed-out run-id tombstone set so it doesn't grow
+        unboundedly when many batches have been executed.
+        """
         cutoff = time.monotonic() - ttl_seconds
         with self._checkpoint_lock:
             expired = [k for k, (_, ts) in self._checkpoints.items() if ts < cutoff]
             for k in expired:
                 del self._checkpoints[k]
+        # Best-effort tombstone GC: drop IDs that are also gone from checkpoints.
+        with self._timed_out_lock:
+            with self._checkpoint_lock:
+                self._timed_out_run_ids -= self._timed_out_run_ids - self._checkpoints.keys()
         return len(expired)
 
     # ------------------------------------------------------------------
@@ -958,11 +975,17 @@ class AgentHost:
         parent_run_id: str | None = None,
     ) -> list[SubagentBatchItemResult]:
         """Orchestrate a call_subagents batch with callback-resume loop."""
-        max_parallelism = int(os.environ.get("SUBAGENT_MAX_PARALLELISM", "8"))
-        if len(specs) > max_parallelism:
+        if mode not in ("parallel", "sequential"):
             raise ValueError(
-                f"call_subagents batch size {len(specs)} exceeds SUBAGENT_MAX_PARALLELISM={max_parallelism}."
+                f"call_subagent_batch: unknown mode {mode!r}. Must be 'parallel' or 'sequential'."
             )
+        if mode == "parallel":
+            max_parallelism = int(os.environ.get("SUBAGENT_MAX_PARALLELISM", "8"))
+            if len(specs) > max_parallelism:
+                raise ValueError(
+                    f"call_subagents parallel batch size {len(specs)} exceeds "
+                    f"SUBAGENT_MAX_PARALLELISM={max_parallelism}."
+                )
         timeout = timeout_seconds if timeout_seconds is not None else float(
             os.environ.get("SUBAGENT_BATCH_TIMEOUT_SECONDS", "300")
         )
@@ -981,8 +1004,10 @@ class AgentHost:
 
             if mode == "parallel":
                 round_results = self._run_parallel_round(caller, pending, timeout, parent_run_id)
-            else:
+            elif mode == "sequential":
                 round_results = self._run_sequential_round(caller, pending, timeout, parent_run_id)
+            else:
+                raise ValueError(f"call_subagent_batch: unknown mode {mode!r}.")
 
             blocked = [r for r in round_results if r.status == "blocked"]
             final_results.extend(r for r in round_results if r.status != "blocked")
@@ -997,6 +1022,10 @@ class AgentHost:
                 break
 
             # Resolve callbacks and build resume specs.
+            # Note: in sequential mode children never return status="blocked"
+            # because in_parallel_batch=False lets callbacks block synchronously
+            # via the normal handle_callback → resolve_callback path. The resume
+            # loop below is therefore only exercised in parallel mode.
             pending = []
             for br in blocked:
                 saved = self.load_checkpoint(br.run_id)
@@ -1054,6 +1083,19 @@ class AgentHost:
             future_to_key[fut] = (spec, child_run_id)
 
         done, not_done = _futures_wait(list(future_to_key), timeout=timeout)
+
+        # Register timed-out run IDs as tombstones so that any orphaned thread
+        # that completes after the parent abandons the wait cannot write a stale
+        # checkpoint entry via save_checkpoint.
+        if not_done:
+            timed_out_ids = {
+                child_run_id
+                for fut, (_, child_run_id) in future_to_key.items()
+                if fut in not_done
+            }
+            with self._timed_out_lock:
+                self._timed_out_run_ids |= timed_out_ids
+
         results: list[SubagentBatchItemResult] = []
 
         for fut, (spec, child_run_id) in future_to_key.items():

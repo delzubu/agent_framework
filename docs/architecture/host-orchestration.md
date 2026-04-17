@@ -281,7 +281,38 @@ return self._executor.submit(
 
 Used by agents that want to invoke multiple subagents in parallel. Callers aggregate results via `future.result()`.
 
-### 6.3 Call Context Tracking
+### 6.3 Parallel/Sequential Batch Calls (`call_subagents` decision kind)
+
+**`call_subagent_batch(*, caller, specs, mode, timeout_seconds, parent_run_id) -> list[SubagentBatchItemResult]`**
+
+Orchestrates a fan-out of multiple subagent calls declared in a single `call_subagents` decision. Called from `Agent.handle_subagent_calls` — agents should not call this directly.
+
+**`mode` values:**
+
+| Mode | Behaviour |
+|---|---|
+| `"parallel"` | Submits all calls to `_executor` (ThreadPoolExecutor, max `SUBAGENT_MAX_PARALLELISM` workers, default 8). Blocks until all finish or `timeout_seconds` elapses. Respects `SUBAGENT_MAX_PARALLELISM` cap — batches larger than the cap raise `ValueError`. |
+| `"sequential"` | Runs calls one at a time with a shared deadline clock. The parallelism cap does not apply. Callbacks work as in single `call_subagent` (child blocks on interactive answer). |
+
+**Context propagation:** each parallel submission uses `contextvars.copy_context()` so tracer scope and other `ContextVar` state set in the parent thread is visible inside each worker thread.
+
+**Timeout and orphaned threads:** when a parallel batch times out, unfinished futures are registered in `_timed_out_run_ids`. Any orphaned thread that later attempts to call `save_checkpoint` is silently dropped (the tombstone set is checked inside `save_checkpoint`). Orphaned threads cannot be forcibly cancelled — they continue using a thread-pool slot until they complete naturally. Size-large batches with aggressive timeouts can exhaust pool capacity; tune `SUBAGENT_MAX_PARALLELISM` accordingly.
+
+**Callbacks in parallel mode:** a child that emits a `callback` decision while `in_parallel_batch=True` terminates immediately with `status="blocked"`. The blocked entry appears in the aggregated result with `intent` and `callback_prompt` so the parent can gather the required information and issue a follow-up `call_subagent` (singular) for that child specifically. The resume-loop in `call_subagent_batch` handles repeated blocked rounds up to `SUBAGENT_BATCH_MAX_CALLBACK_ROUNDS` (default 5).
+
+**Result aggregation:** `Agent._emit_subagent_batch_results` builds a single `<subagent_results>` XML block and appends it to `run.conversation_messages` as one `"user"` role message. Each child entry is tagged with `key`, `agent_id`, and `status`.
+
+**Tracing:** `Agent.handle_subagent_calls` emits `subagent_batch_started` and `subagent_batch_finished` named events on the audit stream, keyed by a `batch_id` UUID so start/finish pairs can be correlated. Each child retains its own `run_id` and `parent_run_id` span linkage as in single `call_subagent`.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `SUBAGENT_BATCH_TIMEOUT_SECONDS` | `300` | Per-batch wall-clock deadline. |
+| `SUBAGENT_MAX_PARALLELISM` | `8` | Max parallel children per batch (parallel mode only). |
+| `SUBAGENT_BATCH_MAX_CALLBACK_ROUNDS` | `5` | Max callback-resume rounds per batch. |
+
+### 6.4 Call Context Tracking
 
 **`open_context(*, caller_id: str, callee_id: str, kind: str) -> CallContext`**
 
