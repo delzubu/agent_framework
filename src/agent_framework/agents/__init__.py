@@ -3,7 +3,7 @@
 from .agent import Agent
 from .helpers import AgentMarkdownError
 from .agent_behavior import AgentBehavior
-from .agent_decision import AgentDecision
+from .agent_decision import AgentDecision, SubagentCallSpec
 from .agent_end_event import AgentEndEvent
 from .agent_end_hook_decision import AgentEndHookDecision
 from .agent_hook_decision import AgentHookDecision
@@ -31,6 +31,7 @@ __all__ = [
     "AgentMarkdownError",
     "AgentBehavior",
     "AgentDecision",
+    "SubagentCallSpec",
     "AgentEndEvent",
     "AgentEndHookDecision",
     "AgentHookDecision",

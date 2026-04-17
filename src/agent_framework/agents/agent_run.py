@@ -24,5 +24,6 @@ class AgentRun:
     conversation_messages: list[dict[str, str]] = field(default_factory=list)
     contexts: list[CallContext] = field(default_factory=list)
     history: list[str] = field(default_factory=list)
+    in_parallel_batch: bool = False
 
 __all__ = ["AgentRun"]

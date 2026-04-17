@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import os
-from concurrent.futures import Future, ThreadPoolExecutor
+import threading
+import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait as _futures_wait
 from datetime import datetime
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -13,6 +16,7 @@ from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from agent_framework.agent import Agent, AgentResult, CallContext, ModelEndEvent, ModelStartEvent, SequentialHook
+from agent_framework.agents.agent_decision import SubagentCallSpec
 from agent_framework.agent_registry import AgentRegistry
 from agent_framework.agent_event_publisher import agent_events
 from agent_framework.audit_trace import AuditTraceSubscriber, InMemoryAuditTracer
@@ -44,6 +48,19 @@ from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework.user_communication import NullUserCommunication, UserCommunication
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentBatchItemResult:
+    """Result for one entry in a call_subagents batch."""
+
+    output_key: str
+    subagent_id: str
+    run_id: str
+    status: str  # "completed" | "failed" | "timed_out" | "blocked"
+    message: str = ""
+    callback_intent: str | None = None
+    callback_prompt: str | None = None
 
 
 def _agent_host_receive_log_enabled_from_env() -> bool:
@@ -98,6 +115,13 @@ class AgentHost:
     _registries_discovered: bool = field(default=False, repr=False)
     _host_receive_log_subscriber: TraceSubscriber | None = field(default=None, repr=False)
     _host_receive_log_path: Path | None = field(default=None, repr=False)
+    # Hierarchical run ID — stable for the lifetime of this host instance.
+    session_id: str = field(default_factory=lambda: str(uuid4())[:12], repr=False)
+    _prompt_counter: int = field(default=0, repr=False)
+    _prompt_counter_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # Checkpoint storage for blocked parallel children (run_id → (messages, timestamp)).
+    _checkpoints: dict[str, tuple[list, float]] = field(default_factory=dict, repr=False)
+    _checkpoint_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def audit_tracer(self) -> InMemoryAuditTracer | None:
@@ -791,6 +815,12 @@ class AgentHost:
         rt_behavior.attach(wired)
         return wired
 
+    def _next_prompt_counter(self) -> int:
+        """Thread-safely increment and return the prompt counter."""
+        with self._prompt_counter_lock:
+            self._prompt_counter += 1
+            return self._prompt_counter
+
     def run_agent(
         self,
         agent_id: str,
@@ -801,6 +831,8 @@ class AgentHost:
     ) -> AgentResult:
         """Run a specific agent id as a top-level invocation."""
         agent = self._agent_with_runtime_tracing(self.get_agent(agent_id))
+        prompt_num = self._next_prompt_counter()
+        root_run_id = f"{self.session_id}.p{prompt_num}.{agent_id}"
         with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
             return agent.run(
                 host=self,
@@ -809,6 +841,7 @@ class AgentHost:
                 rendered_prompt_override=initial_instruction or "",
                 conversation_messages=conversation_messages,
                 prompt_fragments=prompt_fragments,
+                run_id=root_run_id,
             )
 
     def run_console(self) -> AgentResult:
@@ -834,16 +867,23 @@ class AgentHost:
         callee_id: str,
         parameters: dict[str, Any],
         parent_run_id: str | None = None,
+        run_id: str | None = None,
+        in_parallel_batch: bool = False,
+        conversation_messages: tuple[dict[str, str], ...] | None = None,
     ) -> AgentResult:
         """Synchronously invoke a child agent from a caller agent."""
         base_dir = caller.source_path.parent if caller.source_path is not None else None
         callee = self._agent_with_runtime_tracing(self.get_agent(callee_id, base_dir=base_dir))
+        child_run_id = run_id or (f"{parent_run_id}.{callee_id}" if parent_run_id else None)
         with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
             return callee.run(
                 host=self,
                 parameters=parameters,
                 caller_id=caller.agent_id,
                 parent_run_id=parent_run_id,
+                run_id=child_run_id,
+                in_parallel_batch=in_parallel_batch,
+                conversation_messages=conversation_messages,
             )
 
     def call_subagent_async(
@@ -853,14 +893,260 @@ class AgentHost:
         callee_id: str,
         parameters: dict[str, Any],
         parent_run_id: str | None = None,
+        run_id: str | None = None,
+        in_parallel_batch: bool = False,
+        conversation_messages: tuple[dict[str, str], ...] | None = None,
     ) -> Future[AgentResult]:
-        """Invoke a child agent on the thread pool for parallel execution."""
+        """Invoke a child agent on the thread pool for parallel execution.
+
+        Captures the current contextvars context so tracer scope and other
+        context variables propagate correctly into the worker thread.
+        """
+        ctx = contextvars.copy_context()
         return self._executor.submit(
+            ctx.run,
             self.call_subagent,
             caller=caller,
             callee_id=callee_id,
             parameters=parameters,
             parent_run_id=parent_run_id,
+            run_id=run_id,
+            in_parallel_batch=in_parallel_batch,
+            conversation_messages=conversation_messages,
+        )
+
+    # ------------------------------------------------------------------
+    # Checkpoint storage for parallel-batch callback resume
+    # ------------------------------------------------------------------
+
+    def save_checkpoint(self, run_id: str, messages: list[dict]) -> None:
+        """Persist conversation state for a blocked parallel child."""
+        with self._checkpoint_lock:
+            self._checkpoints[run_id] = (list(messages), time.monotonic())
+
+    def load_checkpoint(self, run_id: str) -> list[dict] | None:
+        """Return saved conversation messages for a run_id, or None."""
+        with self._checkpoint_lock:
+            entry = self._checkpoints.get(run_id)
+        return list(entry[0]) if entry is not None else None
+
+    def delete_checkpoint(self, run_id: str) -> None:
+        """Remove a checkpoint after the child has completed or failed."""
+        with self._checkpoint_lock:
+            self._checkpoints.pop(run_id, None)
+
+    def cleanup_checkpoints(self, ttl_seconds: float = 3600.0) -> int:
+        """Remove checkpoints older than ttl_seconds.  Returns count removed."""
+        cutoff = time.monotonic() - ttl_seconds
+        with self._checkpoint_lock:
+            expired = [k for k, (_, ts) in self._checkpoints.items() if ts < cutoff]
+            for k in expired:
+                del self._checkpoints[k]
+        return len(expired)
+
+    # ------------------------------------------------------------------
+    # Parallel / sequential batch orchestration
+    # ------------------------------------------------------------------
+
+    def call_subagent_batch(
+        self,
+        *,
+        caller: Agent,
+        specs: tuple[SubagentCallSpec, ...],
+        mode: str,
+        timeout_seconds: float | None,
+        parent_run_id: str | None = None,
+    ) -> list[SubagentBatchItemResult]:
+        """Orchestrate a call_subagents batch with callback-resume loop."""
+        max_parallelism = int(os.environ.get("SUBAGENT_MAX_PARALLELISM", "8"))
+        if len(specs) > max_parallelism:
+            raise ValueError(
+                f"call_subagents batch size {len(specs)} exceeds SUBAGENT_MAX_PARALLELISM={max_parallelism}."
+            )
+        timeout = timeout_seconds if timeout_seconds is not None else float(
+            os.environ.get("SUBAGENT_BATCH_TIMEOUT_SECONDS", "300")
+        )
+        max_rounds = int(os.environ.get("SUBAGENT_BATCH_MAX_CALLBACK_ROUNDS", "5"))
+
+        # pending_specs is a list of (SubagentCallSpec, child_run_id, conversation_messages)
+        pending: list[tuple[SubagentCallSpec, str, tuple[dict, ...] | None]] = [
+            (s, f"{parent_run_id}.{s.output_key}" if parent_run_id else s.output_key, None)
+            for s in specs
+        ]
+        final_results: list[SubagentBatchItemResult] = []
+
+        for round_num in range(max_rounds + 1):
+            if not pending:
+                break
+
+            if mode == "parallel":
+                round_results = self._run_parallel_round(caller, pending, timeout, parent_run_id)
+            else:
+                round_results = self._run_sequential_round(caller, pending, timeout, parent_run_id)
+
+            blocked = [r for r in round_results if r.status == "blocked"]
+            final_results.extend(r for r in round_results if r.status != "blocked")
+
+            if not blocked:
+                break
+
+            if round_num == max_rounds:
+                for r in blocked:
+                    self.delete_checkpoint(r.run_id)
+                    final_results.append(replace(r, status="failed", message="max callback rounds exceeded"))
+                break
+
+            # Resolve callbacks and build resume specs.
+            pending = []
+            for br in blocked:
+                saved = self.load_checkpoint(br.run_id)
+                if saved is None:
+                    final_results.append(replace(br, status="failed", message="checkpoint not found after block"))
+                    continue
+                try:
+                    callee = self.get_agent(br.subagent_id)
+                    answer = self.resolve_callback(
+                        caller_id=caller.agent_id,
+                        callee=callee,
+                        prompt=br.callback_prompt or "",
+                    )
+                except Exception as exc:
+                    self.delete_checkpoint(br.run_id)
+                    final_results.append(replace(br, status="failed", message=f"callback resolution error: {exc}"))
+                    continue
+                resumed_messages = tuple(saved + [{"role": "user", "content": answer}])
+                # Find original spec to get parameters.
+                orig_spec = next((s for s in specs if s.output_key == br.output_key), None)
+                if orig_spec is None:
+                    orig_spec = SubagentCallSpec(subagent_id=br.subagent_id, output_key=br.output_key)
+                pending.append((orig_spec, br.run_id, resumed_messages))
+
+        # Clean up any remaining checkpoints for non-blocked results.
+        for r in final_results:
+            if r.status != "blocked":
+                self.delete_checkpoint(r.run_id)
+
+        return final_results
+
+    def _run_parallel_round(
+        self,
+        caller: Agent,
+        pending: list[tuple[SubagentCallSpec, str, tuple[dict, ...] | None]],
+        timeout: float,
+        parent_run_id: str | None,
+    ) -> list[SubagentBatchItemResult]:
+        future_to_key: dict[Future[AgentResult], tuple[SubagentCallSpec, str]] = {}
+        for spec, child_run_id, convo in pending:
+            # Each future needs its own context copy — a single Context object
+            # cannot be entered concurrently by multiple threads.
+            ctx = contextvars.copy_context()
+            fut = self._executor.submit(
+                ctx.run,
+                self.call_subagent,
+                caller=caller,
+                callee_id=spec.subagent_id,
+                parameters=spec.parameters,
+                parent_run_id=parent_run_id,
+                run_id=child_run_id,
+                in_parallel_batch=True,
+                conversation_messages=convo,
+            )
+            future_to_key[fut] = (spec, child_run_id)
+
+        done, not_done = _futures_wait(list(future_to_key), timeout=timeout)
+        results: list[SubagentBatchItemResult] = []
+
+        for fut, (spec, child_run_id) in future_to_key.items():
+            if fut in not_done:
+                results.append(SubagentBatchItemResult(
+                    output_key=spec.output_key,
+                    subagent_id=spec.subagent_id,
+                    run_id=child_run_id,
+                    status="timed_out",
+                ))
+                continue
+            try:
+                agent_result = fut.result()
+            except Exception as exc:
+                results.append(SubagentBatchItemResult(
+                    output_key=spec.output_key,
+                    subagent_id=spec.subagent_id,
+                    run_id=child_run_id,
+                    status="failed",
+                    message=f"{type(exc).__name__}: {exc}",
+                ))
+                continue
+            results.append(self._agent_result_to_batch_item(spec, child_run_id, agent_result))
+
+        return results
+
+    def _run_sequential_round(
+        self,
+        caller: Agent,
+        pending: list[tuple[SubagentCallSpec, str, tuple[dict, ...] | None]],
+        timeout: float,
+        parent_run_id: str | None,
+    ) -> list[SubagentBatchItemResult]:
+        deadline = time.monotonic() + timeout
+        results: list[SubagentBatchItemResult] = []
+        for spec, child_run_id, convo in pending:
+            if time.monotonic() >= deadline:
+                results.append(SubagentBatchItemResult(
+                    output_key=spec.output_key,
+                    subagent_id=spec.subagent_id,
+                    run_id=child_run_id,
+                    status="timed_out",
+                ))
+                continue
+            try:
+                agent_result = self.call_subagent(
+                    caller=caller,
+                    callee_id=spec.subagent_id,
+                    parameters=spec.parameters,
+                    parent_run_id=parent_run_id,
+                    run_id=child_run_id,
+                    in_parallel_batch=False,
+                    conversation_messages=convo,
+                )
+            except Exception as exc:
+                results.append(SubagentBatchItemResult(
+                    output_key=spec.output_key,
+                    subagent_id=spec.subagent_id,
+                    run_id=child_run_id,
+                    status="failed",
+                    message=f"{type(exc).__name__}: {exc}",
+                ))
+                continue
+            results.append(self._agent_result_to_batch_item(spec, child_run_id, agent_result))
+        return results
+
+    @staticmethod
+    def _agent_result_to_batch_item(
+        spec: SubagentCallSpec,
+        child_run_id: str,
+        result: AgentResult,
+    ) -> SubagentBatchItemResult:
+        if result.status == "blocked":
+            try:
+                import json as _json
+                payload = _json.loads(result.message) if result.message else {}
+            except Exception:
+                payload = {}
+            return SubagentBatchItemResult(
+                output_key=spec.output_key,
+                subagent_id=spec.subagent_id,
+                run_id=child_run_id,
+                status="blocked",
+                message=result.message,
+                callback_intent=payload.get("intent"),
+                callback_prompt=payload.get("prompt", ""),
+            )
+        return SubagentBatchItemResult(
+            output_key=spec.output_key,
+            subagent_id=spec.subagent_id,
+            run_id=child_run_id,
+            status=result.status,
+            message=result.message,
         )
 
     def execute_tool(self, tool_name: str, parameters: dict[str, Any]) -> str:

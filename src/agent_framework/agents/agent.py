@@ -275,6 +275,8 @@ class Agent:
         rendered_prompt_override: str | None = None,
         conversation_messages: tuple[dict[str, str], ...] | None = None,
         prompt_fragments: tuple[str, ...] | None = None,
+        run_id: str | None = None,
+        in_parallel_batch: bool = False,
     ) -> AgentResult:
         """Execute the agent loop for one invocation.
 
@@ -293,6 +295,8 @@ class Agent:
         """
         run = self._create_run(
             parameters or {},
+            run_id=run_id,
+            in_parallel_batch=in_parallel_batch,
             rendered_prompt_override=rendered_prompt_override,
             conversation_messages=conversation_messages,
             prompt_fragments=prompt_fragments,
@@ -496,6 +500,7 @@ class Agent:
             "final_message": self.handle_final_message,
             "callback": self.handle_callback,
             "call_subagent": self.handle_subagent_call,
+            "call_subagents": self.handle_subagent_calls,
             "call_tool": self.handle_tool_call,
             "invoke_skill": self.handle_skill_invocation,
         }
@@ -550,6 +555,22 @@ class Agent:
         caller_id: str | None,
     ) -> AgentResult | None:
         """Handle all callback-style requests through one unified transport."""
+        if run.in_parallel_batch:
+            # Parallel children cannot block on user/caller input — save conversation
+            # state so the batch orchestrator can resume after resolving the callback.
+            save_fn = getattr(host, "save_checkpoint", None)
+            if callable(save_fn):
+                save_fn(run.run_id, list(run.conversation_messages))
+            return AgentResult(
+                status="blocked",
+                message=json.dumps({
+                    "intent": decision.callback_intent or "information_request",
+                    "prompt": decision.message,
+                    "parameters": decision.parameters,
+                }),
+                decision=decision,
+                prompt=run.rendered_prompt,
+            )
         intent = decision.callback_intent or "information_request"
         parameter_name = str(decision.parameters.get("parameter_name", "")).strip()
         spec = self._parameter_spec_by_name().get(parameter_name) if parameter_name else None
@@ -791,6 +812,92 @@ class Agent:
         )
         return None
 
+    def handle_subagent_calls(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        decision: AgentDecision,
+        caller_id: str | None,
+    ) -> AgentResult | None:
+        """Handle a call_subagents batch decision (parallel or sequential)."""
+        from agent_framework.agent_event_publisher import agent_events
+
+        # Validate every call entry against the allowed child agent list.
+        for spec in decision.subagent_calls:
+            if spec.subagent_id not in self.allowed_child_agents:
+                error_text = (
+                    f"{self.agent_id} is not allowed to call subagent {spec.subagent_id!r} "
+                    f"(output_key={spec.output_key!r}). "
+                    f"Legal subagent ids: {sorted(self.allowed_child_agents)}."
+                )
+                run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
+                run.transcript_entries.append(f"<subagent_error>{error_text}</subagent_error>")
+                run.conversation_messages.append({"role": "user", "content": error_text})
+                _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
+                return None
+
+        agent_events.audit_named_event(
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={
+                "type": "subagent_batch_call",
+                "mode": decision.batch_mode,
+                "count": len(decision.subagent_calls),
+                "calls": [{"subagent_id": s.subagent_id, "output_key": s.output_key} for s in decision.subagent_calls],
+            },
+        )
+
+        call_batch_fn = getattr(host, "call_subagent_batch", None)
+        if not callable(call_batch_fn):
+            error_text = "Host does not support call_subagent_batch; upgrade AgentHost."
+            run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
+            run.conversation_messages.append({"role": "user", "content": error_text})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
+            return None
+
+        try:
+            results = call_batch_fn(
+                caller=self,
+                specs=decision.subagent_calls,
+                mode=decision.batch_mode,
+                timeout_seconds=decision.batch_timeout_seconds,
+                parent_run_id=run.run_id,
+            )
+        except Exception as exc:
+            error_text = f"call_subagent_batch failed: {type(exc).__name__}: {exc}"
+            run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
+            run.conversation_messages.append({"role": "user", "content": error_text})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
+            return None
+
+        self._emit_subagent_batch_results(host, run, results)
+        return None
+
+    def _emit_subagent_batch_results(
+        self,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        results: list[Any],
+    ) -> None:
+        """Build the aggregated <subagent_results> fragment and add it to the run."""
+        lines = ["<subagent_results>"]
+        for r in results:
+            attrs = f'key="{r.output_key}" agent_id="{r.subagent_id}" status="{r.status}"'
+            if r.status == "blocked" and r.callback_intent:
+                attrs += f' intent="{r.callback_intent}"'
+            if r.message:
+                lines.append(f"  <subagent_result {attrs}>{r.message}</subagent_result>")
+            else:
+                lines.append(f"  <subagent_result {attrs}/>")
+        lines.append("</subagent_results>")
+        fragment = "\n".join(lines)
+
+        run.prompt_fragments.append(fragment)
+        run.transcript_entries.append(fragment)
+        run.conversation_messages.append({"role": "user", "content": fragment})
+        _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_batch_results")
+
     def handle_skill_invocation(
         self,
         *,
@@ -1016,6 +1123,8 @@ class Agent:
         self,
         parameters: dict[str, Any],
         *,
+        run_id: str | None = None,
+        in_parallel_batch: bool = False,
         rendered_prompt_override: str | None = None,
         conversation_messages: tuple[dict[str, str], ...] | None = None,
         prompt_fragments: tuple[str, ...] | None = None,
@@ -1023,9 +1132,8 @@ class Agent:
         """Create runtime state for a new invocation."""
         seed_parameters = dict(parameters)
         return AgentRun(
-            run_id=str(uuid4()),
-            # Persist the base prompt per run so execution is traceable even if
-            # the agent definition changes later.
+            run_id=run_id or str(uuid4()),
+            in_parallel_batch=in_parallel_batch,
             rendered_prompt=rendered_prompt_override or self._render_seed_prompt(seed_parameters),
             seed_parameters=seed_parameters,
             parameter_values={},

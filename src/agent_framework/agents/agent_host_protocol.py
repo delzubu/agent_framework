@@ -7,6 +7,7 @@ from typing import Any, Protocol, TYPE_CHECKING
 
 from agent_framework.model import ModelDriver
 
+from .agent_decision import SubagentCallSpec
 from .agent_result import AgentResult
 from .call_context import CallContext
 from .model_end_event import ModelEndEvent
@@ -35,7 +36,27 @@ class AgentHostProtocol(Protocol):
         callee_id: str,
         parameters: dict[str, Any],
         parent_run_id: str | None = None,
+        run_id: str | None = None,
+        in_parallel_batch: bool = False,
+        conversation_messages: "tuple[dict, ...] | None" = None,
     ) -> AgentResult:
+        raise NotImplementedError
+
+    def call_subagent_batch(
+        self,
+        *,
+        caller: "Agent",
+        specs: "tuple[SubagentCallSpec, ...]",
+        mode: str,
+        timeout_seconds: "float | None",
+        parent_run_id: "str | None" = None,
+    ) -> list:
+        raise NotImplementedError
+
+    def save_checkpoint(self, run_id: str, messages: list) -> None:
+        raise NotImplementedError
+
+    def load_checkpoint(self, run_id: str) -> "list | None":
         raise NotImplementedError
 
     def execute_tool(self, tool_name: str, parameters: dict[str, Any]) -> str:
