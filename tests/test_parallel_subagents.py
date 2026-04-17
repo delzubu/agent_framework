@@ -626,3 +626,60 @@ def test_jsonl_subscriber_thread_safe(tmp_path: Path):
             json.loads(line)
         except json.JSONDecodeError as exc:
             pytest.fail(f"Line {i} is not valid JSON: {exc}\nContent: {line[:200]}")
+
+
+# ---------------------------------------------------------------------------
+# 18. contextvars propagate into thread-pool workers via copy_context()
+# ---------------------------------------------------------------------------
+
+def test_contextvars_propagate_to_executor_workers():
+    """copy_context() in call_subagent_async / _run_parallel_round must carry
+    contextvars into worker threads so tracer scope and other context-local
+    state set before the batch is visible inside each child."""
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    sentinel: contextvars.ContextVar[str] = contextvars.ContextVar("_test_sentinel", default="unset")
+    sentinel.set("parent-value")
+
+    captured: list[str] = []
+    lock = threading.Lock()
+
+    def worker():
+        with lock:
+            captured.append(sentinel.get())
+
+    ctx = contextvars.copy_context()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futs = [pool.submit(ctx.run, worker) for _ in range(3)]
+        for f in futs:
+            f.result()
+
+    assert all(v == "parent-value" for v in captured), (
+        f"contextvars not propagated into workers: {captured}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 19. Timed-out orphaned threads cannot write stale checkpoints
+# ---------------------------------------------------------------------------
+
+def test_timed_out_orphan_cannot_write_checkpoint(tmp_path: Path):
+    """A child thread that completes after the parent's wait times out must not
+    be able to write a checkpoint via save_checkpoint (tombstone guard)."""
+    import concurrent.futures
+
+    host = make_host(tmp_path)
+
+    run_id = "orphan-run-1"
+    # Simulate the parent registering this run_id as timed-out.
+    with host._timed_out_lock:
+        host._timed_out_run_ids.add(run_id)
+
+    # The orphaned thread tries to save a checkpoint.
+    host.save_checkpoint(run_id, [{"role": "user", "content": "late message"}])
+
+    # The checkpoint must NOT have been written.
+    assert host.load_checkpoint(run_id) is None, (
+        "Orphaned timed-out thread should not have been able to write a checkpoint."
+    )

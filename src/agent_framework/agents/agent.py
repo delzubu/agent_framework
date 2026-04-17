@@ -837,11 +837,13 @@ class Agent:
                 _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
                 return None
 
+        batch_id = str(uuid4())
         agent_events.audit_named_event(
             run_id=run.run_id,
             agent_id=self.agent_id,
             event={
-                "type": "subagent_batch_call",
+                "type": "subagent_batch_started",
+                "batch_id": batch_id,
                 "mode": decision.batch_mode,
                 "count": len(decision.subagent_calls),
                 "calls": [{"subagent_id": s.subagent_id, "output_key": s.output_key} for s in decision.subagent_calls],
@@ -869,8 +871,32 @@ class Agent:
             run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
+            agent_events.audit_named_event(
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                event={
+                    "type": "subagent_batch_finished",
+                    "batch_id": batch_id,
+                    "status": "error",
+                    "error": str(exc),
+                },
+            )
             return None
 
+        statuses = [r.status for r in results]
+        agent_events.audit_named_event(
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={
+                "type": "subagent_batch_finished",
+                "batch_id": batch_id,
+                "status": "ok",
+                "completed": statuses.count("completed"),
+                "failed": statuses.count("failed"),
+                "timed_out": statuses.count("timed_out"),
+                "blocked": statuses.count("blocked"),
+            },
+        )
         self._emit_subagent_batch_results(host, run, results)
         return None
 
