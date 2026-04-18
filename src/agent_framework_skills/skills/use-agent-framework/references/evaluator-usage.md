@@ -139,7 +139,7 @@ Evaluation criteria:
 |-------|-------------|
 | `title` | Human-readable label shown in UI and batch output |
 | `result_field` | Which field of `AgentResult` to score (`message`, `status`) |
-| `code_evaluator` | Name of a callable in `evaluator_registry` for additional scoring |
+| `code_evaluator` | Comma-separated names of callables in `evaluator_registry` for additional scoring (e.g. `fn1` or `fn1, fn2, fn3`) |
 
 ### `@filename` injection in case prompts
 Tokens in the prompt section are expanded before the agent sees the prompt:
@@ -179,17 +179,35 @@ The evaluator runs a second LLM call to score the agent's output.
 }
 ```
 
-### Code evaluator
-Registered callables receive `prompt` and `agent_message` kwargs:
+### Code evaluators
+Multiple code evaluators can be listed in `code_evaluator` (comma-separated). Each runs sequentially and produces its own output. The `average_score` is computed across the LLM score and all code evaluator scores.
+
+Each callable receives positional `prompt` and `agent_message` arguments:
 ```python
-def my_fn(*, prompt: str, agent_message: str) -> dict:
+def check_format(prompt: str, agent_message: str) -> dict:
     return {
-        "score": 10.0,
-        "passed": True,
-        "reason": "Custom check passed"
+        "score": 10.0 if agent_message.startswith("{") else 0.0,
+        "passed": agent_message.startswith("{"),
+        "reason": "Response must be JSON"
     }
+
+def check_length(prompt: str, agent_message: str) -> dict:
+    ok = len(agent_message) < 500
+    return {"score": 10.0 if ok else 3.0, "passed": ok, "reason": "Response too long"}
 ```
-Average of LLM score and code evaluator score determines `average_score`.
+
+Case file with multiple evaluators:
+```markdown
+---
+title: My case
+code_evaluator: check_format, check_length
+---
+Prompt here.
+---
+Criteria here.
+```
+
+Output `code_results` is a list — one dict per evaluator in declaration order.
 
 ---
 

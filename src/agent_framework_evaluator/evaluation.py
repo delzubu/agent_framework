@@ -350,6 +350,21 @@ def run_code_evaluation(
     return parse_eval_response(raw)
 
 
+def run_code_evaluations(
+    code_evaluators: list[Callable[..., Any]],
+    *,
+    prompt: str,
+    agent_message: str,
+) -> list[dict[str, Any]]:
+    """Run all code evaluators sequentially; return one result dict per evaluator."""
+    results = []
+    for fn in code_evaluators:
+        result = run_code_evaluation(fn, prompt=prompt, agent_message=agent_message)
+        result["score"] = min(10.0, max(0.0, float(result["score"])))
+        results.append(result)
+    return results
+
+
 def run_evaluation(
     *,
     env_path: str | Path,
