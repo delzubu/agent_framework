@@ -67,6 +67,7 @@ def parse_case_markdown_file(
     title = fm.get("title", path.stem)
     eval_names_raw = fm.get("code_evaluator", "").strip()
     result_field = fm.get("result_field", "message").strip() or "message"
+    flags: set[str] = {f.strip() for f in fm.get("flags", "").split(",") if f.strip()}
     prompt = parts[2].strip()
     criteria = parts[3].strip()
     code_evaluators: list[Callable[..., Any]] = []
@@ -86,6 +87,7 @@ def parse_case_markdown_file(
         "evaluation_criteria": criteria,
         "code_evaluators": code_evaluators,
         "result_field": result_field,
+        "flags": flags,
     }
 
 

@@ -489,11 +489,12 @@ def create_app() -> FastAPI:
                 case.get("code_evaluators", []),
                 prompt=str(case.get("prompt", "")),
                 agent_message=agent_message,
+                flags=case.get("flags", set()),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        parts = [float(llm["score"])] + [float(r["score"]) for r in code_results]
+        parts = [float(llm["score"])] + [float(r["score"]) for r in code_results if r is not None]
         average = sum(parts) / len(parts)
 
         return {
@@ -689,9 +690,10 @@ def create_app() -> FastAPI:
                         case.get("code_evaluators", []),
                         prompt=raw_prompt,
                         agent_message=agent_msg,
+                        flags=case.get("flags", set()),
                     )
 
-                    parts = [float(llm["score"])] + [float(r["score"]) for r in code_results]
+                    parts = [float(llm["score"])] + [float(r["score"]) for r in code_results if r is not None]
                     average = sum(parts) / len(parts)
 
                     yield json.dumps({

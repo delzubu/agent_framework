@@ -193,6 +193,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         criteria: str,
         result_field: str,
         code_evaluators: list,
+        flags: set,
         setup_path: "Path | None",
         eval_model: "str | tuple | None",
     ) -> dict[str, object]:
@@ -216,8 +217,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             model_override=eval_model if eval_model else None,
         )
         llm["score"] = min(10.0, max(0.0, float(llm["score"])))
-        code_results = run_code_evaluations(code_evaluators, prompt=prompt, agent_message=selected)
-        parts = [float(llm["score"])] + [float(r["score"]) for r in code_results]
+        code_results = run_code_evaluations(code_evaluators, prompt=prompt, agent_message=selected, flags=flags)
+        parts = [float(llm["score"])] + [float(r["score"]) for r in code_results if r is not None]
         average = sum(parts) / len(parts)
         return {
             "run_result": run_result,
@@ -245,6 +246,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             criteria=str(case.get("evaluation_criteria", "") or ""),
             result_field=str(case.get("result_field", "message") or "message"),
             code_evaluators=case.get("code_evaluators", []),
+            flags=case.get("flags", set()),
             setup_path=None,
             eval_model=None,
         )
@@ -279,6 +281,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             criteria=str(case.get("evaluation_criteria", "") or ""),
             result_field=str(case.get("result_field", "message") or "message"),
             code_evaluators=case.get("code_evaluators", []),
+            flags=case.get("flags", set()),
             setup_path=setup_path,
             eval_model=eval_model,
         )
@@ -301,6 +304,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
                 criteria=str(case.get("evaluation_criteria", "") or ""),
                 result_field=str(case.get("result_field", "message") or "message"),
                 code_evaluators=case.get("code_evaluators", []),
+            flags=case.get("flags", set()),
                 setup_path=setup_path,
                 eval_model=eval_model,
             )

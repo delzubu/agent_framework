@@ -140,6 +140,7 @@ Evaluation criteria:
 | `title` | Human-readable label shown in UI and batch output |
 | `result_field` | Which field of `AgentResult` to score (`message`, `status`) |
 | `code_evaluator` | Comma-separated names of callables in `evaluator_registry` for additional scoring (e.g. `fn1` or `fn1, fn2, fn3`) |
+| `flags` | Comma-separated arbitrary strings passed to code evaluators as a `set[str]` (e.g. `strict, json_required`) |
 
 ### `@filename` injection in case prompts
 Tokens in the prompt section are expanded before the agent sees the prompt:
@@ -180,34 +181,50 @@ The evaluator runs a second LLM call to score the agent's output.
 ```
 
 ### Code evaluators
-Multiple code evaluators can be listed in `code_evaluator` (comma-separated). Each runs sequentially and produces its own output. The `average_score` is computed across the LLM score and all code evaluator scores.
+Multiple code evaluators can be listed in `code_evaluator` (comma-separated). Each runs sequentially and produces its own output. The `average_score` is computed across the LLM score and all code evaluator scores that return a result (non-None).
 
-Each callable receives positional `prompt` and `agent_message` arguments:
+**Signature options:**
 ```python
-def check_format(prompt: str, agent_message: str) -> dict:
-    return {
-        "score": 10.0 if agent_message.startswith("{") else 0.0,
-        "passed": agent_message.startswith("{"),
-        "reason": "Response must be JSON"
-    }
+# Basic — no flags
+def check_format(prompt: str, agent_message: str) -> dict | None:
+    ...
+
+# With flags — receives the case's flags set
+def check_strict(prompt: str, agent_message: str, *, flags: set[str]) -> dict | None:
+    ...
+
+# Also works with **kwargs
+def check_any(prompt: str, agent_message: str, **kwargs) -> dict | None:
+    ...
+```
+
+Returning `None` opts the evaluator out — it is excluded from scoring and the average is computed without it. This lets an evaluator skip itself based on flags or other conditions.
+
+```python
+def check_json_format(prompt: str, agent_message: str, *, flags: set[str]) -> dict | None:
+    if "json_required" not in flags:
+        return None  # not applicable for this case — excluded from average
+    ok = agent_message.strip().startswith("{")
+    return {"score": 10.0 if ok else 0.0, "passed": ok, "reason": "Must be JSON"}
 
 def check_length(prompt: str, agent_message: str) -> dict:
     ok = len(agent_message) < 500
-    return {"score": 10.0 if ok else 3.0, "passed": ok, "reason": "Response too long"}
+    return {"score": 10.0 if ok else 3.0, "passed": ok, "reason": "Response length"}
 ```
 
-Case file with multiple evaluators:
+Case file with flags:
 ```markdown
 ---
 title: My case
-code_evaluator: check_format, check_length
+code_evaluator: check_json_format, check_length
+flags: json_required, strict
 ---
 Prompt here.
 ---
 Criteria here.
 ```
 
-Output `code_results` is a list — one dict per evaluator in declaration order.
+Output `code_results` is a list — one entry per evaluator in declaration order. `None` entries indicate opted-out evaluators (excluded from average).
 
 ---
 

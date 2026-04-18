@@ -337,16 +337,42 @@ def _sync_driver_for_evaluator(host: AgentHost) -> Any:
     return raw
 
 
+def _call_evaluator(
+    fn: Callable[..., Any],
+    prompt: str,
+    agent_message: str,
+    flags: set[str],
+) -> Any:
+    """Call fn with flags kwarg if its signature accepts it, otherwise without."""
+    import inspect
+
+    sig = inspect.signature(fn)
+    params = sig.parameters
+    accepts_flags = "flags" in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    if accepts_flags:
+        return fn(prompt, agent_message, flags=flags)
+    return fn(prompt, agent_message)
+
+
 def run_code_evaluation(
     code_evaluator: Callable[..., Any],
     *,
     prompt: str,
     agent_message: str,
-) -> dict[str, Any]:
-    """Run a programmatic evaluator; output must match evaluator JSON shape after parsing."""
-    raw = code_evaluator(prompt, agent_message)
+    flags: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Run a programmatic evaluator.
+
+    Returns None if the evaluator opts out (returns None); otherwise the parsed
+    result dict. Raises ValueError for non-dict, non-None returns.
+    """
+    raw = _call_evaluator(code_evaluator, prompt, agent_message, flags or set())
+    if raw is None:
+        return None
     if not isinstance(raw, dict):
-        raise ValueError("code_evaluator must return a dict (JSON-shaped evaluator output).")
+        raise ValueError("code_evaluator must return a dict or None.")
     return parse_eval_response(raw)
 
 
@@ -355,12 +381,19 @@ def run_code_evaluations(
     *,
     prompt: str,
     agent_message: str,
-) -> list[dict[str, Any]]:
-    """Run all code evaluators sequentially; return one result dict per evaluator."""
-    results = []
+    flags: set[str] | None = None,
+) -> list[dict[str, Any] | None]:
+    """Run all code evaluators sequentially.
+
+    Returns one entry per evaluator. None entries (opted-out evaluators) are
+    excluded from score averaging by callers.
+    """
+    _flags = flags or set()
+    results: list[dict[str, Any] | None] = []
     for fn in code_evaluators:
-        result = run_code_evaluation(fn, prompt=prompt, agent_message=agent_message)
-        result["score"] = min(10.0, max(0.0, float(result["score"])))
+        result = run_code_evaluation(fn, prompt=prompt, agent_message=agent_message, flags=_flags)
+        if result is not None:
+            result["score"] = min(10.0, max(0.0, float(result["score"])))
         results.append(result)
     return results
 
