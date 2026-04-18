@@ -448,7 +448,11 @@ function updateEvaluateUi() {
   const hasOut = hasAgentOutputForEval();
   const critOk = Boolean(evaluatorPromptInput?.value?.trim());
   const canRun = hasOut && critOk && !evaluationInFlight;
-  if (evaluateButton) evaluateButton.disabled = !canRun;
+  if (evaluateButton) {
+    evaluateButton.disabled = !canRun && !evaluationInFlight;
+    evaluateButton.classList.toggle("evaluate-button--running", evaluationInFlight);
+    evaluateButton.textContent = evaluationInFlight ? "Evaluating…" : "Evaluate";
+  }
 }
 
 async function runPostEvaluation() {
