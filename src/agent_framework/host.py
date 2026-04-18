@@ -45,6 +45,7 @@ from agent_framework.tracing import (
     make_trace_event,
 )
 from agent_framework.tracing_bridge import active_tracer_scope
+from agent_framework.file_reference import DefaultFileReferenceResolver, FileReferenceResolver, expand_file_refs
 from agent_framework.user_communication import NullUserCommunication, UserCommunication
 
 _LOGGER = logging.getLogger(__name__)
@@ -109,6 +110,9 @@ class AgentHost:
     _llm_traces_wired: bool = field(default=False, repr=False)
     skill_registry: SkillRegistry | None = None
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
+    file_ref_resolver: FileReferenceResolver | None = field(
+        default_factory=DefaultFileReferenceResolver, repr=False
+    )
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=8))
     _command_fallback: Callable[[str, str], Awaitable[str | None]] | None = None
     _started: bool = False
@@ -832,6 +836,8 @@ class AgentHost:
         prompt_fragments: tuple[str, ...] | None = None,
     ) -> AgentResult:
         """Run a specific agent id as a top-level invocation."""
+        if initial_instruction and self.file_ref_resolver is not None:
+            initial_instruction = expand_file_refs(initial_instruction, self.file_ref_resolver)
         agent = self._agent_with_runtime_tracing(self.get_agent(agent_id))
         prompt_num = self._next_prompt_counter()
         root_run_id = f"{self.session_id}.p{prompt_num}.{agent_id}"
