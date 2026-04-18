@@ -96,5 +96,6 @@ def test_run_agent_none_instruction_not_expanded(monkeypatch: pytest.MonkeyPatch
 
     host = AgentHost(config=HostConfig())
     host.run_agent("someagent", initial_instruction=None)
+    mock_agent.run.assert_called_once()
     rendered = _rendered_prompt(mock_agent)
     assert rendered == ""

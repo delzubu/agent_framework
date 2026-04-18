@@ -32,6 +32,7 @@ from agent_framework.model import (
     OpenAiModelDriver,
     merge_runtime_system_into_messages,
 )
+from agent_framework.file_reference import DefaultFileReferenceResolver, FileReferenceResolver, expand_file_refs
 from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tool_registry import ToolRegistry
@@ -45,7 +46,6 @@ from agent_framework.tracing import (
     make_trace_event,
 )
 from agent_framework.tracing_bridge import active_tracer_scope
-from agent_framework.file_reference import DefaultFileReferenceResolver, FileReferenceResolver, expand_file_refs
 from agent_framework.user_communication import NullUserCommunication, UserCommunication
 
 _LOGGER = logging.getLogger(__name__)
