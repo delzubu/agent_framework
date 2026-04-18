@@ -172,6 +172,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     from agent_framework_evaluator.case_markdown import parse_case_markdown_file
     from agent_framework_evaluator.evaluation import (
+        CASE_NO_CALLBACKS_POSTFIX,
         run_code_evaluation,
         run_evaluation,
         select_agent_result_field,
@@ -199,7 +200,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         runner = SessionRunner(args.env)
         run_result = runner.run_once(
             agent_id=agent_id,
-            prompt=prompt,
+            prompt=prompt.rstrip() + CASE_NO_CALLBACKS_POSTFIX,
             setup_path=setup_path,
         )
         selected = select_agent_result_field(run_result, result_field)

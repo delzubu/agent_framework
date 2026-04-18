@@ -18,8 +18,10 @@ def reply_text_for_outbox_item(
 ) -> str | None:
     """Return text to submit for a pending outbox item, or ``None`` if the client should answer.
 
-    With ``case_run_mode="no_callbacks"``, confirmation and permission prompts are not
-    auto-answered so the user can respond manually (aligned with test-case "No callbacks" mode).
+    With ``case_run_mode="no_callbacks"``, all prompts, questions, confirmations, and
+    permissions are auto-answered so the run completes without user interaction.
+    With ``case_run_mode="standard"``, every outbox item is forwarded to the client
+    unanswered, allowing the user to respond manually.
     """
     pid = item.get("prompt_id")
     if not isinstance(pid, str) or not pid:
@@ -27,9 +29,9 @@ def reply_text_for_outbox_item(
     kind = item.get("kind")
     no_cb = case_run_mode.strip() == "no_callbacks"
     if kind in ("prompt", "question"):
-        return EVALUATOR_AUTO_CLARIFICATION_REPLY
+        return EVALUATOR_AUTO_CLARIFICATION_REPLY if no_cb else None
     if kind == "confirmation":
-        return None if no_cb else "y"
+        return "y" if no_cb else None
     if kind == "permission":
-        return None if no_cb else "allow"
+        return "allow" if no_cb else None
     return None

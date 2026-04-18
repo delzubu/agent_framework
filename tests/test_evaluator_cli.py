@@ -98,24 +98,48 @@ def test_user_input_http_409_when_nothing_pending() -> None:
     assert r.status_code == 409
 
 
-def test_auto_reply_skips_confirmation_when_no_callbacks_mode() -> None:
-    from agent_framework_evaluator.auto_user_reply import reply_text_for_outbox_item
+def test_auto_reply_mode_behavior() -> None:
+    from agent_framework_evaluator.auto_user_reply import (
+        EVALUATOR_AUTO_CLARIFICATION_REPLY,
+        reply_text_for_outbox_item,
+    )
 
     pid = "abc"
-    assert reply_text_for_outbox_item({"kind": "confirmation", "prompt": "ok?", "prompt_id": pid}) == "y"
+
+    # standard mode: all outbox items forwarded to client (return None)
+    assert reply_text_for_outbox_item({"kind": "confirmation", "prompt": "ok?", "prompt_id": pid}) is None
+    assert reply_text_for_outbox_item({"kind": "permission", "prompt_id": pid, "request": {}}) is None
+    assert reply_text_for_outbox_item({"kind": "prompt", "prompt": "clarify?", "prompt_id": pid}) is None
+    assert reply_text_for_outbox_item({"kind": "question", "prompt": "which?", "prompt_id": pid}) is None
+
+    # no_callbacks mode: everything auto-answered
     assert (
         reply_text_for_outbox_item(
             {"kind": "confirmation", "prompt": "ok?", "prompt_id": pid},
             case_run_mode="no_callbacks",
         )
-        is None
+        == "y"
     )
     assert (
         reply_text_for_outbox_item(
             {"kind": "permission", "prompt_id": pid, "request": {}},
             case_run_mode="no_callbacks",
         )
-        is None
+        == "allow"
+    )
+    assert (
+        reply_text_for_outbox_item(
+            {"kind": "prompt", "prompt": "clarify?", "prompt_id": pid},
+            case_run_mode="no_callbacks",
+        )
+        == EVALUATOR_AUTO_CLARIFICATION_REPLY
+    )
+    assert (
+        reply_text_for_outbox_item(
+            {"kind": "question", "prompt": "which?", "prompt_id": pid},
+            case_run_mode="no_callbacks",
+        )
+        == EVALUATOR_AUTO_CLARIFICATION_REPLY
     )
 
 
