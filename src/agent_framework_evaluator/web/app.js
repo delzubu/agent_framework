@@ -43,9 +43,11 @@ const evaluationDetailClose = document.getElementById("evaluation-detail-close")
 const tabChat = document.getElementById("tab-chat");
 const tabEvaluation = document.getElementById("tab-evaluation");
 const tabAgent = document.getElementById("tab-agent");
+const tabFlow = document.getElementById("tab-flow");
 const panelChat = document.getElementById("tab-panel-chat");
 const panelEvaluation = document.getElementById("tab-panel-evaluation");
 const panelAgent = document.getElementById("tab-panel-agent");
+const panelFlow = document.getElementById("tab-panel-flow");
 const agentPromptDisplay = document.getElementById("agent-prompt-display");
 const agentPromptEmpty = document.getElementById("agent-prompt-empty");
 const agentPromptRaw = document.getElementById("agent-prompt-raw");
@@ -106,8 +108,14 @@ const CASE_RUN_HOLD_MS = 450;
 /** @type {HTMLElement | null} */
 let typingPlaceholderEl = null;
 
-/** @type {Map<string, { details: HTMLElement, body: HTMLElement, spinner: HTMLElement, statusEl: HTMLElement, labelEl: HTMLElement, subEl: HTMLElement, agentName: string, lastStatus: string | null, depth: number }>} */
+/** @type {Map<string, { details: HTMLElement, body: HTMLElement, spinner: HTMLElement, statusEl: HTMLElement, labelEl: HTMLElement, subEl: HTMLElement, agentName: string, lastStatus: string | null, depth: number, parentRunId: string | null, batchId: string | null }>} */
 const runFrames = new Map();
+
+/** @type {Map<string, { wrap: HTMLElement, childrenEl: HTMLElement, label: HTMLElement, mode: string, parentRunId: string, childRunIds: string[] }>} */
+const batchFrames = new Map();
+
+/** Maps parent run_id → currently active batch_id for that run. @type {Map<string, string>} */
+const activeBatchForRun = new Map();
 
 /** @type {{ el: HTMLElement, event: Record<string, unknown> }[]} */
 const unifiedEntries = [];
@@ -1302,10 +1310,13 @@ function applyRowPadding(el, depth) {
 function clearTraceUi() {
   if (traceFeed) traceFeed.innerHTML = "";
   runFrames.clear();
+  batchFrames.clear();
+  activeBatchForRun.clear();
   unifiedEntries.length = 0;
   if (conversationThread) conversationThread.innerHTML = "";
   removeTypingPlaceholder();
   setAwaitingPrompt(null);
+  rebuildFlowTab();
 }
 
 /** @type {string | null} */
@@ -1506,6 +1517,28 @@ async function postUserInputHttp(text) {
   refreshComposerState();
 }
 
+function resolveRunContainer(runId) {
+  if (runId && runFrames.has(runId)) {
+    return runFrames.get(runId).body;
+  }
+  return traceFeed;
+}
+
+/** Returns { icon, cssClass } for a runtime event kind. */
+function classifyEventKind(kind) {
+  if (!kind) return null;
+  if (kind.includes("tool_call")) return { icon: "🔧", cssClass: "trace-event--tool" };
+  if (kind.includes("subagent_call")) return { icon: "↳", cssClass: "trace-event--subagent" };
+  if (kind.includes("callback") || kind.includes("callback_requested") || kind.includes("callback_answered")) {
+    return { icon: "↑", cssClass: "trace-event--callback" };
+  }
+  if (kind.includes("skill")) return { icon: "✦", cssClass: "trace-event--skill" };
+  if (kind.includes("decision")) return { icon: "◎", cssClass: "trace-event--decision" };
+  if (kind.includes("model_call")) return { icon: "⊡", cssClass: "trace-event--model" };
+  if (kind.includes("context_updated")) return { icon: "≡", cssClass: "trace-event--context" };
+  return null;
+}
+
 function appendLogLine(event) {
   const entryEvent = {
     ...event,
@@ -1633,7 +1666,6 @@ function beginAgentCallFrame(event) {
 
   const details = document.createElement("details");
   details.className = "trace-agent-call trace-agent-call--running trace-feed-row";
-  applyRowPadding(details, depth);
   details.open = false;
 
   const summary = document.createElement("summary");
@@ -1667,7 +1699,15 @@ function beginAgentCallFrame(event) {
 
   details.appendChild(summary);
   details.appendChild(body);
-  traceFeed.appendChild(details);
+
+  const activeBatchId = parentRunId ? activeBatchForRun.get(parentRunId) : null;
+  let container = traceFeed;
+  if (activeBatchId && batchFrames.has(activeBatchId)) {
+    container = batchFrames.get(activeBatchId).childrenEl;
+  } else if (parentRunId && runFrames.has(parentRunId)) {
+    container = runFrames.get(parentRunId).body;
+  }
+  container.appendChild(details);
 
   runFrames.set(runId, {
     details,
@@ -1679,7 +1719,15 @@ function beginAgentCallFrame(event) {
     agentName,
     lastStatus: null,
     depth,
+    parentRunId: parentRunId || null,
+    batchId: activeBatchId || null,
   });
+
+  if (activeBatchId && batchFrames.has(activeBatchId)) {
+    const bf = batchFrames.get(activeBatchId);
+    if (!bf.childRunIds) bf.childRunIds = [];
+    bf.childRunIds.push(runId);
+  }
 
   const entry = { el: details, event };
   unifiedEntries.push(entry);
@@ -1700,6 +1748,70 @@ function endAgentCallFrame(event) {
   if (fr.details.classList.contains("trace-agent-call--running")) {
     applyFrameOutcome(fr.details, fr, fr.lastStatus || "completed");
   }
+  rebuildFlowTab();
+}
+
+function beginBatchFrame(event) {
+  const ctx = getContext(event);
+  const runId = typeof ctx.run_id === "string" ? ctx.run_id : null;
+  const p = getPayload(event);
+  const batchEvent = p.event && typeof p.event === "object" ? p.event : {};
+  const batchId = typeof batchEvent.batch_id === "string" ? batchEvent.batch_id : null;
+  const mode = typeof batchEvent.mode === "string" ? batchEvent.mode : "parallel";
+  const count = typeof batchEvent.count === "number" ? batchEvent.count : 0;
+  if (!batchId || !runId) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = `trace-batch trace-batch--${mode} trace-batch--running`;
+  wrap.dataset.batchId = batchId;
+
+  const header = document.createElement("div");
+  header.className = "trace-batch-header";
+  const modeIcon = mode === "parallel" ? "⊕" : "→";
+  const label = document.createElement("span");
+  label.className = "trace-batch-label";
+  label.textContent = `${modeIcon} ${mode}: ${count} agent${count !== 1 ? "s" : ""}`;
+  header.appendChild(label);
+
+  const childrenEl = document.createElement("div");
+  childrenEl.className = `trace-batch-children trace-batch-children--${mode}`;
+
+  wrap.appendChild(header);
+  wrap.appendChild(childrenEl);
+
+  const parentFrame = runFrames.get(runId);
+  const container = parentFrame ? parentFrame.body : traceFeed;
+  container.appendChild(wrap);
+
+  batchFrames.set(batchId, { wrap, childrenEl, label, mode, parentRunId: runId, childRunIds: [] });
+  activeBatchForRun.set(runId, batchId);
+
+  const entry = { el: wrap, event };
+  unifiedEntries.push(entry);
+  setEntryVisible(entry);
+  traceFeed.scrollTop = traceFeed.scrollHeight;
+}
+
+function endBatchFrame(event) {
+  const ctx = getContext(event);
+  const runId = typeof ctx.run_id === "string" ? ctx.run_id : null;
+  const p = getPayload(event);
+  const batchEvent = p.event && typeof p.event === "object" ? p.event : {};
+  const batchId = typeof batchEvent.batch_id === "string" ? batchEvent.batch_id : null;
+  const status = typeof batchEvent.status === "string" ? batchEvent.status : "ok";
+  if (!batchId) return;
+
+  const bf = batchFrames.get(batchId);
+  if (bf) {
+    bf.wrap.classList.remove("trace-batch--running");
+    bf.wrap.classList.add(status === "ok" ? "trace-batch--success" : "trace-batch--error");
+    const completed = typeof batchEvent.completed === "number" ? batchEvent.completed : 0;
+    const failed = typeof batchEvent.failed === "number" ? batchEvent.failed : 0;
+    const timedOut = typeof batchEvent.timed_out === "number" ? batchEvent.timed_out : 0;
+    bf.label.textContent = `${bf.mode === "parallel" ? "⊕" : "→"} ${bf.mode}: ${completed} ok${failed ? `, ${failed} failed` : ""}${timedOut ? `, ${timedOut} timed out` : ""}`;
+  }
+  if (runId) activeBatchForRun.delete(runId);
+  rebuildFlowTab();
 }
 
 function onAgentFinished(event) {
@@ -1717,13 +1829,17 @@ function onAgentFinished(event) {
 
 function buildTraceDetails(event) {
   const node = document.createElement("details");
-  node.className = "trace-event-row trace-feed-row";
-  const d = depthForTraceEvent(event);
-  applyRowPadding(node, d);
-  const summary = document.createElement("summary");
-  const ch = typeof event.channel === "string" ? event.channel : "";
+  const kind = typeof event.kind === "string" ? event.kind : "";
   const lvl = typeof event.level === "string" ? event.level : "";
-  summary.textContent = `${ch ? `[${ch}] ` : ""}${event.kind}: ${event.title}`;
+  const classification = classifyEventKind(kind);
+  let rowClass = "trace-event-row trace-feed-row";
+  if (classification) rowClass += ` ${classification.cssClass}`;
+  if (lvl === "error") rowClass += " trace-event--error";
+  node.className = rowClass;
+  const ch = typeof event.channel === "string" ? event.channel : "";
+  const summary = document.createElement("summary");
+  const prefix = classification ? `${classification.icon} ` : (ch ? `[${ch}] ` : "");
+  summary.textContent = `${prefix}${event.kind}: ${event.title}`;
   if (lvl) {
     const badge = document.createElement("span");
     badge.className = `trace-level-badge trace-level-${lvl}`;
@@ -1748,11 +1864,102 @@ function appendTraceEventRow(event) {
   const node = buildTraceDetails(entryEvent);
   node.dataset.channel = entryEvent.channel;
   node.dataset.level = entryEvent.level;
-  traceFeed.appendChild(node);
+  const rid = getEventRunId(entryEvent);
+  const p = getPayload(entryEvent);
+  const pr = p.parent_run_id != null && p.parent_run_id !== "" ? String(p.parent_run_id) : null;
+  const container = resolveRunContainer(rid || pr);
+  container.appendChild(node);
   const entry = { el: node, event: entryEvent };
   unifiedEntries.push(entry);
   setEntryVisible(entry);
   traceFeed.scrollTop = traceFeed.scrollHeight;
+}
+
+function buildFlowNode(runId, depth) {
+  const fr = runFrames.get(runId);
+  if (!fr) return null;
+
+  const node = document.createElement("div");
+  node.className = "flow-node";
+  node.style.marginLeft = `${depth * 20}px`;
+
+  const pill = document.createElement("button");
+  pill.type = "button";
+  pill.className = `flow-pill${fr.lastStatus === "completed" || fr.lastStatus === null ? " flow-pill--success" : fr.lastStatus === "failed" ? " flow-pill--error" : " flow-pill--neutral"}`;
+  pill.textContent = fr.agentName;
+  pill.title = `run: ${runId}`;
+  pill.addEventListener("click", () => {
+    fr.details.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    fr.details.open = true;
+    fr.details.classList.add("flow-highlight");
+    setTimeout(() => fr.details.classList.remove("flow-highlight"), 1500);
+  });
+  node.appendChild(pill);
+
+  const childrenWithBatch = [];
+  for (const [bid, bf] of batchFrames) {
+    if (bf.parentRunId === runId) {
+      childrenWithBatch.push({ type: "batch", batchId: bid, bf });
+    }
+  }
+  const batchChildRunIds = new Set();
+  for (const { bf } of childrenWithBatch) {
+    for (const cid of (bf.childRunIds || [])) batchChildRunIds.add(cid);
+  }
+  const singleChildren = [];
+  for (const [cid, cfr] of runFrames) {
+    if (cfr.parentRunId === runId && !batchChildRunIds.has(cid)) {
+      singleChildren.push(cid);
+    }
+  }
+
+  for (const { batchId, bf } of childrenWithBatch) {
+    const batchWrap = document.createElement("div");
+    batchWrap.className = `flow-batch flow-batch--${bf.mode}`;
+    batchWrap.style.marginLeft = `${(depth + 1) * 20}px`;
+    const batchLabel = document.createElement("span");
+    batchLabel.className = "flow-batch-label";
+    batchLabel.textContent = `${bf.mode === "parallel" ? "⊕" : "→"} ${bf.mode}`;
+    batchWrap.appendChild(batchLabel);
+    const batchRow = document.createElement("div");
+    batchRow.className = `flow-batch-row flow-batch-row--${bf.mode}`;
+    for (const cid of (bf.childRunIds || [])) {
+      const childNode = buildFlowNode(cid, 0);
+      if (childNode) batchRow.appendChild(childNode);
+    }
+    batchWrap.appendChild(batchRow);
+    node.appendChild(batchWrap);
+  }
+
+  for (const cid of singleChildren) {
+    const childNode = buildFlowNode(cid, depth + 1);
+    if (childNode) node.appendChild(childNode);
+  }
+
+  return node;
+}
+
+function rebuildFlowTab() {
+  const panel = document.getElementById("tab-panel-flow");
+  if (!panel) return;
+  const flowTree = panel.querySelector(".flow-tree");
+  if (!flowTree) return;
+  while (flowTree.firstChild) flowTree.removeChild(flowTree.firstChild);
+
+  if (runFrames.size === 0) {
+    const empty = document.createElement("p");
+    empty.className = "flow-empty";
+    empty.textContent = "No agent runs yet.";
+    flowTree.appendChild(empty);
+    return;
+  }
+
+  for (const [runId, fr] of runFrames) {
+    if (!fr.parentRunId) {
+      const node = buildFlowNode(runId, 0);
+      if (node) flowTree.appendChild(node);
+    }
+  }
 }
 
 function routeTraceEvent(event) {
@@ -1778,6 +1985,20 @@ function routeTraceEvent(event) {
   if (kind === "runtime.audit.agent_call_finished") {
     endAgentCallFrame(event);
     return;
+  }
+
+  if (kind === "runtime.audit.named_event") {
+    const p = getPayload(event);
+    const batchEvent = p.event && typeof p.event === "object" ? p.event : {};
+    const eventType = typeof batchEvent.type === "string" ? batchEvent.type : "";
+    if (eventType === "subagent_batch_started") {
+      beginBatchFrame(event);
+      return;
+    }
+    if (eventType === "subagent_batch_finished") {
+      endBatchFrame(event);
+      return;
+    }
   }
 
   if (kind === "runtime.agent_finished") {
@@ -2182,6 +2403,7 @@ function setActiveTab(which) {
     { id: "chat", btn: tabChat, panel: panelChat },
     { id: "evaluation", btn: tabEvaluation, panel: panelEvaluation },
     { id: "agent", btn: tabAgent, panel: panelAgent },
+    { id: "flow", btn: tabFlow, panel: panelFlow },
   ];
   for (const t of tabs) {
     const active = t.id === which;
@@ -2197,11 +2419,15 @@ function setActiveTab(which) {
   if (which === "agent") {
     void refreshAgentPromptView();
   }
+  if (which === "flow") {
+    rebuildFlowTab();
+  }
 }
 
 tabChat?.addEventListener("click", () => setActiveTab("chat"));
 tabEvaluation?.addEventListener("click", () => setActiveTab("evaluation"));
 tabAgent?.addEventListener("click", () => setActiveTab("agent"));
+tabFlow?.addEventListener("click", () => setActiveTab("flow"));
 
 let agentPromptMode = "raw";
 let cachedRawSystemPrompt = "";

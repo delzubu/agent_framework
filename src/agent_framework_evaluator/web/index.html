@@ -46,6 +46,7 @@
       <div class="main-tabs" role="tablist" aria-label="Main panels">
         <button type="button" class="main-tab main-tab--active" role="tab" aria-selected="true" aria-controls="tab-panel-chat" id="tab-chat">Chat</button>
         <button type="button" class="main-tab" role="tab" aria-selected="false" aria-controls="tab-panel-evaluation" id="tab-evaluation">Evaluation</button>
+        <button type="button" class="main-tab" role="tab" aria-selected="false" aria-controls="tab-panel-flow" id="tab-flow">Flow</button>
         <button type="button" class="main-tab" role="tab" aria-selected="false" aria-controls="tab-panel-agent" id="tab-agent">Agent</button>
       </div>
       <div id="tab-panel-chat" class="tab-panel tab-panel--active" role="tabpanel" aria-labelledby="tab-chat">
@@ -114,6 +115,12 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+      <div id="tab-panel-flow" class="tab-panel tab-panel--flow" role="tabpanel" aria-labelledby="tab-flow" hidden>
+        <div class="flow-tab-inner">
+          <p class="flow-tab-hint">Structural view of agent execution. Click a node to highlight it in the Trace panel.</p>
+          <div class="flow-tree" aria-label="Agent call tree"></div>
         </div>
       </div>
       <div id="tab-panel-agent" class="tab-panel tab-panel--agent" role="tabpanel" aria-labelledby="tab-agent" hidden>
