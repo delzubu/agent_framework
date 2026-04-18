@@ -152,6 +152,19 @@ See [Using the agent evaluator](docs/guides/using-agent-evaluator.md) for setup 
 
 ---
 
+## AI assistant skills
+
+Install machine-readable framework documentation as a skill into your AI coding assistant (Claude Code, Codex, Cursor, Windsurf, Gemini CLI):
+
+```bash
+pip install "git+https://github.com/delzubu/agent_framework.git#subdirectory=src/agent_framework_skills&egg=agent_framework_skills"
+agent-framework-skills install
+```
+
+This copies the `use-agent-framework` skill into all detected agentic tool directories (`~/.claude/skills`, `~/.codex/skills`, etc.). Use `--target DIR` to install to a specific location, `--list` to preview detected targets, and `--dry-run` to see what would be installed without writing files.
+
+---
+
 ## Architecture
 
 See [`docs/architecture/`](docs/architecture/) for the full reference:
