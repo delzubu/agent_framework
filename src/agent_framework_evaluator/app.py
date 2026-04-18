@@ -25,7 +25,7 @@ from agent_framework_evaluator.evaluation import (
     CASE_NO_CALLBACKS_POSTFIX,
     EvaluatorLogCallback,
     extract_first_llm_request_prompts,
-    run_code_evaluation,
+    run_code_evaluations,
     run_evaluation,
     select_agent_result_field,
 )
@@ -484,28 +484,22 @@ def create_app() -> FastAPI:
         score = float(llm["score"])
         llm["score"] = min(10.0, max(0.0, score))
 
-        code_result: dict[str, Any] | None = None
-        ce = case.get("code_evaluator")
-        if callable(ce):
-            try:
-                code_result = run_code_evaluation(
-                    ce,
-                    prompt=str(case.get("prompt", "")),
-                    agent_message=agent_message,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            cs = float(code_result["score"])
-            code_result["score"] = min(10.0, max(0.0, cs))
+        try:
+            code_results = run_code_evaluations(
+                case.get("code_evaluators", []),
+                prompt=str(case.get("prompt", "")),
+                agent_message=agent_message,
+                flags=case.get("flags", set()),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        parts = [float(llm["score"])]
-        if code_result is not None:
-            parts.append(float(code_result["score"]))
+        parts = [float(llm["score"])] + [float(r["score"]) for r in code_results if r is not None]
         average = sum(parts) / len(parts)
 
         return {
             "llm_result": llm,
-            "code_result": code_result,
+            "code_results": code_results,
             "average_score": average,
         }
 
@@ -692,24 +686,21 @@ def create_app() -> FastAPI:
                     llm: dict[str, Any] = await loop.run_in_executor(_executor, do_eval)
                     llm["score"] = min(10.0, max(0.0, float(llm["score"])))
 
-                    code_result: dict[str, Any] | None = None
-                    ce = case.get("code_evaluator")
-                    if callable(ce):
-                        code_result = run_code_evaluation(
-                            ce, prompt=raw_prompt, agent_message=agent_msg
-                        )
-                        code_result["score"] = min(10.0, max(0.0, float(code_result["score"])))
+                    code_results = run_code_evaluations(
+                        case.get("code_evaluators", []),
+                        prompt=raw_prompt,
+                        agent_message=agent_msg,
+                        flags=case.get("flags", set()),
+                    )
 
-                    parts = [float(llm["score"])]
-                    if code_result is not None:
-                        parts.append(float(code_result["score"]))
+                    parts = [float(llm["score"])] + [float(r["score"]) for r in code_results if r is not None]
                     average = sum(parts) / len(parts)
 
                     yield json.dumps({
                         "case_index": idx,
                         "title": case.get("title", f"Case {idx}"),
                         "llm_result": llm,
-                        "code_result": code_result,
+                        "code_results": code_results,
                         "average_score": average,
                     }) + "\n"
                 except Exception as exc:
