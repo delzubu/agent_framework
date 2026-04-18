@@ -49,7 +49,19 @@
       "WebFetch(domain:claude.com)",
       "WebFetch(domain:adk.dev)",
       "WebFetch(domain:gist.github.com)",
-      "WebFetch(domain:trio.readthedocs.io)"
+      "WebFetch(domain:trio.readthedocs.io)",
+      "Bash(gh issue *)",
+      "Bash(find . -type f \\\\\\( -name \"*.py\" -o -name \"*.js\" \\\\\\) -exec grep -l \"subagent_batch\\\\|tool_call\\\\|callback_requested\\\\|audit_named_event\" {} \\\\;)",
+      "Skill(playwright-cli)",
+      "Bash(playwright-cli open *)",
+      "Bash(playwright-cli snapshot *)",
+      "Bash(playwright-cli click *)",
+      "Bash(playwright-cli screenshot *)",
+      "Bash(playwright-cli fill *)",
+      "Bash(playwright-cli close *)",
+      "Bash(playwright-cli run-code 'async page => { *)",
+      "Bash(playwright-cli eval *)",
+      "Bash(playwright-cli *)"
     ]
   }
 }

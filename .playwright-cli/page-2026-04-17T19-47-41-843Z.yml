@@ -1,0 +1,114 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - heading "Agent Evaluator" [level=1] [ref=e4]
+    - generic [ref=e5]:
+      - text: Env file
+      - textbox "Env file" [ref=e6]:
+        - /placeholder: .env
+        - text: C:\Users\bmisa\src\agent-adventure\.env
+    - generic [ref=e7]:
+      - text: Agent
+      - combobox "Agent" [ref=e8]: player_intent_parser
+    - generic [ref=e9]:
+      - text: Initializer
+      - combobox "Initializer" [ref=e10]: .\evaluations\player_intent_parser.py
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e42]: Test cases
+        - generic [ref=e43]:
+          - 'generic "Run mode: Standard. Use ▾ to change." [ref=e44]': Standard
+          - 'generic "Click: run all with selected mode. Hold ▶ or click ▾: choose mode." [ref=e45]':
+            - button "Run all test cases" [ref=e46] [cursor=pointer]: ▶
+            - button "Choose run mode for test cases" [ref=e47] [cursor=pointer]: ▾
+      - list "Test cases" [ref=e48]:
+        - listitem [ref=e49]:
+          - generic [ref=e50]: Cave entrance danger scan
+          - button "Run Cave entrance danger scan" [ref=e51] [cursor=pointer]: ▶
+        - listitem [ref=e52]:
+          - generic [ref=e53]: Cave entrance throw in a rock
+          - button "Run Cave entrance throw in a rock" [ref=e54] [cursor=pointer]: ▶
+        - listitem [ref=e55]:
+          - generic [ref=e56]: Cave entrance throw in a spear
+          - button "Run Cave entrance throw in a spear" [ref=e57] [cursor=pointer]: ▶
+    - paragraph [ref=e11]
+  - main [ref=e12]:
+    - tablist "Main panels" [ref=e13]:
+      - tab "Chat" [ref=e14] [cursor=pointer]
+      - tab "Evaluation" [ref=e15] [cursor=pointer]
+      - tab "Flow" [active] [selected] [ref=e16] [cursor=pointer]
+      - tab "Agent" [ref=e17] [cursor=pointer]
+    - tabpanel "Flow" [ref=e58]:
+      - generic [ref=e59]:
+        - paragraph [ref=e60]: Structural view of agent execution. Click a node to highlight it in the Trace panel.
+        - generic "Agent call tree" [ref=e61]:
+          - button "player_intent_parser" [ref=e317] [cursor=pointer]
+  - complementary [ref=e25]:
+    - heading "Trace" [level=2] [ref=e26]
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29] [cursor=pointer]:
+          - checkbox "runtime" [checked] [ref=e30]
+          - text: runtime
+        - generic [ref=e31] [cursor=pointer]:
+          - checkbox "llm" [checked] [ref=e32]
+          - text: llm
+        - generic [ref=e33] [cursor=pointer]:
+          - checkbox "log" [checked] [ref=e34]
+          - text: log
+        - generic [ref=e35] [cursor=pointer]:
+          - checkbox "user" [checked] [ref=e36]
+          - text: user
+      - generic [ref=e37]:
+        - text: log level
+        - combobox "log level" [ref=e38]:
+          - option "error"
+          - option "warning" [selected]
+          - option "info"
+          - option "debug"
+    - generic [ref=e39]:
+      - group [ref=e104]:
+        - 'generic "[runtime] runtime.session_started: Session started info" [ref=e105] [cursor=pointer]':
+          - text: "[runtime] runtime.session_started: Session started"
+          - generic [ref=e106]: info
+      - group [ref=e107]:
+        - generic "completed player_intent_parser —" [ref=e115] [cursor=pointer]:
+          - generic [ref=e116]: completed
+          - generic [ref=e110]: player_intent_parser
+          - text: —
+        - generic [ref=e291]:
+          - group [ref=e292]:
+            - 'generic "[runtime] runtime.agent_started: Agent player_intent_parser started info" [ref=e293] [cursor=pointer]':
+              - text: "[runtime] runtime.agent_started: Agent player_intent_parser started"
+              - generic [ref=e294]: info
+          - group [ref=e295]:
+            - 'generic "⊡ runtime.model_call_started: Model call (player_intent_parser) info" [ref=e296] [cursor=pointer]':
+              - text: "⊡ runtime.model_call_started: Model call (player_intent_parser)"
+              - generic [ref=e297]: info
+          - group [ref=e298]:
+            - 'generic "[llm] llm.request: player_intent_parser llm.request info" [ref=e299] [cursor=pointer]':
+              - text: "[llm] llm.request: player_intent_parser llm.request"
+              - generic [ref=e300]: info
+          - group [ref=e301]:
+            - 'generic "[llm] llm.response: player_intent_parser llm.response info" [ref=e302] [cursor=pointer]':
+              - text: "[llm] llm.response: player_intent_parser llm.response"
+              - generic [ref=e303]: info
+          - group [ref=e304]:
+            - 'generic "◎ runtime.decision_made: Decision: final_message info" [ref=e305] [cursor=pointer]':
+              - text: "◎ runtime.decision_made: Decision: final_message"
+              - generic [ref=e306]: info
+          - group [ref=e307]:
+            - 'generic "◎ runtime.audit.decision: Audit: decision (final_message) info" [ref=e308] [cursor=pointer]':
+              - text: "◎ runtime.audit.decision: Audit: decision (final_message)"
+              - generic [ref=e309]: info
+          - group [ref=e310]:
+            - 'generic "≡ runtime.context_updated: Context updated (assistant_decision) info" [ref=e311] [cursor=pointer]':
+              - text: "≡ runtime.context_updated: Context updated (assistant_decision)"
+              - generic [ref=e312]: info
+          - group [ref=e313]:
+            - 'generic "[runtime] runtime.agent_finished: Agent player_intent_parser finished info" [ref=e314] [cursor=pointer]':
+              - text: "[runtime] runtime.agent_finished: Agent player_intent_parser finished"
+              - generic [ref=e315]: info
+      - group [ref=e117]:
+        - 'generic "[runtime] runtime.session_finished: Session finished info" [ref=e118] [cursor=pointer]':
+          - text: "[runtime] runtime.session_finished: Session finished"
+          - generic [ref=e119]: info

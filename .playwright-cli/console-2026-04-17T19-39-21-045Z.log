@@ -1,0 +1,5 @@
+[     420ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8123/favicon.ico:0
+[  322252ms] Error: [KeyError] "Unknown agent: 'root'"
+    at WebSocket.onSocketMessage (http://localhost:8123/static/app.js:2078:17)
+[  427139ms] Error: [AttributeError] 'Agent' object has no attribute 'onPostAgent'
+    at WebSocket.onSocketMessage (http://localhost:8123/static/app.js:2078:17)

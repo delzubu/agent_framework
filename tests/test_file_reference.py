@@ -45,11 +45,11 @@ def test_expand_text_file(tmp_path: Path):
 def test_expand_quoted_path_with_spaces(tmp_path: Path):
     from agent_framework.file_reference import DefaultFileReferenceResolver, expand_file_refs
     f = tmp_path / "my deck.pptx"
-    f.write_bytes(b"\x00\x01binary")
+    f.write_bytes(b"\xff\xfe\x00\x00binary")  # Invalid UTF-8 sequence
     result = expand_file_refs('Analyze @"my deck.pptx"', DefaultFileReferenceResolver(), base_dir=tmp_path)
     assert '<file name="my deck.pptx"' in result
     assert 'encoding="base64"' in result
-    assert base64.b64encode(b"\x00\x01binary").decode() in result
+    assert base64.b64encode(b"\xff\xfe\x00\x00binary").decode() in result
 
 
 def test_expand_binary_file_base64(tmp_path: Path):

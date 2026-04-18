@@ -33,16 +33,11 @@ class DefaultFileReferenceResolver:
     """
 
     def resolve(self, path: Path) -> str:
-        data = path.read_bytes()
-        # Check for null bytes which indicate a binary file
-        if b'\x00' in data:
-            encoded = base64.b64encode(data).decode("ascii")
-            return f'<file name="{path.name}" encoding="base64">\n{encoded}\n</file>'
         try:
-            content = data.decode(encoding="utf-8")
+            content = path.read_text(encoding="utf-8")
             return f'<file name="{path.name}">\n{content}\n</file>'
         except UnicodeDecodeError:
-            encoded = base64.b64encode(data).decode("ascii")
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
             return f'<file name="{path.name}" encoding="base64">\n{encoded}\n</file>'
 
 
