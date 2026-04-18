@@ -49,19 +49,10 @@ Create `.vscode/launch.json` in the repository root with the following content.
       "args": [
         "evaluate",
         "--env", "${workspaceFolder}/.env",
-        "--case-file", "${file}",
-        "--agent", "${input:agentId}"
+        "--case-file", "${file}"
       ],
       "cwd": "${workspaceFolder}",
       "justMyCode": false
-    }
-  ],
-  "inputs": [
-    {
-      "id": "agentId",
-      "type": "promptString",
-      "description": "Agent id to run this case against",
-      "default": "root"
     }
   ]
 }
@@ -73,9 +64,38 @@ Create `.vscode/launch.json` in the repository root with the following content.
 |----------|-------|
 | Debug the web UI | Open any file → **Run → Start Debugging** → pick **Evaluator: web UI** |
 | Debug all cases from an initialiser | Open the `.py` initialiser → **F5** → pick **Evaluator: .py — run all cases** |
-| Debug a single case `.md` file | Open the `.md` case file → **F5** → pick **Evaluator: .md — run single case** → type the agent id when prompted |
+| Debug a single case `.md` file | Open the `.md` case file → **F5** → pick **Evaluator: .md — run single case** |
 
-The `${file}` variable is resolved to whichever file is currently active in the editor, so there is no need to hard-code paths in the launch config.
+The `${file}` variable resolves to whichever file is active in the editor, so there is no need to hard-code paths in the launch config.
+
+## Case file frontmatter: agent and initializer
+
+A case `.md` file can declare its own `agent` and `initializer` in the frontmatter. This lets the `.md` config above work with no prompts:
+
+```markdown
+---
+title: My test case
+agent: player_intent_parser
+initializer: player_intent_parser.py
+---
+Prompt here.
+---
+Criteria here.
+```
+
+**Resolution rules:**
+
+| Frontmatter | CLI `--agent` | Result |
+|---|---|---|
+| `agent: foo` | not specified | runs against `foo` |
+| not specified | `--agent foo` | runs against `foo` |
+| not specified | not specified | runs against `root` (default) |
+| `agent: foo` | `--agent foo` | runs against `foo` |
+| `agent: foo` | `--agent bar` | **skipped** — conflict, nothing runs |
+
+The same conflict rule applies to `initializer`: if the frontmatter declares an initializer and a different one is supplied externally, the case is skipped. If only the frontmatter declares it, the setup module is loaded automatically (registers custom tools, etc.).
+
+In a batch run via `MarkdownCaseLoader`, cases whose `initializer` frontmatter differs from the running initializer are automatically excluded.
 
 ## Why these settings matter
 

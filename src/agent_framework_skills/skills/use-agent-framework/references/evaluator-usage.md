@@ -141,6 +141,15 @@ Evaluation criteria:
 | `result_field` | Which field of `AgentResult` to score (`message`, `status`) |
 | `code_evaluator` | Comma-separated names of callables in `evaluator_registry` for additional scoring (e.g. `fn1` or `fn1, fn2, fn3`) |
 | `flags` | Comma-separated arbitrary strings passed to code evaluators as a `set[str]` (e.g. `strict, json_required`) |
+| `agent` | Agent id to run this case against; used to auto-populate `--agent` when running with `--case-file` |
+| `initializer` | Initializer `.py` filename; used to load the setup module when running with `--case-file`, and to filter cases out of a batch that belongs to a different initializer |
+
+**Conflict rules for `--case-file`:**
+- If `agent` is in frontmatter and no `--agent` CLI flag: frontmatter value is used.
+- If `agent` is in frontmatter and `--agent` is supplied but differs: the case is **skipped** (nothing runs).
+- If `initializer` is in frontmatter: the setup module is loaded automatically (custom tools, etc.).
+
+**Filtering in `MarkdownCaseLoader`:** pass `initializer_ref=` to the loader and cases whose `initializer` frontmatter differs are automatically excluded from the batch.
 
 ### `@filename` injection in case prompts
 Tokens in the prompt section are expanded before the agent sees the prompt:

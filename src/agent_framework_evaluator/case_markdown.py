@@ -43,6 +43,11 @@ def parse_simple_frontmatter(text: str) -> dict[str, str]:
     return out
 
 
+def _normalise_initializer_ref(ref: str) -> str:
+    """Return the stem of an initializer ref for comparison (strips path and .py suffix)."""
+    return Path(ref).stem
+
+
 def parse_case_markdown_file(
     path: Path,
     evaluator_registry: Mapping[str, Callable[..., Any]],
@@ -68,6 +73,8 @@ def parse_case_markdown_file(
     eval_names_raw = fm.get("code_evaluator", "").strip()
     result_field = fm.get("result_field", "message").strip() or "message"
     flags: set[str] = {f.strip() for f in fm.get("flags", "").split(",") if f.strip()}
+    fm_agent: str | None = fm.get("agent", "").strip() or None
+    fm_initializer: str | None = fm.get("initializer", "").strip() or None
     prompt = parts[2].strip()
     criteria = parts[3].strip()
     code_evaluators: list[Callable[..., Any]] = []
@@ -88,21 +95,31 @@ def parse_case_markdown_file(
         "code_evaluators": code_evaluators,
         "result_field": result_field,
         "flags": flags,
+        "fm_agent": fm_agent,
+        "fm_initializer": fm_initializer,
     }
 
 
 class MarkdownCaseLoader:
-    """Discover ``*.md`` cases under ``base_dir`` with a glob; cache invalidates on path/mtime changes."""
+    """Discover ``*.md`` cases under ``base_dir`` with a glob; cache invalidates on path/mtime changes.
+
+    Pass ``initializer_ref`` to automatically skip cases whose ``initializer`` frontmatter
+    field is set to a different initializer (stem comparison, so ``foo.py`` matches ``foo``).
+    Cases with no ``initializer`` frontmatter field always match.
+    """
 
     def __init__(
         self,
         base_dir: Path,
         glob_pattern: str,
         evaluator_registry: Mapping[str, Callable[..., Any]] | None = None,
+        *,
+        initializer_ref: str | None = None,
     ) -> None:
         self._base = base_dir.resolve()
         self._glob = glob_pattern
         self._reg: Mapping[str, Callable[..., Any]] = evaluator_registry or {}
+        self._initializer_stem = _normalise_initializer_ref(initializer_ref) if initializer_ref else None
         self._cache: list[dict[str, Any]] | None = None
         self._cache_key: frozenset[tuple[str, float]] | None = None
 
@@ -114,8 +131,19 @@ class MarkdownCaseLoader:
         parsed: list[dict[str, Any]] = []
         for f in files:
             row = parse_case_markdown_file(f, self._reg)
-            if row is not None:
-                parsed.append(row)
+            if row is None:
+                continue
+            fm_init = row.get("fm_initializer")
+            if fm_init and self._initializer_stem:
+                if _normalise_initializer_ref(fm_init) != self._initializer_stem:
+                    _LOGGER.debug(
+                        "Skipping case %s: initializer %r does not match %r.",
+                        f.name,
+                        fm_init,
+                        self._initializer_stem,
+                    )
+                    continue
+            parsed.append(row)
         self._cache = parsed
         self._cache_key = key
         return self._cache

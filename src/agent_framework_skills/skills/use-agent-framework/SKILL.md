@@ -79,25 +79,18 @@ The configurations to add (merge into `configurations` array; add `inputs` array
       "args": [
         "evaluate",
         "--env", "${workspaceFolder}/.env",
-        "--case-file", "${file}",
-        "--agent", "${input:agentId}"
+        "--case-file", "${file}"
       ],
       "cwd": "${workspaceFolder}",
       "justMyCode": false
-    }
-  ],
-  "inputs": [
-    {
-      "id": "agentId",
-      "type": "promptString",
-      "description": "Agent id to run this case against",
-      "default": "root"
     }
   ]
 }
 ```
 
 **Merge rules:**
-- If `launch.json` already exists: add only the configurations whose `name` is not already present; merge the `agentId` input only if no input with `id: "agentId"` exists.
+- If `launch.json` already exists: add only the configurations whose `name` is not already present.
 - If `launch.json` does not exist: write the full block above.
 - Always keep `"version": "0.2.0"` and any existing configurations untouched.
+
+**Note on agent/initializer for `.md` configs:** the `.md` launch config passes no `--agent` flag. The agent id and setup module are read automatically from the case file's frontmatter (`agent:` and `initializer:` fields). Add those fields to any `.md` case file you want to debug with F5 — no prompt required.
