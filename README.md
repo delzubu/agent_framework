@@ -36,6 +36,27 @@ pip install "agent_framework[web]"
 pip install "agent_framework[dev]"
 ```
 
+## AI assistant skills
+
+Install the `use-agent-framework` skill into every AI tool directory detected on your machine (`~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, etc.):
+
+```bash
+pip install "git+https://github.com/delzubu/agent_framework.git"
+agent-framework-skills install
+```
+
+Install to a specific directory instead:
+
+```bash
+agent-framework-skills install --target /path/to/skills/dir
+```
+
+Preview what would be installed without writing any files:
+
+```bash
+agent-framework-skills install --dry-run
+```
+
 ---
 
 ## Breaking changes (structured model output)
