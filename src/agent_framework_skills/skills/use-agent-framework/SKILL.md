@@ -15,7 +15,9 @@ Load reference files on demand as your work requires:
 |-----------|-------------|
 | `references/framework-usage.md` | Before writing or modifying any agent, tool, behavior, or host code |
 | `references/evaluator-usage.md` | Before writing evaluations, case files, initializers, or running the evaluator |
-| `references/agent-design-guide.md` | When deciding how to structure a multi-agent system (placeholder — TODOs inside) |
+| `assets/agent-prompt-design-research.md` | When you want a broad survey of how other frameworks design agentic prompts, and the rationale behind patterns |
+| `references/agent-prompt-patterns.md` | Before writing a new agent's system prompt — quick checklist + pattern selector |
+| `assets/agent-prompt-organization.md` | When writing or reviewing a structured agent system prompt — recommended section order (Responsibilities → Boundaries → Workflow → Output Shape → Specific Rules) with rationale, examples, and copy-ready template |
 
 ## Quick orientation
 
@@ -32,5 +34,67 @@ The `references/` folder is in the same directory as this file. Load any referen
 ```
 references/framework-usage.md
 references/evaluator-usage.md
-references/agent-design-guide.md
+assets/agent-prompt-design-research.md
+assets/agent-prompt-organization.md
+references/agent-prompt-patterns.md
 ```
+
+## VS Code workspace: patch launch.json
+
+If a `.vscode/` directory exists in the project root, offer to add the evaluator debug configurations to `.vscode/launch.json`. Create the file if it does not exist.
+
+The configurations to add (merge into `configurations` array; add `inputs` array if absent):
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Evaluator: web UI",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent_framework_evaluator",
+      "args": [
+        "web",
+        "--env", "${workspaceFolder}/.env"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONASYNCIODEBUG": "1" },
+      "justMyCode": false
+    },
+    {
+      "name": "Evaluator: .py — run all cases",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent_framework_evaluator",
+      "args": [
+        "evaluate",
+        "--env", "${workspaceFolder}/.env",
+        "--initializer", "${file}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    },
+    {
+      "name": "Evaluator: .md — run single case",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent_framework_evaluator",
+      "args": [
+        "evaluate",
+        "--env", "${workspaceFolder}/.env",
+        "--case-file", "${file}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    }
+  ]
+}
+```
+
+**Merge rules:**
+- If `launch.json` already exists: add only the configurations whose `name` is not already present.
+- If `launch.json` does not exist: write the full block above.
+- Always keep `"version": "0.2.0"` and any existing configurations untouched.
+
+**Note on agent/initializer for `.md` configs:** the `.md` launch config passes no `--agent` flag. The agent id and setup module are read automatically from the case file's frontmatter (`agent:` and `initializer:` fields). Add those fields to any `.md` case file you want to debug with F5 — no prompt required.

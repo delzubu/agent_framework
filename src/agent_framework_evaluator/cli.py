@@ -239,7 +239,21 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         if case is None:
             print(f"error: could not parse case file: {case_path}", file=sys.stderr)
             return 1
-        agent_id = args.agent or "root"
+        fm_agent = case.get("fm_agent")
+        fm_initializer = case.get("fm_initializer")
+        # Conflict: both CLI and frontmatter specify an agent but they disagree.
+        if args.agent and fm_agent and args.agent != fm_agent:
+            print(
+                f"info: skipping {case_path.name} — frontmatter agent={fm_agent!r} "
+                f"does not match --agent {args.agent!r}",
+                file=sys.stderr,
+            )
+            return 0
+        # Conflict: both CLI initializer (via --agent default path) and frontmatter disagree.
+        # (--case-file and --initializer are mutually exclusive, so no CLI initializer here;
+        #  this guard is for future-proofing and env-based overrides.)
+        agent_id = args.agent or fm_agent or "root"
+        setup_path = resolve_setup_path_for_run(env_file, fm_initializer) if fm_initializer else None
         result = _run_single_case(
             agent_id=agent_id,
             prompt=case["prompt"],
@@ -247,7 +261,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             result_field=str(case.get("result_field", "message") or "message"),
             code_evaluators=case.get("code_evaluators", []),
             flags=case.get("flags", set()),
-            setup_path=None,
+            setup_path=setup_path,
             eval_model=None,
         )
         text = json.dumps(result, indent=2, ensure_ascii=False, default=str)

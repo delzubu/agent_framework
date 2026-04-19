@@ -202,6 +202,7 @@ Developer guides:
 - [Using the agent framework](docs/guides/using-agent-framework.md) — end-to-end user guide (agents, tools, skills, MCP, config, tracing, projects)
 - [Using DIAL](docs/guides/using-dial.md) — complete DIAL integration guide
 - [Using the agent evaluator](docs/guides/using-agent-evaluator.md) — web debugger, headless runs, setup modules, trace files
+- [Debugging with VS Code](docs/guides/debugging-with-vscode.md) — launch.json setup, breakpoints in framework and evaluator code
 
 Architecture (evaluator & tracing):
 

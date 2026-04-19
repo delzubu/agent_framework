@@ -589,6 +589,18 @@ body {
   cursor: not-allowed;
 }
 
+.evaluate-button--running {
+  border-color: rgba(91, 192, 222, 0.55) !important;
+  opacity: 1 !important;
+  cursor: default;
+  animation: eval-button-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes eval-button-pulse {
+  0%, 100% { border-color: rgba(91, 192, 222, 0.25); box-shadow: none; }
+  50% { border-color: rgba(91, 192, 222, 0.75); box-shadow: 0 0 7px rgba(91, 192, 222, 0.25); }
+}
+
 .field-hint {
   font-weight: normal;
   color: var(--muted);
@@ -667,7 +679,6 @@ body {
   background: rgba(0, 0, 0, 0.2);
   font-size: 0.88rem;
   line-height: 1.5;
-  overflow: auto;
 }
 
 .evaluation-inline-detail h4 {
@@ -1742,8 +1753,6 @@ body {
 }
 
 .evaluation-inline-detail--sub {
-  max-height: 10rem;
-  overflow: auto;
   font-size: 0.82rem;
 }
 
