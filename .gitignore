@@ -9,3 +9,4 @@ build/
 *.egg-info/
 .claude/settings.local.json
 .playwright-cli/
+.worktrees/
