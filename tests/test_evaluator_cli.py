@@ -851,3 +851,78 @@ def test_cli_evaluate_batch_output_file(
     assert isinstance(data, list)
     assert len(data) == 1
     assert data[0]["title"] == "single"
+
+
+# ---------------------------------------------------------------------------
+# File reference expansion in case markdown tests
+# ---------------------------------------------------------------------------
+
+
+def test_case_markdown_expands_file_refs(tmp_path: Path) -> None:
+    """@filename tokens in case prompt are expanded using the case file's directory."""
+    from agent_framework_evaluator.case_markdown import parse_case_markdown_file
+
+    context_file = tmp_path / "deck.txt"
+    context_file.write_text("slide content here", encoding="utf-8")
+
+    case_md = tmp_path / "case01.md"
+    case_md.write_text(
+        "---\ntitle: test\n---\nAnalyze @deck.txt\n---\nShould summarize slides\n",
+        encoding="utf-8",
+    )
+
+    result = parse_case_markdown_file(case_md, {})
+    assert result is not None
+    assert "slide content here" in result["prompt"]
+    assert "@deck.txt" not in result["prompt"]
+
+
+def test_case_markdown_missing_ref_left_unchanged(tmp_path: Path) -> None:
+    from agent_framework_evaluator.case_markdown import parse_case_markdown_file
+
+    case_md = tmp_path / "case02.md"
+    case_md.write_text(
+        "---\ntitle: test\n---\nSee @ghost.txt\n---\ncriteria\n",
+        encoding="utf-8",
+    )
+
+    result = parse_case_markdown_file(case_md, {})
+    assert result is not None
+    assert "@ghost.txt" in result["prompt"]  # left unchanged
+
+
+def test_case_markdown_custom_resolver(tmp_path: Path) -> None:
+    from pathlib import Path as P
+
+    from agent_framework.file_reference import FileReferenceResolver
+    from agent_framework_evaluator.case_markdown import parse_case_markdown_file
+
+    class UpperResolver:
+        def resolve(self, path: P) -> str:
+            return f"[{path.name.upper()}]"
+
+    (tmp_path / "data.csv").write_text("a,b,c", encoding="utf-8")
+    case_md = tmp_path / "case03.md"
+    case_md.write_text(
+        "---\ntitle: t\n---\nLoad @data.csv\n---\ncriteria\n",
+        encoding="utf-8",
+    )
+
+    result = parse_case_markdown_file(case_md, {}, resolver=UpperResolver())
+    assert result is not None
+    assert "[DATA.CSV]" in result["prompt"]
+
+
+def test_markdown_case_loader_expands_refs(tmp_path: Path) -> None:
+    from agent_framework_evaluator.case_markdown import MarkdownCaseLoader
+
+    (tmp_path / "info.txt").write_text("important context", encoding="utf-8")
+    (tmp_path / "case.md").write_text(
+        "---\ntitle: t\n---\nSee @info.txt\n---\ncriteria\n",
+        encoding="utf-8",
+    )
+
+    loader = MarkdownCaseLoader(tmp_path, "*.md")
+    cases = loader.get_test_cases()
+    assert len(cases) == 1
+    assert "important context" in cases[0]["prompt"]

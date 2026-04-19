@@ -1,0 +1,233 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - heading "Agent Evaluator" [level=1] [ref=e4]
+    - generic [ref=e5]:
+      - text: Env file
+      - textbox "Env file" [ref=e6]:
+        - /placeholder: .env
+        - text: C:\Users\bmisa\src\agent-adventure\.env
+    - generic [ref=e7]:
+      - text: Agent
+      - combobox "Agent" [ref=e8]: player_intent_parser
+    - generic [ref=e9]:
+      - text: Initializer
+      - combobox "Initializer" [ref=e10]: .\evaluations\player_intent_parser.py
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e42]: Test cases
+        - generic [ref=e43]:
+          - 'generic "Run mode: Standard. Use ▾ to change." [ref=e44]': Standard
+          - 'generic "Click: run all with selected mode. Hold ▶ or click ▾: choose mode." [ref=e45]':
+            - button "Run all test cases" [ref=e46] [cursor=pointer]: ▶
+            - button "Choose run mode for test cases" [ref=e47] [cursor=pointer]: ▾
+      - list "Test cases" [ref=e48]:
+        - listitem [ref=e49]:
+          - generic [ref=e50]: Cave entrance danger scan
+          - button "Run Cave entrance danger scan" [ref=e51] [cursor=pointer]: ▶
+        - listitem [ref=e52]:
+          - generic [ref=e53]: Cave entrance throw in a rock
+          - button "Run Cave entrance throw in a rock" [ref=e54] [cursor=pointer]: ▶
+        - listitem [ref=e55]:
+          - generic [ref=e56]: Cave entrance throw in a spear
+          - button "Run Cave entrance throw in a spear" [ref=e57] [cursor=pointer]: ▶
+    - paragraph [ref=e11]
+  - main [ref=e12]:
+    - tablist "Main panels" [ref=e13]:
+      - tab "Chat" [ref=e14] [cursor=pointer]
+      - tab "Evaluation" [selected] [ref=e15] [cursor=pointer]
+      - tab "Flow" [ref=e16] [cursor=pointer]
+      - tab "Agent" [ref=e17] [cursor=pointer]
+    - tabpanel "Evaluation" [ref=e120]:
+      - generic [ref=e121]:
+        - generic [ref=e122]: Evaluator criteria (not sent to the agent)
+        - textbox "Evaluator criteria (not sent to the agent)" [ref=e123]:
+          - /placeholder: Describe how to judge the final answer. Used only after the run completes.
+        - button "Evaluate" [disabled] [ref=e125]
+        - generic [ref=e126]:
+          - button "Average evaluation score (details below)" [ref=e127] [cursor=pointer]:
+            - generic [ref=e149]: "9.5"
+          - paragraph
+          - generic [ref=e150]:
+            - generic [ref=e151]:
+              - generic [ref=e152]:
+                - heading "LLM result" [level=4] [ref=e153]
+                - generic [ref=e154]: "9.0"
+              - generic [ref=e155]:
+                - heading "Overall result" [level=4] [ref=e156]
+                - paragraph [ref=e158]: The output meets nearly all criteria, but it lacks the explicit inclusion of 'desired_outcome' in the metadata, which would provide additional clarity on the player's intentions. This omission is the only reason for not scoring a perfect 10.
+                - heading "Criteria" [level=4] [ref=e159]
+                - table [ref=e160]:
+                  - rowgroup [ref=e161]:
+                    - row "Criteria Passed Reason" [ref=e162]:
+                      - columnheader "Criteria" [ref=e163]
+                      - columnheader "Passed" [ref=e164]
+                      - columnheader "Reason" [ref=e165]
+                  - rowgroup [ref=e166]:
+                    - row "status is 'ready' Passed The response correctly indicates a status of 'ready'." [ref=e167]:
+                      - cell "status is 'ready'" [ref=e168]
+                      - cell "Passed" [ref=e169]:
+                        - img "Passed" [ref=e170]: ✓
+                      - cell "The response correctly indicates a status of 'ready'." [ref=e171]
+                    - row "contains at least one declared intent Passed There is one declared intent present in the response." [ref=e172]:
+                      - cell "contains at least one declared intent" [ref=e173]
+                      - cell "Passed" [ref=e174]:
+                        - img "Passed" [ref=e175]: ✓
+                      - cell "There is one declared intent present in the response." [ref=e176]
+                    - row "uses only the supplied player-visible state slice and subjective history Passed The response adheres to the provided player-visible state slice and subjective history without introducing external information." [ref=e177]:
+                      - cell "uses only the supplied player-visible state slice and subjective history" [ref=e178]
+                      - cell "Passed" [ref=e179]:
+                        - img "Passed" [ref=e180]: ✓
+                      - cell "The response adheres to the provided player-visible state slice and subjective history without introducing external information." [ref=e181]
+                    - row "does not target or reveal the hidden goblin scout Passed The response does not reference or target any hidden entities." [ref=e182]:
+                      - cell "does not target or reveal the hidden goblin scout" [ref=e183]
+                      - cell "Passed" [ref=e184]:
+                        - img "Passed" [ref=e185]: ✓
+                      - cell "The response does not reference or target any hidden entities." [ref=e186]
+                    - row "does not target or reveal the unseen bat colony Passed The response does not reference or target any unseen entities." [ref=e187]:
+                      - cell "does not target or reveal the unseen bat colony" [ref=e188]
+                      - cell "Passed" [ref=e189]:
+                        - img "Passed" [ref=e190]: ✓
+                      - cell "The response does not reference or target any unseen entities." [ref=e191]
+                    - row "resolves visible references using stable ref_id metadata Passed The intent correctly resolves the reference to 'Entrance Cover' with ref_id '8'." [ref=e192]:
+                      - cell "resolves visible references using stable ref_id metadata" [ref=e193]
+                      - cell "Passed" [ref=e194]:
+                        - img "Passed" [ref=e195]: ✓
+                      - cell "The intent correctly resolves the reference to 'Entrance Cover' with ref_id '8'." [ref=e196]
+                    - row "does not decide success, failure, detection, damage, or state changes Passed The response does not make any determinations about success or failure." [ref=e197]:
+                      - cell "does not decide success, failure, detection, damage, or state changes" [ref=e198]
+                      - cell "Passed" [ref=e199]:
+                        - img "Passed" [ref=e200]: ✓
+                      - cell "The response does not make any determinations about success or failure." [ref=e201]
+                    - row "preserves player flexibility in metadata.desired_outcome Failed The response does not explicitly include a 'desired_outcome' in the metadata, which could enhance clarity." [ref=e202]:
+                      - cell "preserves player flexibility in metadata.desired_outcome" [ref=e203]
+                      - cell "Failed" [ref=e204]:
+                        - img "Failed" [ref=e205]: ✗
+                      - cell "The response does not explicitly include a 'desired_outcome' in the metadata, which could enhance clarity." [ref=e206]
+            - generic [ref=e207]:
+              - heading "Programmatic result" [level=4] [ref=e208]
+              - generic [ref=e231]: "10.0"
+              - generic [ref=e232]:
+                - heading "Overall result" [level=4] [ref=e233]
+                - paragraph [ref=e235]: 7/7 contract checks passed.
+                - heading "Criteria" [level=4] [ref=e236]
+                - table [ref=e237]:
+                  - rowgroup [ref=e238]:
+                    - row "Criteria Passed Reason" [ref=e239]:
+                      - columnheader "Criteria" [ref=e240]
+                      - columnheader "Passed" [ref=e241]
+                      - columnheader "Reason" [ref=e242]
+                  - rowgroup [ref=e243]:
+                    - row "Response is valid JSON Passed" [ref=e244]:
+                      - cell "Response is valid JSON" [ref=e245]
+                      - cell "Passed" [ref=e246]:
+                        - img "Passed" [ref=e247]: ✓
+                      - cell [ref=e248]
+                    - row "Status is ready, clarify, or blocked Passed" [ref=e249]:
+                      - cell "Status is ready, clarify, or blocked" [ref=e250]
+                      - cell "Passed" [ref=e251]:
+                        - img "Passed" [ref=e252]: ✓
+                      - cell [ref=e253]
+                    - row "declared_intents is a list Passed" [ref=e254]:
+                      - cell "declared_intents is a list" [ref=e255]
+                      - cell "Passed" [ref=e256]:
+                        - img "Passed" [ref=e257]: ✓
+                      - cell [ref=e258]
+                    - row "First intent belongs to actor.player Passed" [ref=e259]:
+                      - cell "First intent belongs to actor.player" [ref=e260]
+                      - cell "Passed" [ref=e261]:
+                        - img "Passed" [ref=e262]: ✓
+                      - cell [ref=e263]
+                    - row "Intent does not target hidden goblin scout Passed" [ref=e264]:
+                      - cell "Intent does not target hidden goblin scout" [ref=e265]
+                      - cell "Passed" [ref=e266]:
+                        - img "Passed" [ref=e267]: ✓
+                      - cell [ref=e268]
+                    - row "Intent does not target unseen bat colony Passed" [ref=e269]:
+                      - cell "Intent does not target unseen bat colony" [ref=e270]
+                      - cell "Passed" [ref=e271]:
+                        - img "Passed" [ref=e272]: ✓
+                      - cell [ref=e273]
+                    - row "Resolved refs, when present, include stable ref_id fields Passed" [ref=e274]:
+                      - cell "Resolved refs, when present, include stable ref_id fields" [ref=e275]
+                      - cell "Passed" [ref=e276]:
+                        - img "Passed" [ref=e277]: ✓
+                      - cell [ref=e278]
+          - generic:
+            - generic [ref=e280]: Run summary
+            - generic [ref=e282]: Overall score
+            - table "Per-test-case scores" [ref=e286]:
+              - rowgroup [ref=e287]:
+                - row "Test case Score" [ref=e288]:
+                  - columnheader "Test case" [ref=e289]
+                  - columnheader "Score" [ref=e290]
+              - rowgroup
+  - complementary [ref=e25]:
+    - heading "Trace" [level=2] [ref=e26]
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29] [cursor=pointer]:
+          - checkbox "runtime" [checked] [ref=e30]
+          - text: runtime
+        - generic [ref=e31] [cursor=pointer]:
+          - checkbox "llm" [checked] [ref=e32]
+          - text: llm
+        - generic [ref=e33] [cursor=pointer]:
+          - checkbox "log" [checked] [ref=e34]
+          - text: log
+        - generic [ref=e35] [cursor=pointer]:
+          - checkbox "user" [checked] [ref=e36]
+          - text: user
+      - generic [ref=e37]:
+        - text: log level
+        - combobox "log level" [ref=e38]:
+          - option "error"
+          - option "warning" [selected]
+          - option "info"
+          - option "debug"
+    - generic [ref=e39]:
+      - group [ref=e104]:
+        - 'generic "[runtime] runtime.session_started: Session started info" [ref=e105] [cursor=pointer]':
+          - text: "[runtime] runtime.session_started: Session started"
+          - generic [ref=e106]: info
+      - group [ref=e107]:
+        - generic "completed player_intent_parser —" [active] [ref=e115] [cursor=pointer]:
+          - generic [ref=e116]: completed
+          - generic [ref=e110]: player_intent_parser
+          - text: —
+        - generic [ref=e291]:
+          - group [ref=e292]:
+            - 'generic "[runtime] runtime.agent_started: Agent player_intent_parser started info" [ref=e293] [cursor=pointer]':
+              - text: "[runtime] runtime.agent_started: Agent player_intent_parser started"
+              - generic [ref=e294]: info
+          - group [ref=e295]:
+            - 'generic "⊡ runtime.model_call_started: Model call (player_intent_parser) info" [ref=e296] [cursor=pointer]':
+              - text: "⊡ runtime.model_call_started: Model call (player_intent_parser)"
+              - generic [ref=e297]: info
+          - group [ref=e298]:
+            - 'generic "[llm] llm.request: player_intent_parser llm.request info" [ref=e299] [cursor=pointer]':
+              - text: "[llm] llm.request: player_intent_parser llm.request"
+              - generic [ref=e300]: info
+          - group [ref=e301]:
+            - 'generic "[llm] llm.response: player_intent_parser llm.response info" [ref=e302] [cursor=pointer]':
+              - text: "[llm] llm.response: player_intent_parser llm.response"
+              - generic [ref=e303]: info
+          - group [ref=e304]:
+            - 'generic "◎ runtime.decision_made: Decision: final_message info" [ref=e305] [cursor=pointer]':
+              - text: "◎ runtime.decision_made: Decision: final_message"
+              - generic [ref=e306]: info
+          - group [ref=e307]:
+            - 'generic "◎ runtime.audit.decision: Audit: decision (final_message) info" [ref=e308] [cursor=pointer]':
+              - text: "◎ runtime.audit.decision: Audit: decision (final_message)"
+              - generic [ref=e309]: info
+          - group [ref=e310]:
+            - 'generic "≡ runtime.context_updated: Context updated (assistant_decision) info" [ref=e311] [cursor=pointer]':
+              - text: "≡ runtime.context_updated: Context updated (assistant_decision)"
+              - generic [ref=e312]: info
+          - group [ref=e313]:
+            - 'generic "[runtime] runtime.agent_finished: Agent player_intent_parser finished info" [ref=e314] [cursor=pointer]':
+              - text: "[runtime] runtime.agent_finished: Agent player_intent_parser finished"
+              - generic [ref=e315]: info
+      - group [ref=e117]:
+        - 'generic "[runtime] runtime.session_finished: Session finished info" [ref=e118] [cursor=pointer]':
+          - text: "[runtime] runtime.session_finished: Session finished"
+          - generic [ref=e119]: info

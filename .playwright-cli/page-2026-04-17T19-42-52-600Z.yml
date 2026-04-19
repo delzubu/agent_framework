@@ -1,0 +1,68 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - heading "Agent Evaluator" [level=1] [ref=e4]
+    - generic [ref=e5]:
+      - text: Env file
+      - textbox "Env file" [ref=e6]:
+        - /placeholder: .env
+        - text: C:\Users\bmisa\src\agent-adventure\.env
+    - generic [ref=e7]:
+      - text: Agent
+      - combobox "Agent" [ref=e8]
+    - generic [ref=e9]:
+      - text: Initializer
+      - combobox "Initializer" [ref=e10]: .\evaluations\player_intent_parser.py
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e42]: Test cases
+        - generic [ref=e43]:
+          - 'generic "Run mode: Standard. Use ▾ to change." [ref=e44]': Standard
+          - 'generic "Click: run all with selected mode. Hold ▶ or click ▾: choose mode." [ref=e45]':
+            - button "Run all test cases" [ref=e46] [cursor=pointer]: ▶
+            - button "Choose run mode for test cases" [ref=e47] [cursor=pointer]: ▾
+      - list "Test cases" [ref=e48]:
+        - listitem [ref=e49]:
+          - generic [ref=e50]: Cave entrance danger scan
+          - button "Run Cave entrance danger scan" [ref=e51] [cursor=pointer]: ▶
+        - listitem [ref=e52]:
+          - generic [ref=e53]: Cave entrance throw in a rock
+          - button "Run Cave entrance throw in a rock" [ref=e54] [cursor=pointer]: ▶
+        - listitem [ref=e55]:
+          - generic [ref=e56]: Cave entrance throw in a spear
+          - button "Run Cave entrance throw in a spear" [ref=e57] [cursor=pointer]: ▶
+    - paragraph [ref=e11]
+  - main [ref=e12]:
+    - tablist "Main panels" [ref=e13]:
+      - tab "Chat" [ref=e14] [cursor=pointer]
+      - tab "Evaluation" [ref=e15] [cursor=pointer]
+      - tab "Flow" [active] [selected] [ref=e16] [cursor=pointer]
+      - tab "Agent" [ref=e17] [cursor=pointer]
+    - text: Messages appear here. Type below and press Send to run the agent.
+    - tabpanel "Flow" [ref=e58]:
+      - generic [ref=e59]:
+        - paragraph [ref=e60]: Structural view of agent execution. Click a node to highlight it in the Trace panel.
+        - generic "Agent call tree" [ref=e61]:
+          - paragraph [ref=e62]: No agent runs yet.
+  - complementary [ref=e25]:
+    - heading "Trace" [level=2] [ref=e26]
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29] [cursor=pointer]:
+          - checkbox "runtime" [checked] [ref=e30]
+          - text: runtime
+        - generic [ref=e31] [cursor=pointer]:
+          - checkbox "llm" [checked] [ref=e32]
+          - text: llm
+        - generic [ref=e33] [cursor=pointer]:
+          - checkbox "log" [checked] [ref=e34]
+          - text: log
+        - generic [ref=e35] [cursor=pointer]:
+          - checkbox "user" [checked] [ref=e36]
+          - text: user
+      - generic [ref=e37]:
+        - text: log level
+        - combobox "log level" [ref=e38]:
+          - option "error"
+          - option "warning" [selected]
+          - option "info"
+          - option "debug"

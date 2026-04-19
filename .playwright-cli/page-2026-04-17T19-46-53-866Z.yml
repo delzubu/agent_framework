@@ -1,0 +1,80 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - heading "Agent Evaluator" [level=1] [ref=e4]
+    - generic [ref=e5]:
+      - text: Env file
+      - textbox "Env file" [ref=e6]:
+        - /placeholder: .env
+        - text: C:\Users\bmisa\src\agent-adventure\.env
+    - generic [ref=e7]:
+      - text: Agent
+      - combobox "Agent" [ref=e8]: player_intent_parser
+    - generic [ref=e9]:
+      - text: Initializer
+      - combobox "Initializer" [ref=e10]: .\evaluations\player_intent_parser.py
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e42]: Test cases
+        - generic [ref=e43]:
+          - 'generic "Run mode: Standard. Use ▾ to change." [ref=e44]': Standard
+          - 'generic "Click: run all with selected mode. Hold ▶ or click ▾: choose mode." [ref=e45]':
+            - button "Run all test cases" [disabled] [ref=e46]: ▶
+            - button "Choose run mode for test cases" [disabled] [ref=e47]: ▾
+      - list "Test cases" [ref=e48]:
+        - listitem [ref=e49]:
+          - generic [ref=e50]: Cave entrance danger scan
+          - button "Run Cave entrance danger scan" [disabled] [ref=e51]: …
+        - listitem [ref=e52]:
+          - generic [ref=e53]: Cave entrance throw in a rock
+          - button "Run Cave entrance throw in a rock" [disabled] [ref=e54]: ▶
+        - listitem [ref=e55]:
+          - generic [ref=e56]: Cave entrance throw in a spear
+          - button "Run Cave entrance throw in a spear" [disabled] [ref=e57]: ▶
+    - paragraph [ref=e11]: Running…
+  - main [ref=e12]:
+    - tablist "Main panels" [ref=e13]:
+      - tab "Chat" [selected] [ref=e14] [cursor=pointer]
+      - tab "Evaluation" [ref=e15] [cursor=pointer]
+      - tab "Flow" [ref=e16] [cursor=pointer]
+      - tab "Agent" [ref=e17] [cursor=pointer]
+    - tabpanel "Chat" [ref=e18]:
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - generic [ref=e100]: "<player_intent_parser_request> <player_message>I stand at the cave entrance and study the area before going in. I want to look for signs of danger, tracks, movement, or anything useful near the bushes and trees.</player_message> <player_actor_id>actor.player</player_actor_id> <player_state_slice>{ \"actor_id\": \"actor.player\", \"state_version\": 0, \"location\": { \"id\": \"location.cliffside_entrance\", \"name\": \"Cliffside Cave Entrance\", \"summary\": \"A dark cave mouth opens in the cliffside, with bushes and trees offering heavy cover.\", \"ref_id\": \"1\", \"description\": \"The cliff face rises above a rough cave entrance. Bushes crowd the stone, trees lean close enough to break dry branches from, and the open ground is broken by roots, loose stones, and pockets of cover.\", \"exits\": [ \"exit.cave_mouth\" ], \"details\": { \"lighting\": \"dim daylight outside the cave; the cave interior turns dark quickly\", \"cover\": \"bushes, tree trunks, roots, and broken stones provide many places to hide or take cover\", \"materials\": [ \"dry branches suitable for an improvised torch\", \"leaf litter\", \"loose stones\" ], \"terrain\": \"uneven ground at the base of the cliff\" }, \"text_ref\": \"Cliffside Cave Entrance{1}\" }, \"exits\": [ { \"from_location_id\": \"location.cliffside_entrance\", \"to_location_ids\": [ \"location.cave_lit\" ], \"ref_id\": \"1.1.1\", \"summary\": \"Step from the cliffside into the dim cave mouth.\", \"text_ref\": \"Step from the cliffside into the dim cave mouth.{1.1.1}\", \"dark\": true, \"locked\": false, \"sealed\": false, \"traversal\": \"walk\", \"attributes\": { \"visibility\": \"dim interior visible for only a few steps\" }, \"rules\": {} } ], \"actors\": [], \"objects\": [ { \"id\": \"object.torch_branches\", \"name\": \"Dry Branches\", \"summary\": \"Dry branches near the cave entrance could be made into a crude torch.\", \"ref_id\": \"7\", \"text_ref\": \"Dry Branches{7}\", \"location_id\": \"location.cliffside_entrance\", \"holder_actor_id\": null, \"perceived_via\": [ \"sight\" ] }, { \"id\": \"object.cover_bushes\", \"name\": \"Entrance Cover\", \"summary\": \"Bushes and trees around the entrance offer many places for cover.\", \"ref_id\": \"8\", \"text_ref\": \"Entrance Cover{8}\", \"location_id\": \"location.cliffside_entrance\", \"holder_actor_id\": null, \"perceived_via\": [ \"sight\", \"smell\" ] } ], \"events\": [ { \"event_id\": \"event.scene_start\", \"actor_id\": \"actor.player\", \"summary\": \"You stand at a dark cave entrance in the cliffside. Bushes and trees provide cover, and dry branches nearby could become a torch.\", \"perceived_via\": [ \"sight\", \"smell\", \"touch\" ], \"state_version\": 0 } ], \"perception_modes\": [ \"hearing\", \"sight\", \"smell\" ] }</player_state_slice> <actor_details>{ \"id\": \"actor.player\", \"name\": \"Ranger\", \"summary\": \"A ranger stands at the cave entrance, alert to tracks, cover, sounds, and signs of ambush.\", \"ref_id\": \"4\", \"text_ref\": \"Ranger{4}\", \"location_id\": \"location.cliffside_entrance\", \"perceived_via\": [ \"hearing\", \"sight\", \"smell\" ], \"details\": { \"role\": \"ranger\", \"capabilities\": [ \"tracking\", \"wilderness awareness\", \"stealth\", \"survival\", \"perception\" ], \"starting_posture\": \"standing at the cave entrance\", \"goals\": [ \"investigate the cave\", \"avoid ambush\", \"decide whether to create light before entering\" ] }, \"inventory\": [] }</actor_details> <subjective_history>[ { \"event_id\": \"event.scene_start\", \"actor_id\": \"actor.player\", \"summary\": \"You stand at a dark cave entrance in the cliffside. Bushes and trees provide cover, and dry branches nearby could become a torch.\", \"perceived_via\": [ \"sight\", \"smell\", \"touch\" ], \"state_version\": 0 } ]</subjective_history> </player_intent_parser_request>"
+          - generic [ref=e103]: Thinking…
+        - generic [ref=e22]:
+          - textbox "Message…" [disabled] [ref=e23]
+          - button "Send" [disabled] [ref=e24]
+  - complementary [ref=e25]:
+    - heading "Trace" [level=2] [ref=e26]
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29] [cursor=pointer]:
+          - checkbox "runtime" [checked] [ref=e30]
+          - text: runtime
+        - generic [ref=e31] [cursor=pointer]:
+          - checkbox "llm" [checked] [ref=e32]
+          - text: llm
+        - generic [ref=e33] [cursor=pointer]:
+          - checkbox "log" [checked] [ref=e34]
+          - text: log
+        - generic [ref=e35] [cursor=pointer]:
+          - checkbox "user" [checked] [ref=e36]
+          - text: user
+      - generic [ref=e37]:
+        - text: log level
+        - combobox "log level" [ref=e38]:
+          - option "error"
+          - option "warning" [selected]
+          - option "info"
+          - option "debug"
+    - generic [ref=e39]:
+      - group [ref=e104]:
+        - 'generic "[runtime] runtime.session_started: Session started info" [ref=e105] [cursor=pointer]':
+          - text: "[runtime] runtime.session_started: Session started"
+          - generic [ref=e106]: info
+      - group [ref=e107]:
+        - generic "player_intent_parser — running…" [ref=e108] [cursor=pointer]:
+          - generic [ref=e110]: player_intent_parser
+          - text: —
+          - generic [ref=e111]: running…

@@ -1,0 +1,4 @@
+[     758ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8123/favicon.ico:0
+[   29242ms] Error: [KeyError] "Unknown agent: 'root'"
+    at WebSocket.onSocketMessage (http://localhost:8123/static/app.js:1857:17)
+[  100077ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:8123/api/agent-system-prompt?env_path=C%3A%5CUsers%5Cbmisa%5Csrc%5Cagent-adventure%5C.env&agent_id=root:0
