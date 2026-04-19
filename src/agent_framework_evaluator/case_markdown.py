@@ -69,17 +69,18 @@ def parse_case_markdown_file(
         return None
     fm = parse_simple_frontmatter(parts[1].strip())
     title = fm.get("title", path.stem)
-    eval_name = fm.get("code_evaluator", "").strip()
+    eval_names_raw = fm.get("code_evaluator", "").strip()
     result_field = fm.get("result_field", "message").strip() or "message"
+    flags: set[str] = {f.strip() for f in fm.get("flags", "").split(",") if f.strip()}
     prompt = parts[2].strip()
     criteria = parts[3].strip()
     _resolver = resolver if resolver is not None else DefaultFileReferenceResolver()
     prompt = expand_file_refs(prompt, _resolver, base_dir=path.parent)
-    code_evaluator: Callable[..., Any] | None = None
-    if eval_name:
+    code_evaluators: list[Callable[..., Any]] = []
+    for eval_name in [n.strip() for n in eval_names_raw.split(",") if n.strip()]:
         fn = evaluator_registry.get(eval_name)
         if fn is not None and callable(fn):
-            code_evaluator = fn
+            code_evaluators.append(fn)
         else:
             _LOGGER.warning(
                 "Case file %s: frontmatter code_evaluator=%r is not registered on this initializer module.",
@@ -90,8 +91,9 @@ def parse_case_markdown_file(
         "title": title,
         "prompt": prompt,
         "evaluation_criteria": criteria,
-        "code_evaluator": code_evaluator,
+        "code_evaluators": code_evaluators,
         "result_field": result_field,
+        "flags": flags,
     }
 
 

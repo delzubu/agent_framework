@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 agent-eval = "agent_framework_evaluator.cli:main"
+agent-framework-skills = "agent_framework_skills.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -49,4 +50,5 @@ where = ["src"]
 [tool.setuptools.package-data]
 "agent_framework.agents" = ["*.md"]
 "agent_framework_evaluator" = ["web/**/*", "examples/**/*.md"]
+"agent_framework_skills" = ["skills/**/*"]
 
