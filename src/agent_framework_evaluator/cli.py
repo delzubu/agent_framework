@@ -172,8 +172,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     from agent_framework_evaluator.case_markdown import parse_case_markdown_file
     from agent_framework_evaluator.evaluation import (
-        CASE_NO_CALLBACKS_POSTFIX,
-        run_code_evaluation,
+        run_code_evaluations,
         run_evaluation,
         select_agent_result_field,
     )
@@ -193,7 +192,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         prompt: str,
         criteria: str,
         result_field: str,
-        code_evaluator: object,
+        code_evaluators: list,
+        flags: set,
         setup_path: "Path | None",
         eval_model: "str | tuple | None",
     ) -> dict[str, object]:
@@ -217,18 +217,13 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             model_override=eval_model if eval_model else None,
         )
         llm["score"] = min(10.0, max(0.0, float(llm["score"])))
-        code_result: dict[str, object] | None = None
-        if callable(code_evaluator):
-            code_result = run_code_evaluation(code_evaluator, prompt=prompt, agent_message=selected)
-            code_result["score"] = min(10.0, max(0.0, float(code_result["score"])))
-        parts = [float(llm["score"])]
-        if code_result is not None:
-            parts.append(float(code_result["score"]))
+        code_results = run_code_evaluations(code_evaluators, prompt=prompt, agent_message=selected, flags=flags)
+        parts = [float(llm["score"])] + [float(r["score"]) for r in code_results if r is not None]
         average = sum(parts) / len(parts)
         return {
             "run_result": run_result,
             "llm_result": llm,
-            "code_result": code_result,
+            "code_results": code_results,
             "average_score": average,
             "selected_payload": selected,
             "result_field": result_field,
@@ -250,7 +245,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             prompt=case["prompt"],
             criteria=str(case.get("evaluation_criteria", "") or ""),
             result_field=str(case.get("result_field", "message") or "message"),
-            code_evaluator=case.get("code_evaluator"),
+            code_evaluators=case.get("code_evaluators", []),
+            flags=case.get("flags", set()),
             setup_path=None,
             eval_model=None,
         )
@@ -284,7 +280,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             prompt=str(case.get("prompt", "")),
             criteria=str(case.get("evaluation_criteria", "") or ""),
             result_field=str(case.get("result_field", "message") or "message"),
-            code_evaluator=case.get("code_evaluator"),
+            code_evaluators=case.get("code_evaluators", []),
+            flags=case.get("flags", set()),
             setup_path=setup_path,
             eval_model=eval_model,
         )
@@ -306,7 +303,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
                 prompt=str(case.get("prompt", "")),
                 criteria=str(case.get("evaluation_criteria", "") or ""),
                 result_field=str(case.get("result_field", "message") or "message"),
-                code_evaluator=case.get("code_evaluator"),
+                code_evaluators=case.get("code_evaluators", []),
+            flags=case.get("flags", set()),
                 setup_path=setup_path,
                 eval_model=eval_model,
             )
