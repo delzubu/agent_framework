@@ -1,0 +1,97 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - heading "Agent Evaluator" [level=1] [ref=e4]
+    - generic [ref=e5]:
+      - text: Env file
+      - textbox "Env file" [ref=e6]:
+        - /placeholder: .env
+        - text: C:\Users\bmisa\src\agent-adventure\.env
+    - generic [ref=e7]:
+      - text: Agent
+      - combobox "Agent" [ref=e8]
+    - generic [ref=e9]:
+      - text: Initializer
+      - combobox "Initializer" [ref=e10]: .\evaluations\player_intent_parser.py
+    - generic [ref=e39]:
+      - generic [ref=e40]:
+        - generic [ref=e41]: Test cases
+        - generic [ref=e42]:
+          - 'generic "Run mode: Standard. Use ▾ to change." [ref=e43]': Standard
+          - 'generic "Click: run all with selected mode. Hold ▶ or click ▾: choose mode." [ref=e44]':
+            - button "Run all test cases" [ref=e45] [cursor=pointer]: ▶
+            - button "Choose run mode for test cases" [ref=e46] [cursor=pointer]: ▾
+      - list "Test cases" [ref=e47]:
+        - listitem [ref=e48]:
+          - generic [ref=e49]: Cave entrance danger scan
+          - button "Run Cave entrance danger scan" [ref=e50] [cursor=pointer]: ▶
+        - listitem [ref=e51]:
+          - generic [ref=e52]: Cave entrance throw in a rock
+          - button "Run Cave entrance throw in a rock" [ref=e53] [cursor=pointer]: ▶
+        - listitem [ref=e54]:
+          - generic [ref=e55]: Cave entrance throw in a spear
+          - button "Run Cave entrance throw in a spear" [ref=e56] [cursor=pointer]: ▶
+    - paragraph [ref=e11]
+  - main [ref=e12]:
+    - tablist "Main panels" [ref=e13]:
+      - tab "Chat" [ref=e14] [cursor=pointer]
+      - tab "Evaluation" [active] [selected] [ref=e15] [cursor=pointer]
+      - tab "Agent" [ref=e16] [cursor=pointer]
+    - tabpanel "Evaluation" [ref=e77]:
+      - generic [ref=e78]:
+        - generic [ref=e79]: Evaluator criteria (not sent to the agent)
+        - textbox "Evaluator criteria (not sent to the agent)" [ref=e80]:
+          - /placeholder: Describe how to judge the final answer. Used only after the run completes.
+        - button "Evaluate" [disabled] [ref=e82]
+        - generic [ref=e83]:
+          - button "Average evaluation score (details below)" [ref=e84] [cursor=pointer]
+          - paragraph [ref=e85]: "Error: [KeyError] \"Unknown agent: 'root'\""
+          - generic [ref=e86]:
+            - generic [ref=e88]: Run summary
+            - generic [ref=e90]: Overall score
+            - table "Per-test-case scores" [ref=e94]:
+              - rowgroup [ref=e95]:
+                - row "Test case Score" [ref=e96]:
+                  - columnheader "Test case" [ref=e97]
+                  - columnheader "Score" [ref=e98]
+              - rowgroup
+  - complementary [ref=e24]:
+    - heading "Trace" [level=2] [ref=e25]
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28] [cursor=pointer]:
+          - checkbox "runtime" [checked] [ref=e29]
+          - text: runtime
+        - generic [ref=e30] [cursor=pointer]:
+          - checkbox "llm" [checked] [ref=e31]
+          - text: llm
+        - generic [ref=e32] [cursor=pointer]:
+          - checkbox "log" [checked] [ref=e33]
+          - text: log
+        - generic [ref=e34] [cursor=pointer]:
+          - checkbox "user" [checked] [ref=e35]
+          - text: user
+      - generic [ref=e36]:
+        - text: log level
+        - combobox "log level" [ref=e37]:
+          - option "error"
+          - option "warning" [selected]
+          - option "info"
+          - option "debug"
+    - generic [ref=e38]:
+      - group [ref=e61]:
+        - 'generic "[runtime] runtime.session_started: Session started info" [ref=e62] [cursor=pointer]':
+          - text: "[runtime] runtime.session_started: Session started"
+          - generic [ref=e63]: info
+        - generic [ref=e76]: "{}"
+      - generic [ref=e64]:
+        - generic [ref=e65]: warning
+        - generic "agent_framework.agent_registry" [ref=e66]
+        - generic [ref=e67]: unknown agent 'root' (not in catalog or on disk)
+      - generic [ref=e68]:
+        - generic [ref=e69]: error
+        - generic "runtime.run_failed" [ref=e70]
+        - generic [ref=e71]: "\"Unknown agent: 'root'\""
+      - group [ref=e72]:
+        - 'generic "[runtime] runtime.run_failed: Run failed: KeyError error" [ref=e73] [cursor=pointer]':
+          - text: "[runtime] runtime.run_failed: Run failed: KeyError"
+          - generic [ref=e74]: error

@@ -13,6 +13,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from agent_framework.file_reference import DefaultFileReferenceResolver, FileReferenceResolver, expand_file_refs
+
 _LOGGER = logging.getLogger(__name__)
 
 _SECTION_RE = re.compile(r"^---\s*$", re.MULTILINE)
@@ -51,6 +53,8 @@ def _normalise_initializer_ref(ref: str) -> str:
 def parse_case_markdown_file(
     path: Path,
     evaluator_registry: Mapping[str, Callable[..., Any]],
+    *,
+    resolver: FileReferenceResolver | None = None,
 ) -> dict[str, Any] | None:
     """Parse one case file; return case metadata, prompt, criteria, and evaluator hooks."""
     try:
@@ -77,6 +81,8 @@ def parse_case_markdown_file(
     fm_initializer: str | None = fm.get("initializer", "").strip() or None
     prompt = parts[2].strip()
     criteria = parts[3].strip()
+    _resolver = resolver if resolver is not None else DefaultFileReferenceResolver()
+    prompt = expand_file_refs(prompt, _resolver, base_dir=path.parent)
     code_evaluators: list[Callable[..., Any]] = []
     for eval_name in [n.strip() for n in eval_names_raw.split(",") if n.strip()]:
         fn = evaluator_registry.get(eval_name)
@@ -113,13 +119,15 @@ class MarkdownCaseLoader:
         base_dir: Path,
         glob_pattern: str,
         evaluator_registry: Mapping[str, Callable[..., Any]] | None = None,
-        *,
         initializer_ref: str | None = None,
+        resolver: FileReferenceResolver | None = None,
+        *
     ) -> None:
         self._base = base_dir.resolve()
         self._glob = glob_pattern
         self._reg: Mapping[str, Callable[..., Any]] = evaluator_registry or {}
         self._initializer_stem = _normalise_initializer_ref(initializer_ref) if initializer_ref else None
+        self._resolver = resolver
         self._cache: list[dict[str, Any]] | None = None
         self._cache_key: frozenset[tuple[str, float]] | None = None
 
@@ -130,7 +138,7 @@ class MarkdownCaseLoader:
             return self._cache
         parsed: list[dict[str, Any]] = []
         for f in files:
-            row = parse_case_markdown_file(f, self._reg)
+            row = parse_case_markdown_file(f, self._reg, resolver=self._resolver)
             if row is None:
                 continue
             fm_init = row.get("fm_initializer")

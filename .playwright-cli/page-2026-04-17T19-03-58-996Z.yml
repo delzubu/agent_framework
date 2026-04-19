@@ -1,0 +1,49 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - heading "Agent Evaluator" [level=1] [ref=e4]
+    - generic [ref=e5]:
+      - text: Env file
+      - textbox "Env file" [ref=e6]:
+        - /placeholder: .env
+        - text: C:\Users\bmisa\src\agent-adventure\.env
+    - generic [ref=e7]:
+      - text: Agent
+      - combobox "Agent" [ref=e8]
+    - generic [ref=e9]:
+      - text: Initializer
+      - combobox "Initializer" [ref=e10]: .\evaluations\player_intent_parser.py
+    - paragraph [ref=e11]
+  - main [ref=e12]:
+    - tablist "Main panels" [ref=e13]:
+      - tab "Chat" [selected] [ref=e14] [cursor=pointer]
+      - tab "Evaluation" [ref=e15] [cursor=pointer]
+      - tab "Agent" [ref=e16] [cursor=pointer]
+    - tabpanel "Chat" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]: Messages appear here. Type below and press Send to run the agent.
+        - generic [ref=e21]:
+          - textbox "Message…" [ref=e22]
+          - button "Send" [ref=e23] [cursor=pointer]
+  - complementary [ref=e24]:
+    - heading "Trace" [level=2] [ref=e25]
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - generic [ref=e28] [cursor=pointer]:
+          - checkbox "runtime" [checked] [ref=e29]
+          - text: runtime
+        - generic [ref=e30] [cursor=pointer]:
+          - checkbox "llm" [checked] [ref=e31]
+          - text: llm
+        - generic [ref=e32] [cursor=pointer]:
+          - checkbox "log" [checked] [ref=e33]
+          - text: log
+        - generic [ref=e34] [cursor=pointer]:
+          - checkbox "user" [checked] [ref=e35]
+          - text: user
+      - generic [ref=e36]:
+        - text: log level
+        - combobox "log level" [ref=e37]:
+          - option "error"
+          - option "warning" [selected]
+          - option "info"
+          - option "debug"

@@ -98,24 +98,48 @@ def test_user_input_http_409_when_nothing_pending() -> None:
     assert r.status_code == 409
 
 
-def test_auto_reply_skips_confirmation_when_no_callbacks_mode() -> None:
-    from agent_framework_evaluator.auto_user_reply import reply_text_for_outbox_item
+def test_auto_reply_mode_behavior() -> None:
+    from agent_framework_evaluator.auto_user_reply import (
+        EVALUATOR_AUTO_CLARIFICATION_REPLY,
+        reply_text_for_outbox_item,
+    )
 
     pid = "abc"
-    assert reply_text_for_outbox_item({"kind": "confirmation", "prompt": "ok?", "prompt_id": pid}) == "y"
+
+    # standard mode: all outbox items forwarded to client (return None)
+    assert reply_text_for_outbox_item({"kind": "confirmation", "prompt": "ok?", "prompt_id": pid}) is None
+    assert reply_text_for_outbox_item({"kind": "permission", "prompt_id": pid, "request": {}}) is None
+    assert reply_text_for_outbox_item({"kind": "prompt", "prompt": "clarify?", "prompt_id": pid}) is None
+    assert reply_text_for_outbox_item({"kind": "question", "prompt": "which?", "prompt_id": pid}) is None
+
+    # no_callbacks mode: everything auto-answered
     assert (
         reply_text_for_outbox_item(
             {"kind": "confirmation", "prompt": "ok?", "prompt_id": pid},
             case_run_mode="no_callbacks",
         )
-        is None
+        == "y"
     )
     assert (
         reply_text_for_outbox_item(
             {"kind": "permission", "prompt_id": pid, "request": {}},
             case_run_mode="no_callbacks",
         )
-        is None
+        == "allow"
+    )
+    assert (
+        reply_text_for_outbox_item(
+            {"kind": "prompt", "prompt": "clarify?", "prompt_id": pid},
+            case_run_mode="no_callbacks",
+        )
+        == EVALUATOR_AUTO_CLARIFICATION_REPLY
+    )
+    assert (
+        reply_text_for_outbox_item(
+            {"kind": "question", "prompt": "which?", "prompt_id": pid},
+            case_run_mode="no_callbacks",
+        )
+        == EVALUATOR_AUTO_CLARIFICATION_REPLY
     )
 
 
@@ -827,3 +851,78 @@ def test_cli_evaluate_batch_output_file(
     assert isinstance(data, list)
     assert len(data) == 1
     assert data[0]["title"] == "single"
+
+
+# ---------------------------------------------------------------------------
+# File reference expansion in case markdown tests
+# ---------------------------------------------------------------------------
+
+
+def test_case_markdown_expands_file_refs(tmp_path: Path) -> None:
+    """@filename tokens in case prompt are expanded using the case file's directory."""
+    from agent_framework_evaluator.case_markdown import parse_case_markdown_file
+
+    context_file = tmp_path / "deck.txt"
+    context_file.write_text("slide content here", encoding="utf-8")
+
+    case_md = tmp_path / "case01.md"
+    case_md.write_text(
+        "---\ntitle: test\n---\nAnalyze @deck.txt\n---\nShould summarize slides\n",
+        encoding="utf-8",
+    )
+
+    result = parse_case_markdown_file(case_md, {})
+    assert result is not None
+    assert "slide content here" in result["prompt"]
+    assert "@deck.txt" not in result["prompt"]
+
+
+def test_case_markdown_missing_ref_left_unchanged(tmp_path: Path) -> None:
+    from agent_framework_evaluator.case_markdown import parse_case_markdown_file
+
+    case_md = tmp_path / "case02.md"
+    case_md.write_text(
+        "---\ntitle: test\n---\nSee @ghost.txt\n---\ncriteria\n",
+        encoding="utf-8",
+    )
+
+    result = parse_case_markdown_file(case_md, {})
+    assert result is not None
+    assert "@ghost.txt" in result["prompt"]  # left unchanged
+
+
+def test_case_markdown_custom_resolver(tmp_path: Path) -> None:
+    from pathlib import Path as P
+
+    from agent_framework.file_reference import FileReferenceResolver
+    from agent_framework_evaluator.case_markdown import parse_case_markdown_file
+
+    class UpperResolver:
+        def resolve(self, path: P) -> str:
+            return f"[{path.name.upper()}]"
+
+    (tmp_path / "data.csv").write_text("a,b,c", encoding="utf-8")
+    case_md = tmp_path / "case03.md"
+    case_md.write_text(
+        "---\ntitle: t\n---\nLoad @data.csv\n---\ncriteria\n",
+        encoding="utf-8",
+    )
+
+    result = parse_case_markdown_file(case_md, {}, resolver=UpperResolver())
+    assert result is not None
+    assert "[DATA.CSV]" in result["prompt"]
+
+
+def test_markdown_case_loader_expands_refs(tmp_path: Path) -> None:
+    from agent_framework_evaluator.case_markdown import MarkdownCaseLoader
+
+    (tmp_path / "info.txt").write_text("important context", encoding="utf-8")
+    (tmp_path / "case.md").write_text(
+        "---\ntitle: t\n---\nSee @info.txt\n---\ncriteria\n",
+        encoding="utf-8",
+    )
+
+    loader = MarkdownCaseLoader(tmp_path, "*.md")
+    cases = loader.get_test_cases()
+    assert len(cases) == 1
+    assert "important context" in cases[0]["prompt"]

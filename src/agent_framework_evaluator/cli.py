@@ -200,7 +200,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         runner = SessionRunner(args.env)
         run_result = runner.run_once(
             agent_id=agent_id,
-            prompt=prompt,
+            prompt=prompt.rstrip() + CASE_NO_CALLBACKS_POSTFIX,
             setup_path=setup_path,
         )
         selected = select_agent_result_field(run_result, result_field)

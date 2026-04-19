@@ -1523,13 +1523,13 @@ body {
 }
 
 .case-run-mode-label {
-  font-size: 0.72rem;
-  font-weight: 600;
+  font-size: 1rem;
+  line-height: 1;
   color: var(--muted);
-  letter-spacing: 0.02em;
   white-space: nowrap;
-  min-width: 6.5rem;
-  text-align: right;
+  min-width: 1.4rem;
+  text-align: center;
+  cursor: default;
 }
 
 .case-run-split {

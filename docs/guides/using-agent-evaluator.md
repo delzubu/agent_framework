@@ -211,6 +211,40 @@ case_run_mode: no_callbacks
 
 This is the instruction that gets sent to your agent verbatim.  Write it exactly as you would type it into a chat interface.  Be as specific as your real users would be — if your users often send vague instructions, your test prompts should sometimes be vague too.
 
+#### Injecting file contents with `@filename`
+
+You can embed the contents of a file directly into the prompt using `@filename` or `@"filename with spaces.ext"` syntax:
+
+```markdown
+---
+title: Deck review
+---
+Review the following presentation and identify the three most important action items:
+
+@"q1-review.pptx"
+---
+- The response lists exactly three action items
+- Each action item is attributed to a slide number
+```
+
+The framework reads the referenced file and substitutes its contents before the prompt reaches the agent.  Text files are wrapped in `<file name="...">` tags.  Binary files (like `.pptx`, `.pdf`, `.xlsx`) are base64-encoded in `<file name="..." encoding="base64">` tags — the model can then decode or interpret the data.
+
+File paths are resolved relative to the case file's directory.  If the file does not exist, the `@ref` token is left in the prompt unchanged (no error).
+
+To use a custom resolver (e.g. to extract text from a pptx instead of base64-encoding it), pass `resolver=` to `MarkdownCaseLoader`:
+
+```python
+from agent_framework.file_reference import FileReferenceResolver
+from agent_framework_evaluator.case_markdown import MarkdownCaseLoader
+
+class PptxTextResolver:
+    def resolve(self, path) -> str:
+        # extract text using python-pptx, wrap however suits your agent
+        ...
+
+_LOADER = MarkdownCaseLoader(_HERE, "cases/*.md", resolver=PptxTextResolver())
+```
+
 ### The criteria section
 
 Each line that starts with `-` is one criterion.  The evaluator LLM checks each one independently and marks it passed or failed.  The score is roughly proportional to the number that pass (scaled 1–10), with the evaluator allowed to adjust by up to ±2 when something critical is missing or surprisingly good.
