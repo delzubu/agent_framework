@@ -207,14 +207,22 @@ def load_raw_test_cases(env_file: Path, initializer_ref: str) -> list[dict[str, 
         prompt = str(item.get("prompt", ""))
         crit = item.get("evaluation_criteria", item.get("criteria", ""))
         criteria = str(crit) if crit is not None else ""
-        ce = item.get("code_evaluator")
+        raw_evaluators = item.get("code_evaluators")
+        if isinstance(raw_evaluators, list):
+            code_evaluators = [fn for fn in raw_evaluators if callable(fn)]
+        elif callable(item.get("code_evaluator")):
+            code_evaluators = [item["code_evaluator"]]
+        else:
+            code_evaluators = []
+        flags: set = item.get("flags") or set()
         out.append(
             {
                 "title": title,
                 "prompt": prompt,
                 "evaluation_criteria": criteria,
-                "code_evaluator": ce if callable(ce) else None,
+                "code_evaluators": code_evaluators,
                 "result_field": str(item.get("result_field", "message") or "message"),
+                "flags": flags,
             }
         )
     return out
@@ -224,14 +232,14 @@ def serialize_test_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """API-safe rows (no callables)."""
     rows: list[dict[str, Any]] = []
     for i, c in enumerate(cases):
-        ce = c.get("code_evaluator")
+        evaluators = c.get("code_evaluators") or ([c["code_evaluator"]] if callable(c.get("code_evaluator")) else [])
         rows.append(
             {
                 "index": i,
                 "title": str(c.get("title", f"Case {i}")),
                 "prompt": str(c.get("prompt", "")),
                 "criteria": str(c.get("evaluation_criteria", c.get("criteria", ""))),
-                "has_code_evaluator": bool(callable(ce)),
+                "has_code_evaluator": bool(evaluators),
                 "result_field": str(c.get("result_field", "message") or "message"),
             }
         )

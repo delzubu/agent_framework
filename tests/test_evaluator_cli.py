@@ -622,6 +622,41 @@ def test_initializer_catalog_preserves_markdown_result_field(tmp_path: Path) -> 
     assert serialized_cases[0]["result_field"] == "parameters"
 
 
+def test_initializer_catalog_preserves_code_evaluators(tmp_path: Path) -> None:
+    """Regression test for #34: code_evaluators must survive the load_raw_test_cases roundtrip."""
+    from agent_framework_evaluator.initializer_catalog import load_raw_test_cases, load_test_cases
+
+    env_f = tmp_path / ".env"
+    env_f.write_text(f"AGENT_EVAL_INITIALIZER_DIR={tmp_path.as_posix()}\n", encoding="utf-8")
+
+    def my_evaluator(prompt: str, agent_message: str) -> dict:
+        return {"score": 10, "evaluation": [], "result": "ok"}
+
+    init_f = tmp_path / "initializer.py"
+    case_f = tmp_path / "case.case.md"
+    case_f.write_text(
+        "---\ntitle: Eval case\ncode_evaluator: my_evaluator\n---\nPrompt\n---\nCriteria\n",
+        encoding="utf-8",
+    )
+    init_f.write_text(
+        "from pathlib import Path\n"
+        "from agent_framework_evaluator.case_markdown import MarkdownCaseLoader\n"
+        "def my_evaluator(prompt, agent_message): return {'score': 10, 'evaluation': [], 'result': 'ok'}\n"
+        "def get_test_cases():\n"
+        "    return MarkdownCaseLoader(Path(__file__).parent, '*.case.md', {'my_evaluator': my_evaluator}).get_test_cases()\n",
+        encoding="utf-8",
+    )
+
+    raw_cases = load_raw_test_cases(env_f, "initializer.py")
+    assert len(raw_cases) == 1
+    evaluators = raw_cases[0].get("code_evaluators", [])
+    assert len(evaluators) == 1, "code_evaluators must survive the roundtrip through load_raw_test_cases"
+    assert callable(evaluators[0])
+
+    serialized = load_test_cases(env_f, "initializer.py")
+    assert serialized[0]["has_code_evaluator"] is True
+
+
 def test_api_evaluator_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_ENV_PATH", "/abs/env")
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_AGENT", "agent-x")
@@ -871,7 +906,7 @@ def test_case_markdown_expands_file_refs(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = parse_case_markdown_file(case_md, {})
+    result = parse_case_markdown_file(path=case_md, evaluator_registry={})
     assert result is not None
     assert "slide content here" in result["prompt"]
     assert "@deck.txt" not in result["prompt"]
@@ -886,7 +921,7 @@ def test_case_markdown_missing_ref_left_unchanged(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = parse_case_markdown_file(case_md, {})
+    result = parse_case_markdown_file(path=case_md, evaluator_registry={})
     assert result is not None
     assert "@ghost.txt" in result["prompt"]  # left unchanged
 
@@ -908,7 +943,7 @@ def test_case_markdown_custom_resolver(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = parse_case_markdown_file(case_md, {}, resolver=UpperResolver())
+    result = parse_case_markdown_file(path=case_md, evaluator_registry={}, resolver=UpperResolver())
     assert result is not None
     assert "[DATA.CSV]" in result["prompt"]
 

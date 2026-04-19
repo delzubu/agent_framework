@@ -51,9 +51,9 @@ def _normalise_initializer_ref(ref: str) -> str:
 
 
 def parse_case_markdown_file(
+    *,
     path: Path,
     evaluator_registry: Mapping[str, Callable[..., Any]],
-    *,
     resolver: FileReferenceResolver | None = None,
 ) -> dict[str, Any] | None:
     """Parse one case file; return case metadata, prompt, criteria, and evaluator hooks."""
@@ -119,9 +119,9 @@ class MarkdownCaseLoader:
         base_dir: Path,
         glob_pattern: str,
         evaluator_registry: Mapping[str, Callable[..., Any]] | None = None,
+        *,
         initializer_ref: str | None = None,
         resolver: FileReferenceResolver | None = None,
-        *
     ) -> None:
         self._base = base_dir.resolve()
         self._glob = glob_pattern
@@ -138,7 +138,7 @@ class MarkdownCaseLoader:
             return self._cache
         parsed: list[dict[str, Any]] = []
         for f in files:
-            row = parse_case_markdown_file(f, self._reg, resolver=self._resolver)
+            row = parse_case_markdown_file(path=f, evaluator_registry=self._reg, resolver=self._resolver)
             if row is None:
                 continue
             fm_init = row.get("fm_initializer")

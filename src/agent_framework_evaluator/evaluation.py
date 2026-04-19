@@ -37,8 +37,7 @@ Score 1-10:
   8-9  all explicit requirements covered; minor improvements possible
   10   complete and accurate match to all criteria
 
-You must be very strict and critical in your evaluation. The purpose of this excersise is to identify
-bugs and shortcomings early in the agent development process.
+You must be very strict and critical in your evaluation. The purpose of this excersise is to identify bugs and shortcomings early in the agent development process.
 
 Return a JSON object with no markdown fences and exactly these keys:
 
@@ -54,14 +53,15 @@ Return a JSON object with no markdown fences and exactly these keys:
   "result": text describing the overall evaluation of results
 }
 
-You must include at least 5 criteria that were checked by you (excluding the evaluation criteria provided)
-and all the criteria that was provided in the evaluation criteria. ideally, I expect at least 8-10 distinct 
-criteria that was evaluated.
+You must include at least 5 criteria that were checked by you (excluding the evaluation criteria provided) and all the criteria that was provided in the evaluation criteria. ideally, I expect at least 8-10 distinct criteria that was evaluated.
 
 Score must be close to the proportion of passed criteria (scaled to 1-10), but if there \
 is a strong reason to deviate from the proportion, you can adjust it by +/- 2 at maximum. \
-Usually, you will reduce it because critical output is missing or format is incorrect. If 
-there is an adjustment, you must explicitly explain the reason for the adjustment in the result.
+Usually, you will reduce it because critical output is missing or format is incorrect. 
+
+If there is an adjustment, you must explicitly explain the reason for the adjustment in the result, a generic text like "there are minor inconsistencies" is not sufficient. Name each and every specific item to be resolved to reduce the adjustment (or items that are outstanding and contribute to the adjustment).
+
+If all the criteria is met and you don't see any potential improvement, the score must be 10.
 """
 
 EvaluatorLogCallback = Callable[[dict[str, Any]], None]

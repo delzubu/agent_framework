@@ -7,6 +7,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from agent_framework_evaluator.evaluation import CASE_NO_CALLBACKS_POSTFIX
 from agent_framework_evaluator.runtime.session_runner import SessionRunner
 
 
@@ -235,7 +236,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         if not case_path.exists():
             print(f"error: case file not found: {case_path}", file=sys.stderr)
             return 1
-        case = parse_case_markdown_file(case_path, {})
+        case = parse_case_markdown_file(path=case_path, evaluator_registry={})
         if case is None:
             print(f"error: could not parse case file: {case_path}", file=sys.stderr)
             return 1
