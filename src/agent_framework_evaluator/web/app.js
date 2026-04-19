@@ -566,6 +566,7 @@ function updateCaseRunMenuSelection() {
     item.setAttribute("aria-checked", on ? "true" : "false");
   }
   const modeLabel = caseRunMode === "no_callbacks" ? "No callbacks" : "Standard";
+  const modeIcon = caseRunMode === "no_callbacks" ? "⚡" : "◎";
   if (runAllCasesBtn) {
     runAllCasesBtn.title = `Run all (${modeLabel}). Click to run; hold to choose mode.`;
   }
@@ -573,7 +574,7 @@ function updateCaseRunMenuSelection() {
     runAllCasesModeBtn.title = `Choose mode (current: ${modeLabel})`;
   }
   if (caseRunModeLabel) {
-    caseRunModeLabel.textContent = modeLabel;
+    caseRunModeLabel.textContent = modeIcon;
     caseRunModeLabel.title = `Run mode: ${modeLabel}. Use ▾ to change.`;
   }
 }
