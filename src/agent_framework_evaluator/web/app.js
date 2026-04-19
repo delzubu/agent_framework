@@ -1032,6 +1032,7 @@ async function runAllCasesPlay() {
         session_id: sessionId ?? "",
         initializer: init,
         log_level: selectedTraceLogLevel(),
+        case_run_mode: caseRunMode,
       }),
     });
     if (!res.ok) {

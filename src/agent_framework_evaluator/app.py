@@ -81,6 +81,7 @@ class EvaluateBatchBody(BaseModel):
     initializer: str = ""
     case_indices: list[int] | None = None
     log_level: str = "warning"
+    case_run_mode: str = "standard"
 
 
 def _normalize_log_level(value: Any) -> str:
@@ -630,6 +631,8 @@ def create_app() -> FastAPI:
         rec = session_manager.get(body.session_id) if body.session_id else None
         if rec is None:
             raise HTTPException(status_code=400, detail="unknown session — create a session first")
+        crm = str(body.case_run_mode or "standard").strip()
+        rec.case_run_mode = crm if crm in ("standard", "no_callbacks") else "standard"
         env_file = resolve_env_path(rec.env_path)
         cases = load_raw_test_cases(env_file, body.initializer)
         if not cases:

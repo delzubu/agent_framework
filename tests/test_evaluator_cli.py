@@ -561,6 +561,110 @@ def test_ws_run_handler_applies_no_callbacks_postfix(monkeypatch: pytest.MonkeyP
     assert CASE_NO_CALLBACKS_POSTFIX.strip() in received_prompts[0]
 
 
+def test_api_evaluate_batch_applies_case_run_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for #39: /api/evaluate-batch must apply case_run_mode from the request body.
+
+    When case_run_mode='no_callbacks', the CASE_NO_CALLBACKS_POSTFIX must be appended to the prompt
+    and the session record updated — even if a previous run left a different mode on the session.
+    When case_run_mode='standard', no postfix is appended.
+    """
+    import json
+
+    from starlette.testclient import TestClient
+
+    from agent_framework_evaluator.app import create_app
+    from agent_framework_evaluator.evaluation import CASE_NO_CALLBACKS_POSTFIX
+    from agent_framework_evaluator.initializer_catalog import load_raw_test_cases
+    from agent_framework_evaluator.runtime.session_runner import SessionRunner
+    from agent_framework_evaluator.session_manager import session_manager
+
+    env_f = tmp_path / ".env"
+    env_f.write_text(f"AGENT_EVAL_INITIALIZER_DIR={tmp_path.as_posix()}\n", encoding="utf-8")
+    init_f = tmp_path / "eval.py"
+    init_f.write_text(
+        "def get_test_cases():\n"
+        "    return [{'title': 'T1', 'prompt': 'hello', 'evaluation_criteria': 'ok'}]\n",
+        encoding="utf-8",
+    )
+
+    received_prompts: list[str] = []
+
+    def fake_run_once(self: object, *, prompt: str, **_: object) -> dict[str, object]:
+        received_prompts.append(prompt)
+        return {"status": "completed", "message": "agent reply"}
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    monkeypatch.setattr(
+        "agent_framework_evaluator.app.load_raw_test_cases",
+        lambda env_file, initializer: [
+            {
+                "title": "T1",
+                "prompt": "hello",
+                "evaluation_criteria": "ok",
+                "result_field": "message",
+                "code_evaluators": [],
+                "flags": set(),
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "agent_framework_evaluator.app.run_evaluation",
+        lambda **_: {"score": 8.0, "evaluation": [], "result": "good"},
+    )
+    monkeypatch.setattr(
+        "agent_framework_evaluator.app.load_initializer_default_agent",
+        lambda *_: "root",
+    )
+    monkeypatch.setattr(
+        "agent_framework_evaluator.app.load_initializer_default_eval_model",
+        lambda *_: "",
+    )
+    monkeypatch.setattr(
+        "agent_framework_evaluator.app.resolve_setup_path_for_run",
+        lambda *_: None,
+    )
+
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={"env_path": str(env_f)}).json()["session_id"]
+
+    # First: seed the session with "no_callbacks" via WS run to simulate a stale session state.
+    rec = session_manager.get(sid)
+    assert rec is not None
+    rec.case_run_mode = "no_callbacks"
+
+    # Now call batch with case_run_mode="standard" — must override the stale "no_callbacks".
+    received_prompts.clear()
+    res = client.post(
+        "/api/evaluate-batch",
+        json={"session_id": sid, "initializer": "eval.py", "case_run_mode": "standard"},
+    )
+    assert res.status_code == 200
+    lines = [json.loads(l) for l in res.text.strip().splitlines() if l.strip()]
+    assert len(lines) == 1
+    assert "error" not in lines[0]
+    assert rec.case_run_mode == "standard"
+    # Standard mode: no postfix appended
+    assert len(received_prompts) == 1
+    assert CASE_NO_CALLBACKS_POSTFIX.strip() not in received_prompts[0]
+
+    # Now call batch with case_run_mode="no_callbacks" — must append postfix.
+    received_prompts.clear()
+    rec.case_run_mode = "standard"  # reset to standard first
+    res = client.post(
+        "/api/evaluate-batch",
+        json={"session_id": sid, "initializer": "eval.py", "case_run_mode": "no_callbacks"},
+    )
+    assert res.status_code == 200
+    lines = [json.loads(l) for l in res.text.strip().splitlines() if l.strip()]
+    assert len(lines) == 1
+    assert "error" not in lines[0]
+    assert rec.case_run_mode == "no_callbacks"
+    assert len(received_prompts) == 1
+    assert CASE_NO_CALLBACKS_POSTFIX.strip() in received_prompts[0]
+
+
 def test_markdown_case_loader_includes_result_field(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
