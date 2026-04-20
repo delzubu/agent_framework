@@ -36,13 +36,15 @@ def _merge_context(host: Any, **kwargs: Any) -> TraceContext:
     return base.merged(**filtered)
 
 
-def _decision_summary(decision: AgentDecision) -> dict[str, Any]:
+def _decision_payload(decision: AgentDecision) -> dict[str, Any]:
     return {
         "kind": decision.kind,
         "tool_name": decision.tool_name,
         "subagent_id": decision.subagent_id,
         "skill_name": decision.skill_name,
         "callback_intent": decision.callback_intent,
+        "message": decision.message or None,
+        "parameters": decision.parameters or None,
     }
 
 
@@ -91,7 +93,11 @@ class RuntimeTraceBehavior(AgentBehavior):
                 kind="runtime.agent_started",
                 title=f"Agent {agent.agent_id} started",
                 span_id=run.run_id,
-                payload={"caller_id": caller_id},
+                payload={
+                    "caller_id": caller_id,
+                    "prompt": run.rendered_prompt or None,
+                    "parameters": run.parameter_values or None,
+                },
                 context=_merge_context(h, run_id=run.run_id, agent_id=agent.agent_id, caller_id=caller_id),
             )
         return None
@@ -111,7 +117,12 @@ class RuntimeTraceBehavior(AgentBehavior):
                 kind="runtime.agent_finished",
                 title=f"Agent {agent.agent_id} finished",
                 span_id=run.run_id,
-                payload={"status": result.status, "caller_id": caller_id},
+                payload={
+                    "status": result.status,
+                    "caller_id": caller_id,
+                    "message": result.message or None,
+                    "parameters": result.parameters or None,
+                },
                 context=_merge_context(h, run_id=run.run_id, agent_id=agent.agent_id, caller_id=caller_id),
             )
         self._host = None
@@ -149,13 +160,12 @@ class RuntimeTraceBehavior(AgentBehavior):
         if h is None:
             return None
         inv = event.invocation
-        preview = event.result[:500] + ("…" if len(event.result) > 500 else "")
         h.publish_trace_event(
             kind="runtime.tool_call_finished",
             title=f"Tool {event.tool_name} done",
             span_id=event.tool_call_id,
             parent_span_id=inv.run_id,
-            payload={"tool_name": event.tool_name, "result_preview": preview},
+            payload={"tool_name": event.tool_name, "result": event.result},
             context=_merge_context(
                 h,
                 run_id=inv.run_id,
@@ -197,7 +207,12 @@ class RuntimeTraceBehavior(AgentBehavior):
             title=f"Subagent {event.subagent_id} done",
             span_id=event.subagent_call_id,
             parent_span_id=inv.run_id,
-            payload={"subagent_id": event.subagent_id, "status": event.result.status},
+            payload={
+                "subagent_id": event.subagent_id,
+                "status": event.result.status,
+                "message": event.result.message or None,
+                "parameters": event.result.parameters or None,
+            },
             context=_merge_context(
                 h,
                 run_id=inv.run_id,
@@ -233,7 +248,7 @@ class RuntimeTraceBehavior(AgentBehavior):
             title=f"Skill {event.skill_name} injected",
             span_id=f"{inv.run_id}:skill:{event.skill_name}",
             parent_span_id=inv.run_id,
-            payload={"skill_name": event.skill_name},
+            payload={"skill_name": event.skill_name, "content": event.content.body or None},
             context=_merge_context(h, run_id=inv.run_id, agent_id=inv.agent_id, caller_id=inv.caller_id),
         )
         return None
@@ -282,9 +297,9 @@ class RuntimeTraceBehavior(AgentBehavior):
         inv = event.invocation
         try:
             decision = AgentDecision.from_model_response(event.response)
-            payload = _decision_summary(decision)
+            payload = _decision_payload(decision)
         except Exception:
-            payload = {"error": "could_not_parse_decision"}
+            payload = {"error": "could_not_parse_decision", "raw": event.response.content if hasattr(event.response, "content") else None}
         h.publish_trace_event(
             kind="runtime.decision_made",
             title=f"Decision: {payload.get('kind', '?')}",
