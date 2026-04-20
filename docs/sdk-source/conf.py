@@ -61,13 +61,32 @@ def overlay_path_for(what: str, name: str) -> Path | None:
     return None
 
 
-def overlay_include(path: Path) -> list[str]:
-    return [
-        "",
-        f".. include:: {path.as_posix()}",
-        "   :parser: myst_parser.sphinx_",
-        "",
-    ]
+def markdown_inline_to_rst(line: str) -> str:
+    parts = line.split("`")
+    if len(parts) == 1:
+        return line
+    for index in range(1, len(parts), 2):
+        parts[index] = f"``{parts[index]}``"
+    return "".join(parts)
+
+
+def heading_lines(text: str, marker: str) -> list[str]:
+    return [text, marker * len(text), ""]
+
+
+def overlay_lines(path: Path) -> list[str]:
+    lines = [""]
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        if raw_line.startswith("### "):
+            lines.extend(heading_lines(raw_line[4:].strip(), '"'))
+        elif raw_line.startswith("## "):
+            lines.extend(heading_lines(raw_line[3:].strip(), "^"))
+        elif raw_line.startswith("# "):
+            lines.extend(heading_lines(raw_line[2:].strip(), "-"))
+        else:
+            lines.append(markdown_inline_to_rst(raw_line))
+    lines.append("")
+    return lines
 
 
 def insert_overlay(lines: list[str], overlay_lines: list[str]) -> None:
@@ -95,7 +114,7 @@ def inject_overlay(app, what, name, obj, options, lines):
     path = overlay_path_for(what, name)
     if path is None or not path.exists():
         return
-    insert_overlay(lines, overlay_include(path))
+    insert_overlay(lines, overlay_lines(path))
 
 
 def setup(app):
