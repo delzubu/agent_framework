@@ -60,8 +60,9 @@ jobs:
 
       - name: Restore prebuilt SDK output
         run: |
-          rm -rf _site/sdk
-          cp -R docs/pages/sdk _site/sdk
+          sudo rm -rf _site/sdk
+          sudo cp -R docs/pages/sdk _site/sdk
+          sudo chown -R "$USER:$USER" _site/sdk
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
