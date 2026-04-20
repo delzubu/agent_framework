@@ -1,0 +1,66 @@
+name: Regenerate SDK docs
+
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - "src/**/*.py"
+      - "docs/sdk-overlays/**"
+      - "scripts/generate_sdk_docs.py"
+      - ".github/workflows/sdk-docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Detect changed source files
+        id: changed
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            git ls-files 'src/**/*.py' > changed-src.txt
+          else
+            git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" -- 'src/**/*.py' > changed-src.txt
+            if git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" -- 'docs/sdk-overlays/**' 'scripts/generate_sdk_docs.py' '.github/workflows/sdk-docs.yml' | grep -q .; then
+              git ls-files 'src/**/*.py' > changed-src.txt
+            fi
+          fi
+          cat changed-src.txt
+
+      - name: Regenerate changed SDK pages
+        shell: bash
+        run: |
+          if [ ! -s changed-src.txt ]; then
+            python scripts/generate_sdk_docs.py
+          else
+            python scripts/generate_sdk_docs.py --changed $(cat changed-src.txt)
+          fi
+
+      - name: Commit generated SDK docs
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/pages/sdk docs/pages/_includes/sdk-navigation.html
+          if git diff --cached --quiet; then
+            echo "No SDK documentation changes to commit."
+          else
+            git commit -m "Regenerate SDK docs"
+            git push
+          fi

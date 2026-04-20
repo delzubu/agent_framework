@@ -56,13 +56,85 @@ a {
   color: var(--accent);
 }
 
-.page {
-  max-width: 980px;
+.page-shell {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 980px);
+  gap: 28px;
+  max-width: 1360px;
   margin: 0 auto;
-  padding: 40px 24px 64px;
+  padding: 32px 24px 64px;
+}
+
+.side-nav {
+  align-self: start;
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  position: sticky;
+  top: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.tree-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.tree-nav details {
+  border-left: 1px solid var(--line);
+  margin-left: 4px;
+  padding-left: 8px;
+}
+
+.tree-nav details details {
+  margin-top: 4px;
+}
+
+.tree-nav summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+  list-style-position: outside;
+  padding: 5px 4px;
+}
+
+.tree-nav a {
+  display: block;
+  border-radius: 6px;
+  color: var(--muted);
+  padding: 4px 8px;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.tree-nav a:hover {
+  background: #e5e7eb;
+  color: var(--text);
+}
+
+.tree-nav a.is-active,
+.tree-nav a.is-current-section {
+  background: #ccfbf1;
+  color: #134e4a;
+}
+
+.tree-home {
+  font-weight: 700;
+}
+
+.tree-note {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 8px;
 }
 
 .content {
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -106,8 +178,15 @@ a {
     padding: 16px 20px;
   }
 
-  .page {
+  .page-shell {
+    display: block;
     padding: 24px 12px 48px;
+  }
+
+  .side-nav {
+    max-height: none;
+    margin-bottom: 16px;
+    position: static;
   }
 
   .content {

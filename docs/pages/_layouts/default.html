@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ page.title }} | {{ site.title }}</title>
     <link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}">
+    <script defer src="{{ '/assets/site.js' | relative_url }}"></script>
   </head>
   <body>
     <header class="site-header">
@@ -18,7 +19,15 @@
       </nav>
     </header>
 
-    <main class="page">
+    <main class="page-shell">
+      <aside class="side-nav" aria-label="Documentation navigation">
+        {% if page.sdk_page %}
+          {% include sdk-navigation.html %}
+        {% else %}
+          {% include site-navigation.html %}
+        {% endif %}
+      </aside>
+
       <article class="content">
         {{ content }}
       </article>
