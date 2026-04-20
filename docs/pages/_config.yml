@@ -1,0 +1,6 @@
+title: agent_framework
+description: Markdown-defined agent runtime, orchestration host, tracing, and evaluator utilities.
+baseurl: /agent_framework
+markdown: kramdown
+exclude:
+  - README.md

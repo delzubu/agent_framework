@@ -44,6 +44,16 @@ python -m agent_framework --evaluate path/to/evaluation.xml   # regression eval
 python -m agent_framework --llm-trace console|file|both       # with LLM tracing
 ```
 
+## Documentation and GitHub Pages
+
+Product documentation is maintained in this repository under `docs/`.
+
+Public documentation pages are maintained in this repository under `docs/pages/` and deployed with the GitHub Pages workflow in `.github/workflows/static.yml`.
+
+Do **not** copy, commit, or push documentation into the GitHub wiki repository unless the user explicitly asks to restore or update the wiki. Routine public documentation edits belong in `docs/pages/`; deeper product and developer documentation belongs in the relevant `docs/` subdirectory.
+
+Documentation information architecture is defined in [`docs/pages-information-architecture.md`](docs/pages-information-architecture.md).
+
 ## Architecture
 
 This is a **markdown-defined agent runtime**. Agents and tools are defined in Markdown files with YAML frontmatter — their behavior is controlled by the prompts in those files, not just Python code.
