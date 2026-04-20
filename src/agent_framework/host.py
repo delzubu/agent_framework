@@ -25,6 +25,7 @@ from agent_framework.config import HostConfig, load_host_config
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
+    CapabilityDefinition,
     DEFAULT_RESPONSE_MODE,
     ModelContext,
     ModelDriver,
@@ -437,6 +438,8 @@ class AgentHost:
         response_format: dict[str, Any] | None = None,
         response_mode: str = DEFAULT_RESPONSE_MODE,
         tools: Sequence[ToolDefinition] | None = None,
+        skills: Sequence[CapabilityDefinition] | None = None,
+        subagents: Sequence[CapabilityDefinition] | None = None,
         conversation_id: str | None = None,
     ) -> ModelResponse:
         """Single-turn model call without loading an agent definition.
@@ -460,6 +463,12 @@ class AgentHost:
                 plain-text responses or tool-calling loops where JSON parsing
                 of the assistant turn is not needed.
             tools: Tool definitions to expose to the model.
+            skills: Optional skill capabilities (``CapabilityDefinition``) for the
+                runtime envelope (e.g. ``invoke_skill`` metadata). Headless
+                ``complete`` does not execute skill or subagent callbacks—callers
+                that emit those decisions need a multi-step loop (see
+                :meth:`run_agent`).
+            subagents: Optional child-agent capabilities for the runtime envelope.
             conversation_id: If provided and a ``conversation_store`` is
                 attached, prior messages are prepended and the response is
                 appended to the store.
@@ -478,6 +487,8 @@ class AgentHost:
                 response_mode=response_mode,
                 response_format=response_format,
                 tools=tuple(tools or []),
+                skills=tuple(skills or ()),
+                subagents=tuple(subagents or ()),
                 run_id=run_id,
             )
         )
@@ -503,6 +514,8 @@ class AgentHost:
         response_format: dict[str, Any] | None = None,
         response_mode: str = DEFAULT_RESPONSE_MODE,
         tools: Sequence[ToolDefinition] | None = None,
+        skills: Sequence[CapabilityDefinition] | None = None,
+        subagents: Sequence[CapabilityDefinition] | None = None,
         conversation_id: str | None = None,
     ) -> ModelResponse:
         """Async single-turn model call without loading an agent definition.
@@ -523,6 +536,8 @@ class AgentHost:
                 response_mode=response_mode,
                 response_format=response_format,
                 tools=tuple(tools or []),
+                skills=tuple(skills or ()),
+                subagents=tuple(subagents or ()),
                 run_id=run_id,
             )
         )
