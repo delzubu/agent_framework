@@ -966,6 +966,31 @@ def test_cli_evaluate_batch_summary(
     assert "alpha" in out or "beta" in out
 
 
+def test_cli_evaluate_batch_returns_nonzero_when_all_cases_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for #37: batch must return exit code 1 when every case errors."""
+    env_f = tmp_path / ".env"
+    env_f.write_text(f"AGENT_EVAL_INITIALIZER_DIR={tmp_path.as_posix()}\n", encoding="utf-8")
+    _make_case_md(tmp_path, title="always-errors")
+    init_f = tmp_path / "init.py"
+    init_f.write_text(
+        "from pathlib import Path\n"
+        "from agent_framework_evaluator.case_markdown import MarkdownCaseLoader\n"
+        "def get_test_cases():\n"
+        "    return MarkdownCaseLoader(Path(__file__).parent, '*.md').get_test_cases()\n",
+        encoding="utf-8",
+    )
+
+    def boom(*_: object, **__: object) -> None:
+        raise RuntimeError("agent exploded")
+
+    monkeypatch.setattr(SessionRunner, "run_once", boom)
+
+    code = main(["evaluate", "--env", str(env_f), "--initializer", "init.py"])
+    assert code == 1
+
+
 def test_cli_evaluate_batch_output_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -319,7 +319,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
                 criteria=str(case.get("evaluation_criteria", "") or ""),
                 result_field=str(case.get("result_field", "message") or "message"),
                 code_evaluators=case.get("code_evaluators", []),
-            flags=case.get("flags", set()),
+                flags=case.get("flags", set()),
                 setup_path=setup_path,
                 eval_model=eval_model,
             )
@@ -338,7 +338,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         Path(args.output).write_text(text + "\n", encoding="utf-8")
         print(f"\nFull results written to {args.output}")
 
-    return 0
+    all_errored = batch_results and all("error" in r for r in batch_results)
+    return 1 if all_errored else 0
 
 
 def main(argv: list[str] | None = None) -> int:
