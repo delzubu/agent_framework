@@ -6,7 +6,7 @@ This SDK reference is generated from Python docstrings and type annotations.
 Narrative text can be maintained separately under ``docs/sdk-overlays/`` and is inserted into generated module and class pages when available.
 
 .. toctree::
-   :maxdepth: 4
+   :maxdepth: 1
    :caption: Packages
 
    api/agent_framework/index
