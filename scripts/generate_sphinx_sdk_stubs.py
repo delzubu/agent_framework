@@ -10,7 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 SDK_SOURCE = ROOT / "docs" / "sdk-source"
 API_DIR = SDK_SOURCE / "api"
-OVERLAYS = ROOT / "docs" / "sdk-overlays"
 PACKAGES = ("agent_framework", "agent_framework_evaluator", "agent_framework_skills")
 
 
@@ -72,21 +71,6 @@ def title(text: str, char: str = "=") -> str:
     return f"{text}\n{char * len(text)}\n\n"
 
 
-def overlay_path_for_module(module_name: str) -> Path:
-    return OVERLAYS.joinpath(*module_name.split(".")).with_suffix(".md")
-
-
-def overlay_path_for_class(module_name: str, class_name: str) -> Path:
-    return OVERLAYS.joinpath(*module_name.split("."), class_name).with_suffix(".md")
-
-
-def include_overlay(path: Path) -> str:
-    if not path.exists():
-        return ""
-    rel = path.relative_to(ROOT).as_posix()
-    return f".. include:: ../../{rel}\n   :parser: myst_parser.sphinx_\n\n"
-
-
 def module_rst_path(module_name: str) -> Path:
     parts = module_name.split(".")
     if len(parts) == 1:
@@ -105,7 +89,7 @@ def rst_ref(from_path: Path, to_path: Path) -> str:
 def write_module_page(module: ModuleInfo) -> None:
     path = module_rst_path(module.name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [title(module.name), include_overlay(overlay_path_for_module(module.name))]
+    lines = [title(module.name)]
 
     if module.classes:
         lines.extend([
@@ -133,7 +117,6 @@ def write_class_page(module: ModuleInfo, cls: ClassInfo) -> None:
     lines = [
         title(cls.name),
         f"Module: :mod:`{module.name}`\n\n",
-        include_overlay(overlay_path_for_class(module.name, cls.name)),
         f".. autoclass:: {fqcn}\n",
         "   :members:\n",
         "   :show-inheritance:\n",
