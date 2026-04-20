@@ -37,6 +37,7 @@ layout: default
 - [Authoring Agents](Authoring-Agents.html)
 - [Creating Tools](Creating-Tools.html)
 - [Using Skills](Using-Skills.html)
+- [Bundled Skills](Bundled-Skills.html)
 - [Multi-Agent Orchestration](Multi-Agent-Orchestration.html)
 - [Model Providers and Drivers](Model-Providers-and-Drivers.html)
 - [MCP Integration](MCP-Integration.html)

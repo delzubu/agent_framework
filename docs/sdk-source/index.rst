@@ -11,4 +11,3 @@ Narrative text can be maintained separately under ``docs/sdk-overlays/`` and is 
 
    api/agent_framework/index
    api/agent_framework_evaluator/index
-   api/agent_framework_skills/index

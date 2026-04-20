@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 SDK_SOURCE = ROOT / "docs" / "sdk-source"
 API_DIR = SDK_SOURCE / "api"
-PACKAGES = ("agent_framework", "agent_framework_evaluator", "agent_framework_skills")
+PACKAGES = ("agent_framework", "agent_framework_evaluator")
 
 
 @dataclass

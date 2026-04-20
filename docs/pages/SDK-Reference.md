@@ -20,9 +20,13 @@ The SDK reference is generated from Python docstrings during the GitHub Pages wo
 - Model drivers.
 - Conversation store protocols.
 - Tools.
-- Skills.
+- Skills runtime APIs.
 - Evaluation helpers.
 - Tracing APIs.
+
+Bundled skill content is documented separately as static site content:
+
+- [Bundled Skills](Bundled-Skills.html)
 
 ## Next Steps
 

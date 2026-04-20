@@ -14,6 +14,13 @@ Who this is for: users who want reusable instruction sets for agents.
 - Catalog injection.
 - Skill invocation.
 - Budgeting and priority.
+- Bundled skills available with this project.
+
+## Bundled Skills
+
+The project ships skill content as static documentation rather than generated SDK API pages.
+
+- [Bundled Skills](Bundled-Skills.html)
 
 ## Next Steps
 
