@@ -1,0 +1,15 @@
+.bd-main .bd-content .bd-article-container {
+  max-width: 1040px;
+}
+
+.bd-sidebar-primary {
+  width: 320px;
+}
+
+.sig {
+  overflow-wrap: anywhere;
+}
+
+.admonition.note {
+  border-radius: 6px;
+}

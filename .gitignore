@@ -10,3 +10,6 @@ build/
 .claude/settings.local.json
 .playwright-cli/
 .worktrees/
+docs/pages/sdk/
+docs/sdk-source/api/
+docs/sdk-source/_build/

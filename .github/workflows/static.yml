@@ -5,6 +5,11 @@ on:
     branches: ["master"]
     paths:
       - "docs/pages/**"   # only trigger when this folder changes
+      - "docs/sdk-source/**"
+      - "docs/sdk-overlays/**"
+      - "src/**"
+      - "scripts/generate_sphinx_sdk_stubs.py"
+      - "pyproject.toml"
       - ".github/workflows/static.yml"
   workflow_dispatch:
 
@@ -30,6 +35,22 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install SDK documentation dependencies
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[docs,dial,mcp,web]"
+
+      - name: Build SDK documentation
+        run: |
+          rm -rf docs/pages/sdk
+          python scripts/generate_sphinx_sdk_stubs.py
+          sphinx-build -b html docs/sdk-source docs/pages/sdk
 
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
