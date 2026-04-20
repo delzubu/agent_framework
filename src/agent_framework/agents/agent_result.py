@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .agent_decision import AgentDecision
 from .call_context import CallContext
@@ -14,6 +15,7 @@ class AgentResult:
 
     status: str
     message: str = ""
+    parameters: dict[str, Any] | None = None
     decision: AgentDecision | None = None
     prompt: str = ""
     context: CallContext | None = None

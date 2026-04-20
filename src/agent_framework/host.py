@@ -60,6 +60,7 @@ class SubagentBatchItemResult:
     run_id: str
     status: str  # "completed" | "failed" | "timed_out" | "blocked"
     message: str = ""
+    parameters: dict[str, Any] | None = None
     callback_intent: str | None = None
     callback_prompt: str | None = None
 
@@ -1195,6 +1196,7 @@ class AgentHost:
             run_id=child_run_id,
             status=result.status,
             message=result.message,
+            parameters=result.parameters,
         )
 
     def execute_tool(self, tool_name: str, parameters: dict[str, Any]) -> str:

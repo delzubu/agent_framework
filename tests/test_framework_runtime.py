@@ -1025,3 +1025,180 @@ def test_no_skill_tool_registered_on_invocation(tmp_path: Path) -> None:
     )
     agent.run(host=host, parameters={}, caller_id="host")
     assert "read_skill_resource" not in host.tool_registry.list_names()
+
+
+# ---------------------------------------------------------------------------
+# AgentResult.parameters propagation
+# ---------------------------------------------------------------------------
+
+def test_agent_result_carries_parameters_from_final_message_decision(tmp_path: Path) -> None:
+    """handle_final_message must propagate decision.parameters into AgentResult.parameters."""
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    agent = Agent(
+        agent_id="parser",
+        role="parser",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="parse",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+    host = AgentHost(
+        config=load_host_config(env_path),
+        model_driver=FakeModelDriver([
+            {
+                "kind": "final_message",
+                "message": "parsed 2 intents",
+                "parameters": {"intents": ["move", "attack"], "confidence": 0.9},
+            }
+        ]),
+    )
+    result = agent.run(host=host, parameters={}, caller_id="host")
+    assert result.message == "parsed 2 intents"
+    assert result.parameters == {"intents": ["move", "attack"], "confidence": 0.9}
+
+
+def test_agent_result_parameters_none_when_decision_has_no_parameters(tmp_path: Path) -> None:
+    """AgentResult.parameters stays None when decision carries no parameters."""
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    agent = Agent(
+        agent_id="simple",
+        role="simple",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="go",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+    host = AgentHost(
+        config=load_host_config(env_path),
+        model_driver=FakeModelDriver([{"kind": "final_message", "message": "done"}]),
+    )
+    result = agent.run(host=host, parameters={}, caller_id="host")
+    assert result.parameters is None
+
+
+def test_subagent_result_payload_merges_message_and_parameters() -> None:
+    """_subagent_result_payload produces a JSON envelope when parameters are present."""
+    from agent_framework.agents.agent import _subagent_result_payload
+
+    payload = _subagent_result_payload("I captured 3 intents", {"intents": ["a", "b", "c"]})
+    parsed = json.loads(payload)
+    assert parsed["message"] == "I captured 3 intents"
+    assert parsed["intents"] == ["a", "b", "c"]
+
+
+def test_subagent_result_payload_plain_text_when_no_parameters() -> None:
+    """_subagent_result_payload returns plain message when no parameters."""
+    from agent_framework.agents.agent import _subagent_result_payload
+
+    assert _subagent_result_payload("simple reply", None) == "simple reply"
+    assert _subagent_result_payload("simple reply", {}) == "simple reply"
+
+
+def _make_subagent_host(tmp_path: Path, parent_id: str, child_id: str, decisions: list) -> tuple:
+    """Build a host with two agents (parent calls child) using FakeModelDriver.
+
+    Returns (host, capturing_driver) where the driver records all decide() contexts.
+    """
+    env_path = tmp_path / ".env"
+    write_env(env_path, root_agent=parent_id)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(exist_ok=True)
+
+    (agents_dir / f"{parent_id}.md").write_text(
+        f"---\nid: {parent_id}\nrole: orchestrator\ndescription: top\n"
+        f"subagents:\n  - {child_id}\n---\nsys\n---\nrun\n",
+        encoding="utf-8",
+    )
+    (agents_dir / f"{child_id}.md").write_text(
+        f"---\nid: {child_id}\nrole: worker\ndescription: worker\n---\nsys\n---\ndo it\n",
+        encoding="utf-8",
+    )
+
+    class CapturingDriver(FakeModelDriver):
+        def __init__(self, payloads):
+            super().__init__(payloads)
+            self.contexts: list[ModelContext] = []
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            self.contexts.append(context)
+            return super().decide(
+                agent_id=agent_id, provider_name=provider_name,
+                model_names=model_names, temperature=temperature, context=context,
+            )
+
+    driver = CapturingDriver(decisions)
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=driver,
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    return host, driver
+
+
+def test_call_subagent_injects_json_envelope_when_parameters_present(tmp_path: Path) -> None:
+    """Parent conversation must contain the JSON envelope when the child returns parameters."""
+    host, driver = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="parser",
+        decisions=[
+            # orchestrator turn 1: call subagent
+            {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
+            # parser: final_message WITH parameters
+            {
+                "kind": "final_message",
+                "message": "parsed 2 intents",
+                "parameters": {"intents": ["move", "attack"]},
+            },
+            # orchestrator turn 2 (after subagent result injected): finish
+            {"kind": "final_message", "message": "orchestration done"},
+        ],
+    )
+    host.run_root(initial_instruction="go")
+
+    # The second orchestrator decide() call contains the injected subagent result.
+    orchestrator_contexts = [c for c in driver.contexts if len(list(c.messages)) > 2]
+    assert orchestrator_contexts, "expected at least one orchestrator context with subagent result"
+    last_user_msg = next(
+        (m["content"] for m in reversed(list(orchestrator_contexts[0].messages))
+         if m.get("role") == "user" and "parser" in m.get("content", "")),
+        None,
+    )
+    assert last_user_msg is not None, "subagent result message not found in orchestrator context"
+    envelope = json.loads(last_user_msg.split("Subagent result parser: ", 1)[1])
+    assert envelope["message"] == "parsed 2 intents"
+    assert envelope["intents"] == ["move", "attack"]
+
+
+def test_call_subagent_injects_plain_text_when_no_parameters(tmp_path: Path) -> None:
+    """Parent conversation must get plain text when child returns no parameters."""
+    host, driver = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="helper",
+        decisions=[
+            {"kind": "call_subagent", "subagent_id": "helper", "parameters": {}},
+            {"kind": "final_message", "message": "helper done"},
+            {"kind": "final_message", "message": "orchestration done"},
+        ],
+    )
+    host.run_root(initial_instruction="go")
+
+    orchestrator_contexts = [c for c in driver.contexts if len(list(c.messages)) > 2]
+    assert orchestrator_contexts
+    last_user_msg = next(
+        (m["content"] for m in reversed(list(orchestrator_contexts[0].messages))
+         if m.get("role") == "user" and "helper" in m.get("content", "")),
+        None,
+    )
+    assert last_user_msg is not None
+    content_after_prefix = last_user_msg.split("Subagent result helper: ", 1)[1]
+    # No parameters: must be plain text, not a JSON envelope.
+    assert content_after_prefix == "helper done"

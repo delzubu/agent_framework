@@ -80,6 +80,20 @@ def _emit_context_updated(
     )
 
 
+def _subagent_result_payload(message: str, parameters: dict[str, Any] | None) -> str:
+    """Build the text injected into the parent conversation for a subagent result.
+
+    When the child produced structured parameters alongside its message, they are
+    merged into a single JSON envelope so the parent LLM can read both.  The
+    ``message`` key is always present so parent prompts have a stable field to
+    address.  When there are no parameters the plain message string is returned
+    unchanged to keep simple agents readable.
+    """
+    if parameters:
+        return json.dumps({"message": message, **parameters}, ensure_ascii=False)
+    return message
+
+
 @dataclass(slots=True)
 class Agent:
     """Markdown-defined runnable agent.
@@ -542,6 +556,7 @@ class Agent:
         return AgentResult(
             status="completed",
             message=decision.message,
+            parameters=decision.parameters if decision.parameters else None,
             decision=decision,
             prompt=run.rendered_prompt,
         )
@@ -791,24 +806,25 @@ class Agent:
         )
         if pre_decision.system_message:
             run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
+        payload = _subagent_result_payload(result.message, result.parameters)
         agent_events.audit_named_event(
             run_id=run.run_id,
             agent_id=self.agent_id,
             event={
                 "type": "subagent_result",
                 "subagent_id": subagent_id,
-                "result": result.message,
+                "result": payload,
                 "status": result.status,
             },
         )
         run.transcript_entries.append(
-            f"<subagent_result id=\"{subagent_id}\">{result.message}</subagent_result>"
+            f"<subagent_result id=\"{subagent_id}\">{payload}</subagent_result>"
         )
         run.conversation_messages.append(
-            {"role": "user", "content": f"Subagent result {subagent_id}: {result.message}"}
+            {"role": "user", "content": f"Subagent result {subagent_id}: {payload}"}
         )
         run.prompt_fragments.append(
-            f"<subagent_result id=\"{subagent_id}\">{result.message}</subagent_result>"
+            f"<subagent_result id=\"{subagent_id}\">{payload}</subagent_result>"
         )
         return None
 
@@ -912,8 +928,9 @@ class Agent:
             attrs = f'key="{r.output_key}" agent_id="{r.subagent_id}" status="{r.status}"'
             if r.status == "blocked" and r.callback_intent:
                 attrs += f' intent="{r.callback_intent}"'
-            if r.message:
-                lines.append(f"  <subagent_result {attrs}>{r.message}</subagent_result>")
+            payload = _subagent_result_payload(r.message, getattr(r, "parameters", None))
+            if payload:
+                lines.append(f"  <subagent_result {attrs}>{payload}</subagent_result>")
             else:
                 lines.append(f"  <subagent_result {attrs}/>")
         lines.append("</subagent_results>")
