@@ -61,6 +61,7 @@ class SubagentBatchItemResult:
     status: str  # "completed" | "failed" | "timed_out" | "blocked"
     message: str = ""
     parameters: dict[str, Any] | None = None
+    parameters_injection: str = "override"
     callback_intent: str | None = None
     callback_prompt: str | None = None
 
@@ -1197,6 +1198,7 @@ class AgentHost:
             status=result.status,
             message=result.message,
             parameters=result.parameters,
+            parameters_injection=result.parameters_injection,
         )
 
     def execute_tool(self, tool_name: str, parameters: dict[str, Any]) -> str:

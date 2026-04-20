@@ -1100,6 +1100,126 @@ def test_subagent_result_payload_plain_text_when_no_parameters() -> None:
     assert _subagent_result_payload("simple reply", {}) == "simple reply"
 
 
+def test_subagent_result_payload_append_mode() -> None:
+    """append mode: message kept verbatim, parameters appended as fenced JSON block."""
+    from agent_framework.agents.agent import _subagent_result_payload
+
+    result = _subagent_result_payload("captured 3 intents", {"intents": ["a"]}, "append")
+    assert result.startswith("captured 3 intents\n```\n")
+    assert result.endswith("\n```")
+    fenced = result.split("```\n", 1)[1].rstrip("\n`")
+    assert json.loads(fenced) == {"intents": ["a"]}
+
+
+def test_subagent_result_payload_ignore_mode() -> None:
+    """ignore mode: message returned unchanged, parameters discarded."""
+    from agent_framework.agents.agent import _subagent_result_payload
+
+    assert _subagent_result_payload("summary only", {"secret": 42}, "ignore") == "summary only"
+
+
+def test_agent_loads_parameters_injection_from_frontmatter(tmp_path: Path) -> None:
+    """parameters_injection frontmatter field is parsed and stored on Agent."""
+    agent_path = tmp_path / "parser.md"
+    agent_path.write_text(
+        "---\nid: parser\nrole: parser\ndescription: p\nparameters_injection: append\n---\nsys\n---\ngo\n",
+        encoding="utf-8",
+    )
+    agent = Agent.from_markdown(agent_path, default_provider="openai", default_model=("gpt-4o-mini",))
+    assert agent.parameters_injection == "append"
+
+
+def test_agent_parameters_injection_defaults_to_override(tmp_path: Path) -> None:
+    """parameters_injection defaults to 'override' when absent from frontmatter."""
+    agent_path = tmp_path / "simple.md"
+    agent_path.write_text(
+        "---\nid: simple\nrole: r\ndescription: d\n---\nsys\n---\ngo\n",
+        encoding="utf-8",
+    )
+    agent = Agent.from_markdown(agent_path, default_provider="openai", default_model=("gpt-4o-mini",))
+    assert agent.parameters_injection == "override"
+
+
+def test_agent_invalid_parameters_injection_raises(tmp_path: Path) -> None:
+    """An unrecognised parameters_injection value raises AgentMarkdownError."""
+    from agent_framework.agents.helpers import AgentMarkdownError
+
+    agent_path = tmp_path / "bad.md"
+    agent_path.write_text(
+        "---\nid: bad\nrole: r\ndescription: d\nparameters_injection: merge\n---\nsys\n---\ngo\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AgentMarkdownError, match="parameters_injection"):
+        Agent.from_markdown(agent_path, default_provider="openai", default_model=("gpt-4o-mini",))
+
+
+def test_call_subagent_append_mode_keeps_message_and_appends_params(tmp_path: Path) -> None:
+    """When child uses append mode, parent sees prose summary + fenced JSON block."""
+    host, driver = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="parser",
+        decisions=[
+            {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
+            {
+                "kind": "final_message",
+                "message": "captured 2 intents",
+                "parameters": {"intents": ["move", "attack"]},
+            },
+            {"kind": "final_message", "message": "done"},
+        ],
+    )
+    # Override the parser agent's parameters_injection after loading
+    parser = host.agent_registry.get("parser")
+    object.__setattr__(parser, "parameters_injection", "append")
+
+    host.run_root(initial_instruction="go")
+
+    orchestrator_contexts = [c for c in driver.contexts if len(list(c.messages)) > 2]
+    last_user_msg = next(
+        (m["content"] for m in reversed(list(orchestrator_contexts[0].messages))
+         if "parser" in m.get("content", "")),
+        None,
+    )
+    assert last_user_msg is not None
+    content = last_user_msg.split("Subagent result parser: ", 1)[1]
+    assert content.startswith("captured 2 intents\n```\n")
+    params = json.loads(content.split("```\n", 1)[1].rstrip("\n`"))
+    assert params == {"intents": ["move", "attack"]}
+
+
+def test_call_subagent_ignore_mode_drops_parameters(tmp_path: Path) -> None:
+    """When child uses ignore mode, parent sees only the prose message."""
+    host, driver = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="parser",
+        decisions=[
+            {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
+            {
+                "kind": "final_message",
+                "message": "summary only",
+                "parameters": {"hidden": True},
+            },
+            {"kind": "final_message", "message": "done"},
+        ],
+    )
+    parser = host.agent_registry.get("parser")
+    object.__setattr__(parser, "parameters_injection", "ignore")
+
+    host.run_root(initial_instruction="go")
+
+    orchestrator_contexts = [c for c in driver.contexts if len(list(c.messages)) > 2]
+    last_user_msg = next(
+        (m["content"] for m in reversed(list(orchestrator_contexts[0].messages))
+         if "parser" in m.get("content", "")),
+        None,
+    )
+    assert last_user_msg is not None
+    content = last_user_msg.split("Subagent result parser: ", 1)[1]
+    assert content == "summary only"
+
+
 def _make_subagent_host(tmp_path: Path, parent_id: str, child_id: str, decisions: list) -> tuple:
     """Build a host with two agents (parent calls child) using FakeModelDriver.
 
