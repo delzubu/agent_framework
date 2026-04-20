@@ -2,9 +2,10 @@ name: Deploy docs/pages to GitHub Pages
 
 on:
   push:
-    branches: ["main"]
+    branches: ["master"]
     paths:
       - "docs/pages/**"   # only trigger when this folder changes
+      - ".github/workflows/static.yml"
   workflow_dispatch:
 
 permissions:
@@ -30,11 +31,16 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
-      # Upload only the docs/pages folder
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: docs/pages
+          destination: _site
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/pages
+          path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment

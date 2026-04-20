@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ page.title }} | {{ site.title }}</title>
+    <link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="site-title" href="{{ '/' | relative_url }}">agent_framework</a>
+      <nav class="top-nav" aria-label="Primary">
+        <a href="{{ '/Learn.html' | relative_url }}">Learn</a>
+        <a href="{{ '/Build.html' | relative_url }}">Build</a>
+        <a href="{{ '/Reference.html' | relative_url }}">Reference</a>
+        <a href="{{ '/Examples.html' | relative_url }}">Examples</a>
+        <a href="{{ '/Community.html' | relative_url }}">Community</a>
+      </nav>
+    </header>
+
+    <main class="page">
+      <article class="content">
+        {{ content }}
+      </article>
+    </main>
+  </body>
+</html>
