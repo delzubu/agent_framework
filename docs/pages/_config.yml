@@ -4,7 +4,3 @@ baseurl: /agent_framework
 markdown: kramdown
 exclude:
   - README.md
-include:
-  - sdk/_modules
-  - sdk/_sources
-  - sdk/_static

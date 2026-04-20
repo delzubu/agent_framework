@@ -58,6 +58,11 @@ jobs:
           source: docs/pages
           destination: _site
 
+      - name: Restore prebuilt SDK output
+        run: |
+          rm -rf _site/sdk
+          cp -R docs/pages/sdk _site/sdk
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
