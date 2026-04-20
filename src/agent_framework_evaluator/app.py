@@ -658,7 +658,17 @@ def create_app() -> FastAPI:
                 )
                 criteria = str(case.get("evaluation_criteria", "") or "")
 
-                def run_case(p: str = prompt_for_run) -> dict[str, object]:
+                case_prompts: dict[str, Any] = {}
+
+                def on_case_first_llm_call(
+                    trace: Any, _cap: dict = case_prompts
+                ) -> None:
+                    llm_payload = getattr(trace, "input_payload", None)
+                    _cap.update(extract_first_llm_request_prompts(llm_payload))
+
+                def run_case(
+                    p: str = prompt_for_run, _on_llm: Any = on_case_first_llm_call
+                ) -> dict[str, object]:
                     return rec.runner.run_once(
                         agent_id=default_agent,
                         prompt=p,
@@ -666,6 +676,7 @@ def create_app() -> FastAPI:
                         user_comm=rec.comm,
                         runtime_tracer=rec.tracer,
                         session_id=body.session_id,
+                        on_first_llm_call=_on_llm,
                     )
 
                 try:
@@ -674,19 +685,18 @@ def create_app() -> FastAPI:
                     agent_msg = select_agent_result_field(run_result, result_field)
                     if agent_msg is None:
                         raise ValueError(f"result_field '{result_field}' not present in agent result")
-                    prompts = rec.last_run_prompts or {}
 
-                    def do_eval(am: str = agent_msg, cr: str = criteria) -> dict[str, Any]:
+                    def run_evaluation_for_case(am: str = agent_msg, cr: str = criteria, pr: dict = case_prompts) -> dict[str, Any]:
                         return run_evaluation(
                             env_path=env_file,
                             evaluator_prompt=cr,
                             agent_message=am,
-                            system_prompt=prompts.get("system_prompt", ""),
-                            user_prompt=prompts.get("user_prompt", ""),
+                            system_prompt=pr.get("system_prompt", ""),
+                            user_prompt=pr.get("user_prompt", ""),
                             model_override=eval_model if eval_model else None,
                         )
 
-                    llm: dict[str, Any] = await loop.run_in_executor(_executor, do_eval)
+                    llm: dict[str, Any] = await loop.run_in_executor(_executor, run_evaluation_for_case)
                     llm["score"] = min(10.0, max(0.0, float(llm["score"])))
 
                     code_results = run_code_evaluations(
