@@ -148,10 +148,10 @@ def write_package_index(package: str, modules: list[ModuleInfo]) -> None:
     package_modules = [module for module in modules if module.name == package or module.name.startswith(package + ".")]
     lines = [
         title(package),
-        f".. automodule:: {package}\n",
-        "   :members:\n\n",
+        f"Package reference for ``{package}``.\n\n",
+        "Select a module from the tree to view its public classes and functions.\n\n",
         ".. toctree::\n",
-        "   :maxdepth: 3\n\n",
+        "   :maxdepth: 1\n\n",
     ]
     for module in package_modules:
         module_path = module_rst_path(module.name)
@@ -169,6 +169,8 @@ def main() -> None:
     for package in PACKAGES:
         write_package_index(package, modules)
     for module in modules:
+        if module.name in PACKAGES:
+            continue
         write_module_page(module)
         for cls in module.classes:
             write_class_page(module, cls)

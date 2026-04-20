@@ -30,14 +30,15 @@ html_static_path = ["_static"]
 html_css_files = ["sdk.css"]
 
 html_theme_options = {
-    "show_nav_level": 3,
+    "show_nav_level": 2,
     "navigation_depth": 4,
-    "collapse_navigation": False,
+    "collapse_navigation": True,
     "show_toc_level": 2,
     "navbar_align": "left",
     "github_url": "https://github.com/delzubu/agent_framework",
 }
 
+toc_object_entries = False
 autosummary_generate = False
 autodoc_typehints = "description"
 autodoc_member_order = "bysource"
