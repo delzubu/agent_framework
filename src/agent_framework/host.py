@@ -1326,6 +1326,7 @@ async def run_tool_loop(
     tool_executor: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None,
     terminal_tools: Sequence[str] = (),
     max_iterations: int = 10,
+    return_on_max_iterations: bool = False,
     conversation_id: str | None = None,
     model_names: str | tuple[str, ...] | None = None,
     temperature: float = 0.2,
@@ -1346,14 +1347,20 @@ async def run_tool_loop(
 
     Args:
         host: The ``AgentHost`` to use for model calls.
-        messages: Initial message list.  Modified in-place as turns progress.
+        messages: Mutable message list **mutated in place** (not copied). After a plain
+            ``stop`` (no tool calls), an ``assistant`` row is appended. After tool calls,
+            an ``assistant`` row with ``tool_calls`` is appended **before** terminal-tool
+            handling so transcripts match clarification-style flows.
         tools: Tool definitions exposed to the model.
         tool_executor: Async callable ``(tool_name, arguments) -> result_str``.
             When ``None``, tool calls are recorded but not executed.
         terminal_tools: Tool names that cause an immediate loop exit when called
             by the model.  The tool is not executed; its arguments are returned.
         max_iterations: Maximum number of model calls before raising
-            ``RuntimeError``.
+            ``RuntimeError`` (unless ``return_on_max_iterations`` is true).
+        return_on_max_iterations: When true, return a ``ModelResponse`` with
+            ``finish_reason="max_iterations"`` instead of raising when the loop
+            exhausts iterations without a stop or terminal tool.
         conversation_id: Passed through to ``complete_async()`` for store
             integration.
         model_names: Model(s) to use.  Accepts a comma-separated string, a
@@ -1377,7 +1384,11 @@ async def run_tool_loop(
 
     from agent_framework.model import ModelResponse
 
-    current_messages = list(messages)
+    # Mutate the caller's ``messages`` list in place (do not copy), so store-backed
+    # wrappers can diff-append new rows to a ``ConversationStore``.
+    current_messages = messages
+    terminal_set = frozenset(terminal_tools)
+    last_response: ModelResponse | None = None
 
     for _ in range(max_iterations):
         response = await host.complete_async(
@@ -1389,18 +1400,35 @@ async def run_tool_loop(
             tools=tools,
             conversation_id=conversation_id,
         )
+        last_response = response
 
         tool_calls = response.tool_calls or ()
 
-        # No tool calls — model is done
+        # No tool calls — model is done (record final assistant in transcript)
         if not tool_calls:
+            current_messages.append(
+                {
+                    "role": "assistant",
+                    "content": response.raw_text or None,
+                }
+            )
             return response
 
-        # Check for terminal tool
+        # Record assistant turn (including tool_calls) before terminal handling so
+        # callers persisting ``messages`` match clarification-style transcripts.
+        current_messages.append(
+            {
+                "role": "assistant",
+                "content": response.raw_text or None,
+                "tool_calls": list(tool_calls),
+            }
+        )
+
+        # Terminal tool — do not execute tools; return tool arguments as raw_text
         for tc in tool_calls:
             fn = tc.get("function", {})
             name = fn.get("name", "")
-            if name in terminal_tools:
+            if name in terminal_set:
                 raw_args = fn.get("arguments", "{}")
                 return ModelResponse(
                     payload={},
@@ -1409,13 +1437,6 @@ async def run_tool_loop(
                     finish_reason="terminal_tool",
                     usage=response.usage,
                 )
-
-        # Append assistant message with tool calls
-        current_messages.append({
-            "role": "assistant",
-            "content": response.raw_text or None,
-            "tool_calls": list(tool_calls),
-        })
 
         # Execute tools and collect results
         for tc in tool_calls:
@@ -1445,6 +1466,14 @@ async def run_tool_loop(
                 "tool_call_id": tc.get("id", ""),
                 "content": result,
             })
+
+    if return_on_max_iterations and last_response is not None:
+        return ModelResponse(
+            payload={},
+            raw_text=last_response.raw_text or "",
+            finish_reason="max_iterations",
+            usage=last_response.usage,
+        )
 
     raise RuntimeError(
         f"run_tool_loop reached max_iterations={max_iterations} without a stop condition."
