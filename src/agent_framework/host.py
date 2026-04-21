@@ -57,6 +57,7 @@ from agent_framework.memory import (
     _size_bytes_for_content,
     build_memory_uri,
     find_memory_uris,
+    next_memory_version,
     parse_memory_uri,
 )
 from agent_framework.tracing import (
@@ -784,11 +785,93 @@ class AgentHost:
             metadata=dict(metadata or {}),
         )
         entry = _entry_from_content(ref, content)
-        return self.get_memory_backend().put(entry)
+        stored_ref = self.get_memory_backend().put(entry)
+        self.publish_trace_event(
+            kind="runtime.memory_put",
+            title=f"Memory stored: {path}",
+            summary=f"Stored memory entry {stored_ref.uri}.",
+            payload={
+                "memory_uri": stored_ref.uri,
+                "scope": stored_ref.scope.as_text(),
+                "mime_type": stored_ref.mime_type,
+                "title": stored_ref.title,
+                "summary": stored_ref.summary,
+                "size_bytes": stored_ref.size_bytes,
+                "version": stored_ref.version,
+                "metadata": dict(stored_ref.metadata),
+            },
+            context=TraceContext(session_id=self.session_id),
+        )
+        return stored_ref
+
+    def create_memory(
+        self,
+        *,
+        path: str,
+        content: Any,
+        mime_type: str | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        scope: MemoryScope | None = None,
+    ) -> MemoryRef:
+        """Create a new memory entry using inferred defaults where possible."""
+        inferred_mime = mime_type or self._infer_memory_mime_type(content)
+        return self.store_memory(
+            path=path,
+            content=content,
+            mime_type=inferred_mime,
+            scope=scope,
+            title=title,
+            summary=summary,
+            metadata=metadata,
+        )
 
     def get_memory(self, uri: str) -> MemoryEntry:
         """Return one memory entry by URI."""
         return self.get_memory_backend().get(uri)
+
+    def update_memory(
+        self,
+        *,
+        uri: str,
+        content: Any,
+        mime_type: str | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryRef:
+        """Update an existing memory entry and bump its version."""
+        current = self.get_memory(uri)
+        updated_ref = MemoryRef(
+            uri=current.ref.uri,
+            scope=current.ref.scope,
+            mime_type=mime_type or current.ref.mime_type,
+            title=title if title is not None else current.ref.title,
+            summary=summary if summary is not None else current.ref.summary,
+            size_bytes=_size_bytes_for_content(content),
+            version=next_memory_version(current.ref.version),
+            metadata=dict(current.ref.metadata) | dict(metadata or {}),
+        )
+        entry = _entry_from_content(updated_ref, content)
+        stored_ref = self.get_memory_backend().put(entry)
+        self.publish_trace_event(
+            kind="runtime.memory_update",
+            title=f"Memory updated: {uri}",
+            summary=f"Updated memory entry {stored_ref.uri} to version {stored_ref.version}.",
+            payload={
+                "memory_uri": stored_ref.uri,
+                "scope": stored_ref.scope.as_text(),
+                "mime_type": stored_ref.mime_type,
+                "title": stored_ref.title,
+                "summary": stored_ref.summary,
+                "size_bytes": stored_ref.size_bytes,
+                "version": stored_ref.version,
+                "metadata": dict(stored_ref.metadata),
+            },
+            context=TraceContext(session_id=self.session_id),
+        )
+        return stored_ref
 
     def render_memory_entry(self, uri: str) -> str:
         """Render one memory entry as XML."""

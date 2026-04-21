@@ -64,6 +64,17 @@ jobs:
           sudo cp -R docs/pages/sdk _site/sdk
           sudo chown -R "$USER:$USER" _site/sdk
 
+      - name: Verify deployed docs paths
+        run: |
+          test -f _site/start-here/what-is-agent_framework/index.html
+          test -f _site/build/getting-started/index.html
+          test -f _site/reference/sdk-reference/index.html
+          test -f _site/sdk/index.html
+          if grep -R -n "{{ '/' | relative_url }}" _site; then
+            echo "Found unresolved Liquid placeholders in built site"
+            exit 1
+          fi
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

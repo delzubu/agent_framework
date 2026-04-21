@@ -11,7 +11,7 @@ The SDK reference is generated from Python docstrings during the GitHub Pages wo
 
 ## Generated Reference
 
-- [Open generated SDK reference](sdk/{{ '/' | relative_url }})
+- [Open generated SDK reference]({{ '/sdk/' | relative_url }})
 
 ## Areas
 

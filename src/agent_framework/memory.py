@@ -338,6 +338,14 @@ def _size_bytes_for_content(content: Any) -> int:
     return len(json.dumps(content, ensure_ascii=False).encode("utf-8"))
 
 
+def next_memory_version(version: str) -> str:
+    """Return the next version label for a memory entry."""
+    try:
+        return str(int(version) + 1)
+    except ValueError:
+        return f"{version}.next"
+
+
 __all__ = [
     "CatalogMemoryQueryProvider",
     "InMemoryMemoryBackend",
@@ -352,5 +360,6 @@ __all__ = [
     "build_memory_uri",
     "find_memory_uris",
     "is_memory_uri",
+    "next_memory_version",
     "parse_memory_uri",
 ]

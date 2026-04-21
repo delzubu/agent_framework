@@ -36,6 +36,30 @@ _MEMORY_QUERY_DEFINITION = build_definition(
     ],
 )
 
+_MEMORY_PUT_DEFINITION = build_definition(
+    "memory_put",
+    "Create a new memory entry and return its mem:// identifier. This is a write tool and is not enabled by default.",
+    [
+        ToolParameter("path", "Relative memory path within the active scope.", required=True),
+        ToolParameter("content", "Content to store. Strings become text; objects become JSON.", required=True, value_type="object"),
+        ToolParameter("mime_type", "Optional MIME type override.", required=False),
+        ToolParameter("title", "Optional human-readable title.", required=False),
+        ToolParameter("summary", "Optional short summary used by list/query.", required=False),
+    ],
+)
+
+_MEMORY_UPDATE_DEFINITION = build_definition(
+    "memory_update",
+    "Update an existing memory entry and return its mem:// identifier. This is a write tool and is not enabled by default.",
+    [
+        ToolParameter("uri", "Exact mem:// identifier to update.", required=True),
+        ToolParameter("content", "Replacement content. Strings become text; objects become JSON.", required=True, value_type="object"),
+        ToolParameter("mime_type", "Optional MIME type override.", required=False),
+        ToolParameter("title", "Optional replacement title.", required=False),
+        ToolParameter("summary", "Optional replacement summary.", required=False),
+    ],
+)
+
 
 class _MemoryGetTool(Tool):
     def invoke(self, arguments: dict[str, Any], host: Any) -> str:
@@ -93,11 +117,66 @@ class _MemoryQueryTool(Tool):
         return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
+class _MemoryPutTool(Tool):
+    def invoke(self, arguments: dict[str, Any], host: Any) -> str:
+        path = str(arguments.get("path", "")).strip()
+        if not path:
+            return "Error: path is required."
+        if "content" not in arguments:
+            return "Error: content is required."
+        ref = host.create_memory(
+            path=path,
+            content=arguments["content"],
+            mime_type=str(arguments.get("mime_type", "")).strip() or None,
+            title=str(arguments.get("title", "")).strip() or None,
+            summary=str(arguments.get("summary", "")).strip() or None,
+        )
+        payload = {
+            "uri": ref.uri,
+            "scope": ref.scope.as_text(),
+            "mime_type": ref.mime_type,
+            "title": ref.title,
+            "summary": ref.summary,
+            "version": ref.version,
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+class _MemoryUpdateTool(Tool):
+    def invoke(self, arguments: dict[str, Any], host: Any) -> str:
+        uri = str(arguments.get("uri", "")).strip()
+        if not uri:
+            return "Error: uri is required."
+        if "content" not in arguments:
+            return "Error: content is required."
+        try:
+            ref = host.update_memory(
+                uri=uri,
+                content=arguments["content"],
+                mime_type=str(arguments.get("mime_type", "")).strip() or None,
+                title=str(arguments.get("title", "")).strip() or None,
+                summary=str(arguments.get("summary", "")).strip() or None,
+            )
+        except (KeyError, ValueError) as exc:
+            return f"Error: {exc}"
+        payload = {
+            "uri": ref.uri,
+            "scope": ref.scope.as_text(),
+            "mime_type": ref.mime_type,
+            "title": ref.title,
+            "summary": ref.summary,
+            "version": ref.version,
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
 def register_memory_tools(registry: Any) -> None:
     """Register read-side memory tools into a ToolRegistry."""
     registry.register(_MemoryGetTool(definition=_MEMORY_GET_DEFINITION))
     registry.register(_MemoryListTool(definition=_MEMORY_LIST_DEFINITION))
     registry.register(_MemoryQueryTool(definition=_MEMORY_QUERY_DEFINITION))
+    registry.register(_MemoryPutTool(definition=_MEMORY_PUT_DEFINITION))
+    registry.register(_MemoryUpdateTool(definition=_MEMORY_UPDATE_DEFINITION))
 
 
 __all__ = ["register_memory_tools"]

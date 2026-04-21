@@ -84,7 +84,7 @@ def test_xml_memory_projector_renders_catalog_and_entry() -> None:
 def test_host_create_registers_memory_tools() -> None:
     host = AgentHost.create(model_driver=FakeModelDriver(), config=HostConfig())
     names = set(host.tool_registry.list_names())
-    assert {"memory_get", "memory_list", "memory_query"} <= names
+    assert {"memory_get", "memory_list", "memory_query", "memory_put", "memory_update"} <= names
 
 
 def test_agents_receive_memory_read_tools_by_default() -> None:
@@ -102,6 +102,8 @@ def test_agents_receive_memory_read_tools_by_default() -> None:
     context = agent.build_context(host=host, run=agent._create_run({}))
     tool_names = {tool.tool_id for tool in context.tools}
     assert {"memory_get", "memory_list", "memory_query"} <= tool_names
+    assert "memory_put" not in tool_names
+    assert "memory_update" not in tool_names
 
 
 def test_memory_tools_list_get_and_query() -> None:
@@ -125,6 +127,36 @@ def test_memory_tools_list_get_and_query() -> None:
     query_result = host.get_tool("memory_query").invoke({"query": "deck"}, host)
     query_payload = json.loads(query_result)
     assert query_payload[0]["uri"] == ref.uri
+
+
+def test_memory_put_and_update_tools_are_available_but_not_default() -> None:
+    host = AgentHost.create(model_driver=FakeModelDriver(), config=HostConfig())
+
+    put_result = host.get_tool("memory_put").invoke(
+        {
+            "path": "notes/topic-a",
+            "content": {"answer": 42},
+            "title": "Topic A",
+            "summary": "Structured note",
+        },
+        host,
+    )
+    put_payload = json.loads(put_result)
+    assert put_payload["uri"].startswith("mem://session/")
+    assert put_payload["version"] == "1"
+
+    update_result = host.get_tool("memory_update").invoke(
+        {
+            "uri": put_payload["uri"],
+            "content": {"answer": 43},
+            "summary": "Updated structured note",
+        },
+        host,
+    )
+    update_payload = json.loads(update_result)
+    assert update_payload["uri"] == put_payload["uri"]
+    assert update_payload["version"] == "2"
+    assert host.get_memory(put_payload["uri"]).content_json == {"answer": 43}
 
 
 def test_agent_build_context_includes_memory_catalog_and_resolved_entry() -> None:
