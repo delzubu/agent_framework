@@ -159,6 +159,29 @@ def test_memory_put_and_update_tools_are_available_but_not_default() -> None:
     assert host.get_memory(put_payload["uri"]).content_json == {"answer": 43}
 
 
+def test_memory_operations_are_written_to_audit_trace(tmp_path: Path) -> None:
+    host = AgentHost.create(model_driver=FakeModelDriver(), config=HostConfig())
+    tracer = host.enable_audit_trace(output_dir=tmp_path / "logs")
+    from agent_framework.tracing import CompositeRuntimeTracer
+
+    if not isinstance(host.runtime_tracer, CompositeRuntimeTracer):
+        raise AssertionError("Expected CompositeRuntimeTracer after enabling audit trace")
+
+    ref = host.create_memory(
+        path="notes/topic-a",
+        content={"answer": 42},
+        title="Topic A",
+        summary="Structured note",
+    )
+    host.update_memory(uri=ref.uri, content={"answer": 43}, summary="Updated structured note")
+
+    text = tracer.output_path.read_text(encoding="utf-8")
+    assert '"type": "memory_operation"' in text
+    assert '"operation": "memory_put"' in text
+    assert '"operation": "memory_update"' in text
+    assert ref.uri in text
+
+
 def test_agent_build_context_includes_memory_catalog_and_resolved_entry() -> None:
     host = AgentHost.create(model_driver=FakeModelDriver(), config=HostConfig())
     ref = host.store_memory(
