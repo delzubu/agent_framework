@@ -87,6 +87,19 @@ def test_host_create_registers_memory_tools() -> None:
     assert {"memory_get", "memory_list", "memory_query", "memory_put", "memory_update"} <= names
 
 
+def test_host_memory_factories_are_extension_points() -> None:
+    class CustomBackend(InMemoryMemoryBackend):
+        pass
+
+    class CustomHost(AgentHost):
+        def create_memory_backend(self):
+            return CustomBackend()
+
+    host = CustomHost.create(model_driver=FakeModelDriver(), config=HostConfig())
+    assert isinstance(host.get_memory_backend(), CustomBackend)
+    assert isinstance(host.get_memory_query_provider(), CatalogMemoryQueryProvider)
+
+
 def test_agents_receive_memory_read_tools_by_default() -> None:
     host = AgentHost.create(model_driver=FakeModelDriver(), config=HostConfig())
     agent = Agent(

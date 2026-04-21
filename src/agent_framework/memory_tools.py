@@ -1,4 +1,10 @@
-"""Host-managed memory tools."""
+"""Host-managed memory tools.
+
+The read-side memory tools are registered in the tool registry and exposed to
+agents by default when memory support is enabled. Write-side tools are also
+registered, but they remain opt-in at the agent layer so installations can
+decide when agents are allowed to mutate memory.
+"""
 
 from __future__ import annotations
 
@@ -62,6 +68,8 @@ _MEMORY_UPDATE_DEFINITION = build_definition(
 
 
 class _MemoryGetTool(Tool):
+    """Read a single memory entry by exact URI."""
+
     def invoke(self, arguments: dict[str, Any], host: Any) -> str:
         uri = str(arguments.get("uri", "")).strip()
         if not uri:
@@ -73,6 +81,8 @@ class _MemoryGetTool(Tool):
 
 
 class _MemoryListTool(Tool):
+    """List visible memory refs without loading their full content."""
+
     def invoke(self, arguments: dict[str, Any], host: Any) -> str:
         limit_raw = arguments.get("limit")
         limit = int(limit_raw) if limit_raw is not None else 20
@@ -96,6 +106,8 @@ class _MemoryListTool(Tool):
 
 
 class _MemoryQueryTool(Tool):
+    """Search visible memory refs by catalog text."""
+
     def invoke(self, arguments: dict[str, Any], host: Any) -> str:
         query = str(arguments.get("query", "")).strip()
         if not query:
@@ -118,6 +130,11 @@ class _MemoryQueryTool(Tool):
 
 
 class _MemoryPutTool(Tool):
+    """Create a new memory entry.
+
+    This tool is intentionally not included in the default per-agent tool set.
+    """
+
     def invoke(self, arguments: dict[str, Any], host: Any) -> str:
         path = str(arguments.get("path", "")).strip()
         if not path:
@@ -143,6 +160,11 @@ class _MemoryPutTool(Tool):
 
 
 class _MemoryUpdateTool(Tool):
+    """Update an existing memory entry.
+
+    This tool is intentionally not included in the default per-agent tool set.
+    """
+
     def invoke(self, arguments: dict[str, Any], host: Any) -> str:
         uri = str(arguments.get("uri", "")).strip()
         if not uri:
@@ -171,7 +193,11 @@ class _MemoryUpdateTool(Tool):
 
 
 def register_memory_tools(registry: Any) -> None:
-    """Register read-side memory tools into a ToolRegistry."""
+    """Register memory tools into a ``ToolRegistry``.
+
+    Registration covers both read-side and write-side tools. Agents only see
+    the read-side subset by default; write tools must be allowed explicitly.
+    """
     registry.register(_MemoryGetTool(definition=_MEMORY_GET_DEFINITION))
     registry.register(_MemoryListTool(definition=_MEMORY_LIST_DEFINITION))
     registry.register(_MemoryQueryTool(definition=_MEMORY_QUERY_DEFINITION))

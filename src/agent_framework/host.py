@@ -722,22 +722,59 @@ class AgentHost:
             self.skill_registry.discover()
         return self.skill_registry
 
+    def create_memory_backend(self) -> MemoryBackend:
+        """Construct the default memory backend for this host.
+
+        Override in subclasses to provide persistent or remote-backed memory.
+        The default implementation returns :class:`InMemoryMemoryBackend`.
+        """
+        return InMemoryMemoryBackend()
+
     def get_memory_backend(self) -> MemoryBackend:
-        """Lazy-initialize and return the host-level memory backend."""
+        """Lazy-initialize and return the host-level memory backend.
+
+        The backend owns canonical storage and exact lookup for ``mem://``
+        entries.
+        """
         if self.memory_backend is None:
-            self.memory_backend = InMemoryMemoryBackend()
+            self.memory_backend = self.create_memory_backend()
         return self.memory_backend
 
+    def create_memory_query_provider(self) -> MemoryQueryProvider:
+        """Construct the default memory query provider for this host.
+
+        Override in subclasses to plug in semantic retrieval or hybrid catalog
+        implementations. The default implementation returns
+        :class:`CatalogMemoryQueryProvider`.
+        """
+        return CatalogMemoryQueryProvider(self.get_memory_backend())
+
     def get_memory_query_provider(self) -> MemoryQueryProvider:
-        """Lazy-initialize and return the host-level memory query provider."""
+        """Lazy-initialize and return the host-level memory query provider.
+
+        Query providers handle discovery and ranking of memory refs within the
+        visible scopes of a run.
+        """
         if self.memory_query_provider is None:
-            self.memory_query_provider = CatalogMemoryQueryProvider(self.get_memory_backend())
+            self.memory_query_provider = self.create_memory_query_provider()
         return self.memory_query_provider
 
+    def create_memory_projector(self) -> MemoryProjector:
+        """Construct the default memory projector for this host.
+
+        Override in subclasses to emit alternative prompt formats. The default
+        implementation returns :class:`XmlMemoryProjector`.
+        """
+        return XmlMemoryProjector()
+
     def get_memory_projector(self) -> MemoryProjector:
-        """Lazy-initialize and return the host-level memory projector."""
+        """Lazy-initialize and return the host-level memory projector.
+
+        Projectors render already-resolved memory metadata and content into the
+        deterministic prompt format used by model calls.
+        """
         if self.memory_projector is None:
-            self.memory_projector = XmlMemoryProjector()
+            self.memory_projector = self.create_memory_projector()
         return self.memory_projector
 
     def get_visible_memory_scopes(self, *, agent_id: str, run_id: str) -> tuple[MemoryScope, ...]:
@@ -747,7 +784,12 @@ class AgentHost:
         return (MemoryScope(kind="session", key=self.session_id),)
 
     def get_default_agent_tool_names(self) -> tuple[str, ...]:
-        """Return tools implicitly available to every agent."""
+        """Return tools implicitly available to every agent.
+
+        Memory read tools are injected here rather than in agent frontmatter so
+        they remain available across the framework without granting write access
+        by default.
+        """
         if not getattr(self.config, "memory_enabled", True):
             return ()
         if not getattr(self.config, "memory_builtin_tools_enabled", True):
@@ -815,7 +857,18 @@ class AgentHost:
         metadata: dict[str, Any] | None = None,
         scope: MemoryScope | None = None,
     ) -> MemoryRef:
-        """Create a new memory entry using inferred defaults where possible."""
+        """Create a new memory entry using inferred defaults where possible.
+
+        Args:
+            path: Relative path under the target scope.
+            content: Content to store. Strings become text; objects become JSON.
+            mime_type: Optional MIME type override. Inferred when omitted.
+            title: Optional short human-readable label.
+            summary: Optional short discovery summary for list/query output.
+            metadata: Optional arbitrary metadata persisted on the ref.
+            scope: Optional explicit scope override. Defaults to the current
+                host session scope.
+        """
         inferred_mime = mime_type or self._infer_memory_mime_type(content)
         return self.store_memory(
             path=path,
@@ -885,7 +938,11 @@ class AgentHost:
         scope_key: str | None = None,
         limit: int = 20,
     ) -> tuple[MemoryRef, ...]:
-        """List visible memory refs, optionally filtered to a single visible scope."""
+        """List visible memory refs, optionally filtered to a single visible scope.
+
+        This method returns lightweight refs only and never materialises full
+        content.
+        """
         scopes = list(self.get_visible_memory_scopes(agent_id="", run_id=""))
         if scope_kind or scope_key:
             if not (scope_kind and scope_key):
@@ -895,7 +952,10 @@ class AgentHost:
         return tuple(hit.ref for hit in hits)
 
     def query_memory(self, text: str, *, limit: int = 10) -> tuple[MemoryQueryHit, ...]:
-        """Query visible memory by text."""
+        """Query visible memory by text.
+
+        Query semantics depend on the active :class:`MemoryQueryProvider`.
+        """
         scopes = self.get_visible_memory_scopes(agent_id="", run_id="")
         return self.get_memory_query_provider().query(text, scopes, limit=limit)
 

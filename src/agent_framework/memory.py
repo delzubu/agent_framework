@@ -1,4 +1,11 @@
-"""Scoped memory primitives, storage backends, and prompt projection."""
+"""Scoped memory primitives, storage backends, and prompt projection.
+
+The memory subsystem supplements the conversation transcript with URI-addressed
+resources that can be shared across agents during a host session. Public types
+in this module are intentionally framework-facing rather than use-case-specific
+so alternative backends, query providers, and projectors can plug in without
+changing agent code.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +33,15 @@ def parse_memory_uri(uri: str) -> tuple[str, str, str]:
 
 
 def build_memory_uri(scope: "MemoryScope", path: str) -> str:
-    """Build a canonical ``mem://`` URI from scope and relative path."""
+    """Build a canonical ``mem://`` URI from scope and relative path.
+
+    Args:
+        scope: Visibility scope that owns the memory entry.
+        path: Relative path portion below the scope, for example ``"deck/full"``.
+
+    Returns:
+        A stable ``mem://`` URI such as ``mem://session/abc123/deck/full``.
+    """
     clean_path = "/".join(part.strip("/") for part in str(path).split("/") if part.strip("/"))
     if not clean_path:
         raise ValueError("Memory path must be non-empty.")
@@ -56,7 +71,13 @@ def find_memory_uris(value: Any) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class MemoryScope:
-    """Visibility scope for memory entries."""
+    """Visibility scope for memory entries.
+
+    ``kind`` describes the namespace type, while ``key`` identifies the
+    concrete instance within that namespace. The initial runtime ships with a
+    session scope, but the data model also supports global, group, agent, and
+    use-case scopes.
+    """
 
     kind: str
     key: str
@@ -66,12 +87,18 @@ class MemoryScope:
             raise ValueError("MemoryScope.kind and MemoryScope.key must be non-empty.")
 
     def as_text(self) -> str:
+        """Return the scope in ``kind:key`` form for prompts and traces."""
         return f"{self.kind}:{self.key}"
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryRef:
-    """Stable reference to a memory entry."""
+    """Stable reference to a memory entry.
+
+    A ``MemoryRef`` is the canonical value that should be passed between
+    agents, tools, and prompt projectors instead of copying large payloads
+    inline.
+    """
 
     uri: str
     scope: MemoryScope
@@ -93,7 +120,11 @@ class MemoryRef:
 
 @dataclass(frozen=True, slots=True)
 class MemoryEntry:
-    """Stored memory value plus metadata."""
+    """Stored memory value plus metadata.
+
+    The runtime stores exactly one content representation per entry:
+    text, bytes, or JSON-serialisable content.
+    """
 
     ref: MemoryRef
     content_text: str | None = None
@@ -120,7 +151,12 @@ class MemoryEntry:
 
 @dataclass(frozen=True, slots=True)
 class MemoryQueryHit:
-    """One discovery result returned by a memory query provider."""
+    """One discovery result returned by a memory query provider.
+
+    ``score`` and ``match_reason`` are optional so simple catalog providers can
+    return useful hits today while semantic retrieval implementations can add
+    richer ranking later without changing the public shape.
+    """
 
     ref: MemoryRef
     score: float | None = None
@@ -128,11 +164,20 @@ class MemoryQueryHit:
 
 
 class MemoryBackend(Protocol):
-    """Storage backend for scoped memory entries."""
+    """Storage backend for scoped memory entries.
 
-    def put(self, entry: MemoryEntry) -> MemoryRef: ...
+    Backends own canonical persistence and exact lookup. They are intentionally
+    separate from query providers so installations can mix and match storage and
+    discovery strategies.
+    """
 
-    def get(self, uri: str) -> MemoryEntry: ...
+    def put(self, entry: MemoryEntry) -> MemoryRef:
+        """Store *entry* and return its stable reference."""
+        ...
+
+    def get(self, uri: str) -> MemoryEntry:
+        """Return the entry addressed by *uri* or raise ``KeyError``."""
+        ...
 
     def update(
         self,
@@ -142,9 +187,13 @@ class MemoryBackend(Protocol):
         mime_type: str | None = None,
         summary: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-    ) -> MemoryRef: ...
+    ) -> MemoryRef:
+        """Update the entry addressed by *uri* and return the new reference metadata."""
+        ...
 
-    def delete(self, uri: str) -> None: ...
+    def delete(self, uri: str) -> None:
+        """Delete the entry addressed by *uri* if it exists."""
+        ...
 
     def list(
         self,
@@ -153,13 +202,21 @@ class MemoryBackend(Protocol):
         prefix: str | None = None,
         mime_type: str | None = None,
         limit: int = 50,
-    ) -> tuple[MemoryRef, ...]: ...
+    ) -> tuple[MemoryRef, ...]:
+        """List visible refs in *scopes* without loading their full content."""
+        ...
 
 
 class MemoryQueryProvider(Protocol):
-    """Discovery provider for memory refs."""
+    """Discovery provider for memory refs.
 
-    def list(self, scopes: Sequence[MemoryScope], *, limit: int = 20) -> tuple[MemoryQueryHit, ...]: ...
+    Query providers are responsible for discovery and ranking, not storage.
+    They may range from simple catalog scans to semantic retrieval engines.
+    """
+
+    def list(self, scopes: Sequence[MemoryScope], *, limit: int = 20) -> tuple[MemoryQueryHit, ...]:
+        """Return visible memory hits without requiring a query string."""
+        ...
 
     def query(
         self,
@@ -167,28 +224,44 @@ class MemoryQueryProvider(Protocol):
         scopes: Sequence[MemoryScope],
         *,
         limit: int = 10,
-    ) -> tuple[MemoryQueryHit, ...]: ...
+    ) -> tuple[MemoryQueryHit, ...]:
+        """Return the best matching memory hits for *text* within *scopes*."""
+        ...
 
 
 class MemoryProjector(Protocol):
-    """Renderer that turns memory refs and entries into prompt text."""
+    """Renderer that turns memory refs and entries into prompt text.
 
-    def render_catalog(self, hits: Sequence[MemoryQueryHit]) -> str: ...
+    Projectors are deterministic. They should not mutate memory or perform
+    retrieval beyond formatting the entries they are given.
+    """
 
-    def render_entries(self, entries: Sequence[MemoryEntry]) -> str: ...
+    def render_catalog(self, hits: Sequence[MemoryQueryHit]) -> str:
+        """Render discovery hits into prompt-safe catalog text."""
+        ...
+
+    def render_entries(self, entries: Sequence[MemoryEntry]) -> str:
+        """Render resolved entries into prompt-safe content text."""
+        ...
 
 
 @dataclass(slots=True)
 class InMemoryMemoryBackend:
-    """Simple process-local backend keyed by URI."""
+    """Simple process-local backend keyed by URI.
+
+    This backend is the default for local runs and tests. It keeps all entries
+    in a host-owned dictionary and does not persist across process restarts.
+    """
 
     _entries: dict[str, MemoryEntry] = field(default_factory=dict)
 
     def put(self, entry: MemoryEntry) -> MemoryRef:
+        """Store *entry* in-memory and return its reference."""
         self._entries[entry.ref.uri] = entry
         return entry.ref
 
     def get(self, uri: str) -> MemoryEntry:
+        """Return the in-memory entry for *uri* or raise ``KeyError``."""
         try:
             return self._entries[uri]
         except KeyError as exc:
@@ -203,6 +276,7 @@ class InMemoryMemoryBackend:
         summary: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> MemoryRef:
+        """Replace the content and selected metadata for *uri*."""
         current = self.get(uri)
         new_ref = MemoryRef(
             uri=current.ref.uri,
@@ -218,6 +292,7 @@ class InMemoryMemoryBackend:
         return new_ref
 
     def delete(self, uri: str) -> None:
+        """Delete *uri* if present."""
         self._entries.pop(uri, None)
 
     def list(
@@ -228,6 +303,7 @@ class InMemoryMemoryBackend:
         mime_type: str | None = None,
         limit: int = 50,
     ) -> tuple[MemoryRef, ...]:
+        """Return visible refs filtered by scope, prefix, and MIME type."""
         allowed = {(scope.kind, scope.key) for scope in scopes}
         refs: list[MemoryRef] = []
         for uri, entry in sorted(self._entries.items()):
@@ -246,11 +322,16 @@ class InMemoryMemoryBackend:
 
 @dataclass(slots=True)
 class CatalogMemoryQueryProvider:
-    """Catalog-backed query provider using exact/substring matching."""
+    """Catalog-backed query provider using exact/substring matching.
+
+    This is the default discovery implementation. It treats URI, title,
+    summary, and metadata as a searchable catalog and returns lightweight hits.
+    """
 
     backend: MemoryBackend
 
     def list(self, scopes: Sequence[MemoryScope], *, limit: int = 20) -> tuple[MemoryQueryHit, ...]:
+        """Return the visible refs from the underlying backend as query hits."""
         return tuple(MemoryQueryHit(ref=ref) for ref in self.backend.list(scopes, limit=limit))
 
     def query(
@@ -260,6 +341,7 @@ class CatalogMemoryQueryProvider:
         *,
         limit: int = 10,
     ) -> tuple[MemoryQueryHit, ...]:
+        """Search the catalog fields of visible refs using simple substring matching."""
         needle = text.strip().lower()
         if not needle:
             return self.list(scopes, limit=limit)
@@ -287,9 +369,16 @@ class CatalogMemoryQueryProvider:
 
 @dataclass(slots=True)
 class XmlMemoryProjector:
-    """Render memory catalog and content as XML blocks."""
+    """Render memory catalog and content as XML blocks.
+
+    The XML format mirrors the runtime prompt contract:
+
+    - ``<available_memory>`` for discovery metadata
+    - ``<memory>`` for fully resolved entry content
+    """
 
     def render_catalog(self, hits: Sequence[MemoryQueryHit]) -> str:
+        """Render discovery hits as an ``<available_memory>`` block."""
         if not hits:
             return ""
         lines = ["<available_memory>"]
@@ -309,6 +398,7 @@ class XmlMemoryProjector:
         return "\n".join(lines)
 
     def render_entries(self, entries: Sequence[MemoryEntry]) -> str:
+        """Render full entries as one or more ``<memory>`` blocks."""
         blocks: list[str] = []
         for entry in entries:
             ref = entry.ref
@@ -339,7 +429,11 @@ def _size_bytes_for_content(content: Any) -> int:
 
 
 def next_memory_version(version: str) -> str:
-    """Return the next version label for a memory entry."""
+    """Return the next version label for a memory entry.
+
+    Numeric versions are incremented arithmetically. Non-numeric versions are
+    preserved and suffixed with ``.next`` so custom schemes still advance.
+    """
     try:
         return str(int(version) + 1)
     except ValueError:
