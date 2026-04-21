@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -772,6 +773,18 @@ def test_api_evaluator_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert data["env_path"] == "/abs/env"
     assert data["agent"] == "agent-x"
     assert data["initializer"] == "init.py"
+
+
+def test_web_command_keeps_relative_env_path_for_ui_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENT_EVAL_DEFAULT_ENV_PATH", raising=False)
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+
+    code = main(["web", "--env", ".env"])
+
+    assert code == 0
+    assert os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] == ".env"
 
 
 def test_api_initializers_and_template(tmp_path) -> None:

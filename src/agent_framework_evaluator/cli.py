@@ -105,8 +105,7 @@ def _ensure_default_env_argument(args: argparse.Namespace) -> None:
 def _cmd_web(args: argparse.Namespace) -> int:
     import uvicorn
 
-    env_abs = str(Path(args.env).resolve())
-    os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] = env_abs
+    os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] = str(args.env)
     for key in ("AGENT_EVAL_DEFAULT_AGENT", "AGENT_EVAL_DEFAULT_INITIALIZER"):
         os.environ.pop(key, None)
     if args.agent:
