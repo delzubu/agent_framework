@@ -11,55 +11,55 @@ This documentation site is the central hub for learning what the project is, bui
 
 ## Start Here
 
-- [What is agent_framework?](What-is-agent_framework.html)
-- [Why Another Agent Framework?](Why-Another-Agent-Framework.html)
-- [What Can You Build With It?](What-Can-You-Build-With-It.html)
-- [Project Status](Project-Status.html)
-- [Roadmap](Roadmap.html)
-- [Glossary](Glossary.html)
+- [What is agent_framework?]({{ '/start-here/what-is-agent_framework/' | relative_url }})
+- [Why Another Agent Framework?]({{ '/start-here/why-another-agent-framework/' | relative_url }})
+- [What Can You Build With It?]({{ '/start-here/what-can-you-build-with-it/' | relative_url }})
+- [Project Status]({{ '/start-here/project-status/' | relative_url }})
+- [Roadmap]({{ '/start-here/roadmap/' | relative_url }})
+- [Glossary]({{ '/start-here/glossary/' | relative_url }})
 
 ## Choose Your Path
 
 ### I am new to agentic AI
 
-Start with [Agentic AI Learning Hub](Agentic-AI-Learning-Hub.html), then read [Core Agentic AI Concepts](Core-Agentic-AI-Concepts.html) and [Glossary](Glossary.html).
+Start with [Agentic AI Learning Hub]({{ '/learn/agentic-ai-learning-hub/' | relative_url }}), then read [Core Agentic AI Concepts]({{ '/learn/core-agentic-ai-concepts/' | relative_url }}) and [Glossary]({{ '/start-here/glossary/' | relative_url }}).
 
 ### I want to build an agent
 
-Start with [Getting Started](Getting-Started.html), then continue to [First Agent in 10 Minutes](First-Agent-in-10-Minutes.html), [Authoring Agents](Authoring-Agents.html), and [Creating Tools](Creating-Tools.html).
+Start with [Getting Started]({{ '/build/getting-started/' | relative_url }}), then continue to [First Agent in 10 Minutes]({{ '/build/first-agent-in-10-minutes/' | relative_url }}), [Authoring Agents]({{ '/build/authoring-agents/' | relative_url }}), and [Creating Tools]({{ '/build/creating-tools/' | relative_url }}).
 
 ### I want to evaluate or debug agents
 
-Start with [Evaluation and Debugging](Evaluation-and-Debugging.html), then read [Tracing and Observability](Tracing-and-Observability.html) and [Evaluation Concepts](Evaluation-Concepts.html).
+Start with [Evaluation and Debugging]({{ '/build/evaluation-and-debugging/' | relative_url }}), then read [Tracing and Observability]({{ '/build/tracing-and-observability/' | relative_url }}) and [Evaluation Concepts]({{ '/learn/evaluation-concepts/' | relative_url }}).
 
 ### I want to contribute
 
-Start with [Contributing](Contributing.html), [Development Setup](Development-Setup.html), and [Good First Issues](Good-First-Issues.html).
+Start with [Contributing]({{ '/community/contributing/' | relative_url }}), [Development Setup]({{ '/community/development-setup/' | relative_url }}), and [Good First Issues]({{ '/community/good-first-issues/' | relative_url }}).
 
 ## Main Sections
 
-- [Learn](Learn.html)
-- [Build](Build.html)
-- [Reference](Reference.html)
-- [Examples](Examples.html)
-- [Community](Community.html)
+- [Learn]({{ '/learn/' | relative_url }})
+- [Build]({{ '/build/' | relative_url }})
+- [Reference]({{ '/reference/' | relative_url }})
+- [Examples]({{ '/examples/' | relative_url }})
+- [Community]({{ '/community/' | relative_url }})
 
 ## Current Status
 
-- [SDK Reference](SDK-Reference.html)
-- [Developer Documentation](Developer-Documentation.html)
-- [Changelog](Changelog.html)
-- [Roadmap](Roadmap.html)
+- [SDK Reference]({{ '/reference/sdk-reference/' | relative_url }})
+- [Developer Documentation]({{ '/reference/developer-documentation/' | relative_url }})
+- [Changelog]({{ '/reference/changelog/' | relative_url }})
+- [Roadmap]({{ '/start-here/roadmap/' | relative_url }})
 
 ## Featured Examples
 
-- [Minimal Agent](Minimal-Agent.html)
-- [Tool-Calling Agent](Tool-Calling-Agent.html)
-- [Multi-Agent Workflow](Multi-Agent-Workflow.html)
-- [Evaluation Project](Evaluation-Project.html)
+- [Minimal Agent]({{ '/examples/minimal-agent/' | relative_url }})
+- [Tool-Calling Agent]({{ '/examples/tool-calling-agent/' | relative_url }})
+- [Multi-Agent Workflow]({{ '/examples/multi-agent-workflow/' | relative_url }})
+- [Evaluation Project]({{ '/examples/evaluation-project/' | relative_url }})
 
 ## Community
 
-- [Contributing](Contributing.html)
-- [Support and Discussions](Support-and-Discussions.html)
-- [Documentation Workflow](Documentation-Workflow.html)
+- [Contributing]({{ '/community/contributing/' | relative_url }})
+- [Support and Discussions]({{ '/community/support-and-discussions/' | relative_url }})
+- [Documentation Workflow]({{ '/community/documentation-workflow/' | relative_url }})
