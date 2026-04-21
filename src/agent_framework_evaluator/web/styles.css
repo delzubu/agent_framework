@@ -1,5 +1,6 @@
 @import url("/static/styles/trace-detail.css");
 @import url("/static/styles/evaluation-detail.css");
+@import url("/static/styles/case-list.css");
 
 :root {
   --bg: #0f1419;
@@ -361,10 +362,10 @@ body {
 
 .conv-msg {
   margin-bottom: 0.75rem;
-}
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
+}
 
 .conv-msg:last-child {
   margin-bottom: 0;
@@ -374,7 +375,6 @@ body {
   display: none;
 }
 
-.conv-msg-body {
 .conv-msg-controls {
   display: flex;
   justify-content: flex-end;
@@ -406,6 +406,7 @@ body {
   border-color: rgba(200, 90, 90, 0.55);
 }
 
+.conv-msg-body {
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1197,199 +1198,6 @@ body {
   padding-left: 0.35rem;
   border-left: 1px solid rgba(91, 192, 222, 0.25);
   max-width: 100%;
-}
-
-/* Multi-case initializer list */
-.case-list-section {
-  margin-top: 0.65rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--border);
-}
-
-.case-list-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.case-list-controls {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-shrink: 0;
-}
-
-.case-run-mode-label {
-  font-size: 1rem;
-  line-height: 1;
-  color: var(--muted);
-  white-space: nowrap;
-  min-width: 1.4rem;
-  text-align: center;
-  cursor: default;
-}
-
-.case-run-split {
-  display: inline-flex;
-  align-items: stretch;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--panel);
-}
-
-.case-run-mode-chevron {
-  font: inherit;
-  font-size: 0.65rem;
-  padding: 0.15rem 0.35rem;
-  margin: 0;
-  border: none;
-  border-left: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--muted);
-  cursor: pointer;
-  line-height: 1;
-}
-
-.case-run-mode-chevron:hover:not(:disabled) {
-  color: var(--text);
-  background: rgba(91, 192, 222, 0.08);
-}
-
-.case-run-mode-chevron:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.case-run-menu {
-  z-index: 50;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  padding: 0.25rem 0;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-}
-
-/* `hidden` must win over `display: flex` above (otherwise the menu stays visible). */
-.case-run-menu[hidden] {
-  display: none;
-}
-
-.case-run-menu-item {
-  font: inherit;
-  font-size: 0.8rem;
-  text-align: left;
-  padding: 0.35rem 0.75rem;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-}
-
-.case-run-menu-item:hover {
-  background: rgba(91, 192, 222, 0.12);
-}
-
-.case-run-menu-item--selected {
-  font-weight: 600;
-  background: rgba(91, 192, 222, 0.08);
-}
-
-.case-list-title {
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.run-all-cases-btn {
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 0.2rem 0.45rem;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  line-height: 1;
-}
-
-.run-all-cases-btn:hover:not(:disabled) {
-  background: rgba(91, 192, 222, 0.1);
-}
-
-.run-all-cases-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.case-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 12rem;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.case-list-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.35rem;
-  padding: 0.25rem 0.35rem;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.12);
-}
-
-.case-list-item-title {
-  font-size: 0.82rem;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.run-case-btn {
-  flex-shrink: 0;
-  font: inherit;
-  font-size: 0.75rem;
-  padding: 0.15rem 0.4rem;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  cursor: pointer;
-  min-width: 1.75rem;
-}
-
-.run-case-btn:hover:not(:disabled) {
-  border-color: rgba(91, 192, 222, 0.45);
-}
-
-.run-case-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.run-case-btn--running {
-  cursor: wait;
-}
-
-.batch-progress {
-  font-size: 0.78rem;
-  color: var(--muted);
-  margin: 0.35rem 0 0;
 }
 
 .eval-single-sections {
