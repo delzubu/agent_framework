@@ -443,14 +443,15 @@ class Agent:
             # and are appended separately from the transcript.
             prompt = f"{prompt}\n\n<augmentations>\n" + "\n".join(run.prompt_fragments) + "\n</augmentations>"
         resolve = getattr(host, "resolve_model_tool_definitions", None)
+        allowed_tool_names = self._effective_allowed_tools(host)
         if callable(resolve):
             tools = resolve(
-                self.allowed_tools,
+                allowed_tool_names,
                 agent_id=self.agent_id,
                 run_id=run.run_id,
             )
         else:
-            tools = tuple(host.get_tool(name).model_definition() for name in self.allowed_tools)
+            tools = tuple(host.get_tool(name).model_definition() for name in allowed_tool_names)
         if hasattr(host, "get_agent"):
             subagents = tuple(
                 _agent_to_capability_definition(
@@ -568,7 +569,7 @@ class Agent:
         caller_id: str | None,
     ) -> AgentResult | None:
         """Dispatch a normalized decision to the appropriate handler."""
-        decision = self._normalize_decision_capabilities(decision)
+        decision = self._normalize_decision_capabilities(decision, host=host)
         from agent_framework.agent_event_publisher import agent_events
 
         agent_events.audit_decision(run_id=run.run_id, agent_id=self.agent_id, decision=decision)
@@ -1128,17 +1129,18 @@ class Agent:
         caller_id: str | None,
     ) -> AgentResult | None:
         """Handle a tool call and append the tool output as an augmentation."""
+        allowed_tools = self._effective_allowed_tools(host)
         if not decision.tool_name:
-            error_text = f"call_tool requires tool_name. Legal tool names: {sorted(self.allowed_tools)}."
+            error_text = f"call_tool requires tool_name. Legal tool names: {sorted(allowed_tools)}."
             run.prompt_fragments.append(f"<tool_error>{error_text}</tool_error>")
             run.transcript_entries.append(f"<tool_error>{error_text}</tool_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_validation_error")
             return None
-        if decision.tool_name not in self.allowed_tools:
+        if decision.tool_name not in allowed_tools:
             error_text = (
                 f"{self.agent_id} is not allowed to call tool {decision.tool_name}. "
-                f"Legal tool names: {sorted(self.allowed_tools)}."
+                f"Legal tool names: {sorted(allowed_tools)}."
             )
             run.prompt_fragments.append(f"<tool_error>{error_text}</tool_error>")
             run.transcript_entries.append(f"<tool_error>{error_text}</tool_error>")
@@ -1672,7 +1674,12 @@ class Agent:
         """Return the parameter spec keyed by parameter name."""
         return {item.name: item for item in self.parameters}
 
-    def _normalize_decision_capabilities(self, decision: AgentDecision) -> AgentDecision:
+    def _normalize_decision_capabilities(
+        self,
+        decision: AgentDecision,
+        *,
+        host: "AgentHostProtocol",
+    ) -> AgentDecision:
         """Repair tool vs subagent *slots* when they disagree with declared capabilities.
 
         **Intentional and confirmed:** This is not open-ended semantic inference on unknown
@@ -1683,6 +1690,7 @@ class Agent:
 
         Both ``subagent_id`` and ``tool_name`` non-empty is always rejected (ambiguous).
         """
+        allowed_tools = self._effective_allowed_tools(host)
         if decision.subagent_id is not None and decision.tool_name is not None:
             raise ValueError(
                 "Invalid model decision: both subagent_id and tool_name are set; "
@@ -1704,7 +1712,7 @@ class Agent:
                     subagent_id=decision.subagent_id,
                     callback_intent=decision.callback_intent,
                 )
-            if decision.tool_name in self.allowed_tools:
+            if decision.tool_name in allowed_tools:
                 _LOGGER.warning(
                     "Agent %s: decision kind mismatch — model emitted callback but tool_name=%r "
                     "matches a declared tool; normalizing to call_tool (intentional slot repair).",
@@ -1735,7 +1743,7 @@ class Agent:
                 )
             if (
                 decision.tool_name is not None
-                and decision.tool_name not in self.allowed_tools
+                and decision.tool_name not in allowed_tools
                 and decision.tool_name in self.allowed_child_agents
             ):
                 _LOGGER.warning(
@@ -1752,7 +1760,7 @@ class Agent:
                     callback_intent=decision.callback_intent,
                 )
         if decision.kind == "call_subagent":
-            if decision.subagent_id is None and decision.tool_name in self.allowed_tools:
+            if decision.subagent_id is None and decision.tool_name in allowed_tools:
                 _LOGGER.warning(
                     "Agent %s: model emitted call_subagent with no subagent_id but tool_name=%r "
                     "matches a declared tool; normalizing to call_tool (intentional slot repair).",
@@ -1769,7 +1777,7 @@ class Agent:
             if (
                 decision.subagent_id is not None
                 and decision.subagent_id not in self.allowed_child_agents
-                and decision.subagent_id in self.allowed_tools
+                and decision.subagent_id in allowed_tools
             ):
                 _LOGGER.warning(
                     "Agent %s: model put a tool id in subagent_id (%r); "
@@ -1785,5 +1793,15 @@ class Agent:
                     callback_intent=decision.callback_intent,
                 )
         return decision
+
+    def _effective_allowed_tools(self, host: "AgentHostProtocol") -> tuple[str, ...]:
+        """Return declared tools plus host-provided default tools."""
+        names = list(self.allowed_tools)
+        default_tools_fn = getattr(host, "get_default_agent_tool_names", None)
+        if callable(default_tools_fn):
+            for name in default_tools_fn():
+                if name not in names:
+                    names.append(name)
+        return tuple(names)
 
 __all__ = ["Agent"]

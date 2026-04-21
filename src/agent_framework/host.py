@@ -745,6 +745,14 @@ class AgentHost:
             return ()
         return (MemoryScope(kind="session", key=self.session_id),)
 
+    def get_default_agent_tool_names(self) -> tuple[str, ...]:
+        """Return tools implicitly available to every agent."""
+        if not getattr(self.config, "memory_enabled", True):
+            return ()
+        if not getattr(self.config, "memory_builtin_tools_enabled", True):
+            return ()
+        return ("memory_get", "memory_list", "memory_query")
+
     def get_memory_auto_store_threshold_bytes(self) -> int:
         """Return the byte threshold above which payloads are auto-stored in memory."""
         configured = int(

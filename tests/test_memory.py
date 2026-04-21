@@ -87,6 +87,23 @@ def test_host_create_registers_memory_tools() -> None:
     assert {"memory_get", "memory_list", "memory_query"} <= names
 
 
+def test_agents_receive_memory_read_tools_by_default() -> None:
+    host = AgentHost.create(model_driver=FakeModelDriver(), config=HostConfig())
+    agent = Agent(
+        agent_id="reviewer",
+        role="reviewer",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="go",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+    context = agent.build_context(host=host, run=agent._create_run({}))
+    tool_names = {tool.tool_id for tool in context.tools}
+    assert {"memory_get", "memory_list", "memory_query"} <= tool_names
+
+
 def test_memory_tools_list_get_and_query() -> None:
     host = AgentHost.create(model_driver=FakeModelDriver(), config=HostConfig())
     ref = host.store_memory(
@@ -204,6 +221,39 @@ def test_agent_run_auto_stores_large_seed_parameter_and_rerenders_prompt() -> No
     assert "<memory " in joined
     assert '"slides"' in joined
     assert "X" * 64 in joined
+
+
+def test_large_prompt_text_is_not_auto_stored_to_memory() -> None:
+    driver = CapturingModelDriver([{"kind": "final_message", "message": "done"}])
+    host = AgentHost.create(
+        model_driver=driver,
+        config=HostConfig(memory_auto_store_threshold_bytes=32),
+    )
+    agent = Agent(
+        agent_id="reviewer",
+        role="reviewer",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="go",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+    prompt_fragment = "<notes>" + ("Z" * 256) + "</notes>"
+
+    result = agent.run(
+        host=host,
+        parameters={},
+        caller_id="host",
+        prompt_fragments=(prompt_fragment,),
+        rendered_prompt_override="review this",
+    )
+    assert result.message == "done"
+
+    _, context = driver.contexts[0]
+    assert "mem://session/" not in context.user_prompt
+    joined = "\n".join(str(message.get("content", "")) for message in context.messages)
+    assert "<memory " not in joined
 
 
 def test_subagent_call_auto_stores_large_parameter_before_child_run(tmp_path: Path) -> None:
