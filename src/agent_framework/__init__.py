@@ -49,6 +49,19 @@ from agent_framework.messages import (
     ImageUrl,
     ToolCallMessage,
 )
+from agent_framework.memory import (
+    CatalogMemoryQueryProvider,
+    InMemoryMemoryBackend,
+    MemoryEntry,
+    MemoryQueryHit,
+    MemoryRef,
+    MemoryScope,
+    XmlMemoryProjector,
+    build_memory_uri,
+    find_memory_uris,
+    is_memory_uri,
+    parse_memory_uri,
+)
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
@@ -110,6 +123,18 @@ __all__ = [
     "FunctionCall",
     "ImageUrl",
     "ToolCallMessage",
+    # Memory
+    "CatalogMemoryQueryProvider",
+    "InMemoryMemoryBackend",
+    "MemoryEntry",
+    "MemoryQueryHit",
+    "MemoryRef",
+    "MemoryScope",
+    "XmlMemoryProjector",
+    "build_memory_uri",
+    "find_memory_uris",
+    "is_memory_uri",
+    "parse_memory_uri",
     # Tracing & web runtime
     "CompositeRuntimeTracer",
     "NullRuntimeTracer",

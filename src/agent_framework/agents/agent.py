@@ -470,12 +470,28 @@ class Agent:
         config = getattr(host, "config", None)
         max_tokens = getattr(config, "skills_catalog_max_tokens", 2000)
         skills_catalog = _build_skills_catalog(skills, max_tokens=max_tokens)
+        build_memory_prompt = getattr(host, "build_memory_prompt", None)
+        memory_prompt = ""
+        if callable(build_memory_prompt):
+            scopes, refs, memory_prompt = build_memory_prompt(
+                agent_id=self.agent_id,
+                run_id=run.run_id,
+                parameter_values=run.parameter_values,
+                seed_parameters=run.seed_parameters,
+            )
+            run.visible_memory_scopes = scopes
+            run.resolved_memory_refs = refs
         message_history: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
             *(
                 [{"role": "user", "content": skills_catalog}]
                 if skills_catalog
+                else []
+            ),
+            *(
+                [{"role": "user", "content": memory_prompt}]
+                if memory_prompt
                 else []
             ),
             *run.conversation_messages,

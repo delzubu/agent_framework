@@ -69,6 +69,13 @@ class HostConfig:
     mcp_config_path: Path | None = None
     mcp_enabled: bool = True
     missing_tool_policy: Literal["graceful", "strict"] = "graceful"
+    memory_enabled: bool = True
+    memory_auto_store_threshold_bytes: int = 32768
+    memory_builtin_tools_enabled: bool = True
+    memory_default_projection_mode: str = "catalog_and_selected_content"
+    memory_backend_kind: str = "memory"
+    memory_query_provider_kind: str = "catalog"
+    memory_projector_kind: str = "xml"
 
     def model_for(self, agent_id: str, fallback: tuple[str, ...] | None = None) -> tuple[str, ...]:
         """Return the configured model list for an agent.
@@ -162,6 +169,19 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         missing_tool_policy: Literal["graceful", "strict"] = "strict"
     else:
         missing_tool_policy = "graceful"
+    memory_enabled = values.get("MEMORY_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+    raw_memory_threshold = values.get("MEMORY_AUTO_STORE_THRESHOLD_BYTES", "").strip()
+    memory_auto_store_threshold_bytes = int(raw_memory_threshold) if raw_memory_threshold else 32768
+    memory_builtin_tools_enabled = (
+        values.get("MEMORY_BUILTIN_TOOLS_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+    )
+    memory_default_projection_mode = (
+        values.get("MEMORY_DEFAULT_PROJECTION_MODE", "catalog_and_selected_content").strip()
+        or "catalog_and_selected_content"
+    )
+    memory_backend_kind = values.get("MEMORY_BACKEND", "memory").strip() or "memory"
+    memory_query_provider_kind = values.get("MEMORY_QUERY_PROVIDER", "catalog").strip() or "catalog"
+    memory_projector_kind = values.get("MEMORY_PROJECTOR", "xml").strip() or "xml"
     return HostConfig(
         openai_api_key=values.get("OPENAI_API_KEY", ""),
         default_provider=default_provider,
@@ -180,6 +200,13 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         mcp_config_path=mcp_config_path,
         mcp_enabled=mcp_enabled,
         missing_tool_policy=missing_tool_policy,
+        memory_enabled=memory_enabled,
+        memory_auto_store_threshold_bytes=memory_auto_store_threshold_bytes,
+        memory_builtin_tools_enabled=memory_builtin_tools_enabled,
+        memory_default_projection_mode=memory_default_projection_mode,
+        memory_backend_kind=memory_backend_kind,
+        memory_query_provider_kind=memory_query_provider_kind,
+        memory_projector_kind=memory_projector_kind,
     )
 
 

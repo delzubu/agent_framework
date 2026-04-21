@@ -38,6 +38,23 @@ from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tool_registry import ToolRegistry
 from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
+from agent_framework.memory import (
+    CatalogMemoryQueryProvider,
+    InMemoryMemoryBackend,
+    MemoryBackend,
+    MemoryEntry,
+    MemoryProjector,
+    MemoryQueryHit,
+    MemoryQueryProvider,
+    MemoryRef,
+    MemoryScope,
+    XmlMemoryProjector,
+    _entry_from_content,
+    _size_bytes_for_content,
+    build_memory_uri,
+    find_memory_uris,
+    parse_memory_uri,
+)
 from agent_framework.tracing import (
     CompositeRuntimeTracer,
     NullRuntimeTracer,
@@ -112,6 +129,9 @@ class AgentHost:
     _audit_trace_subscriber: AuditTraceSubscriber | None = field(default=None, repr=False)
     _llm_traces_wired: bool = field(default=False, repr=False)
     skill_registry: SkillRegistry | None = None
+    memory_backend: MemoryBackend | None = None
+    memory_query_provider: MemoryQueryProvider | None = None
+    memory_projector: MemoryProjector | None = None
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
     file_ref_resolver: FileReferenceResolver | None = field(
         default_factory=DefaultFileReferenceResolver, repr=False
@@ -291,6 +311,10 @@ class AgentHost:
         if builtin_tools:
             from agent_framework.builtin_tools import register_builtin_tools
             register_builtin_tools(tool_registry)
+            if getattr(config, "memory_enabled", True) and getattr(config, "memory_builtin_tools_enabled", True):
+                from agent_framework.memory_tools import register_memory_tools
+
+                register_memory_tools(tool_registry)
 
         mcp_manager: Any = None
         if mcp_enabled and getattr(config, "mcp_enabled", True):
@@ -692,6 +716,124 @@ class AgentHost:
             self.skill_registry = SkillRegistry.from_config(self.config)
             self.skill_registry.discover()
         return self.skill_registry
+
+    def get_memory_backend(self) -> MemoryBackend:
+        """Lazy-initialize and return the host-level memory backend."""
+        if self.memory_backend is None:
+            self.memory_backend = InMemoryMemoryBackend()
+        return self.memory_backend
+
+    def get_memory_query_provider(self) -> MemoryQueryProvider:
+        """Lazy-initialize and return the host-level memory query provider."""
+        if self.memory_query_provider is None:
+            self.memory_query_provider = CatalogMemoryQueryProvider(self.get_memory_backend())
+        return self.memory_query_provider
+
+    def get_memory_projector(self) -> MemoryProjector:
+        """Lazy-initialize and return the host-level memory projector."""
+        if self.memory_projector is None:
+            self.memory_projector = XmlMemoryProjector()
+        return self.memory_projector
+
+    def get_visible_memory_scopes(self, *, agent_id: str, run_id: str) -> tuple[MemoryScope, ...]:
+        """Return scopes visible to a run. Initial implementation is session-scoped."""
+        if not getattr(self.config, "memory_enabled", True):
+            return ()
+        return (MemoryScope(kind="session", key=self.session_id),)
+
+    def store_memory(
+        self,
+        *,
+        path: str,
+        content: Any,
+        mime_type: str,
+        scope: MemoryScope | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryRef:
+        """Store a memory entry and return its stable ref."""
+        scope_value = scope or MemoryScope(kind="session", key=self.session_id)
+        uri = build_memory_uri(scope_value, path)
+        ref = MemoryRef(
+            uri=uri,
+            scope=scope_value,
+            mime_type=mime_type,
+            title=title,
+            summary=summary,
+            size_bytes=_size_bytes_for_content(content),
+            metadata=dict(metadata or {}),
+        )
+        entry = _entry_from_content(ref, content)
+        return self.get_memory_backend().put(entry)
+
+    def get_memory(self, uri: str) -> MemoryEntry:
+        """Return one memory entry by URI."""
+        return self.get_memory_backend().get(uri)
+
+    def render_memory_entry(self, uri: str) -> str:
+        """Render one memory entry as XML."""
+        entry = self.get_memory(uri)
+        return self.get_memory_projector().render_entries((entry,))
+
+    def list_memory_refs(
+        self,
+        *,
+        scope_kind: str | None = None,
+        scope_key: str | None = None,
+        limit: int = 20,
+    ) -> tuple[MemoryRef, ...]:
+        """List visible memory refs, optionally filtered to a single visible scope."""
+        scopes = list(self.get_visible_memory_scopes(agent_id="", run_id=""))
+        if scope_kind or scope_key:
+            if not (scope_kind and scope_key):
+                raise ValueError("scope_kind and scope_key must be supplied together.")
+            scopes = [scope for scope in scopes if scope.kind == scope_kind and scope.key == scope_key]
+        hits = self.get_memory_query_provider().list(tuple(scopes), limit=limit)
+        return tuple(hit.ref for hit in hits)
+
+    def query_memory(self, text: str, *, limit: int = 10) -> tuple[MemoryQueryHit, ...]:
+        """Query visible memory by text."""
+        scopes = self.get_visible_memory_scopes(agent_id="", run_id="")
+        return self.get_memory_query_provider().query(text, scopes, limit=limit)
+
+    def build_memory_prompt(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        parameter_values: dict[str, Any],
+        seed_parameters: dict[str, Any],
+    ) -> tuple[tuple[MemoryScope, ...], tuple[MemoryRef, ...], str]:
+        """Build deterministic memory XML for one model call."""
+        scopes = self.get_visible_memory_scopes(agent_id=agent_id, run_id=run_id)
+        if not scopes:
+            return scopes, (), ""
+
+        query_provider = self.get_memory_query_provider()
+        projector = self.get_memory_projector()
+        catalog_hits = query_provider.list(scopes, limit=20)
+        catalog_xml = projector.render_catalog(catalog_hits)
+
+        explicit_uris = find_memory_uris(parameter_values) + find_memory_uris(seed_parameters)
+        seen: set[str] = set()
+        entries: list[MemoryEntry] = []
+        refs: list[MemoryRef] = []
+        visible_scope_pairs = {(scope.kind, scope.key) for scope in scopes}
+        for uri in explicit_uris:
+            if uri in seen:
+                continue
+            seen.add(uri)
+            scope_kind, scope_key, _ = parse_memory_uri(uri)
+            if visible_scope_pairs and (scope_kind, scope_key) not in visible_scope_pairs:
+                continue
+            entry = self.get_memory_backend().get(uri)
+            entries.append(entry)
+            refs.append(entry.ref)
+
+        content_xml = projector.render_entries(entries)
+        parts = [part for part in (catalog_xml, content_xml) if part]
+        return scopes, tuple(refs), "\n\n".join(parts)
 
     def register_tool(self, tool: Tool) -> None:
         """Register a concrete tool instance for runtime execution."""
