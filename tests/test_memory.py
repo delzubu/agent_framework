@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_framework import Agent, AgentHost, AgentParameter, HostConfig
-from agent_framework.config import load_host_config
+from agent_framework import Agent, AgentHost, AgentParameter, HostConfig, ModelResponse
+from agent_framework.config import DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES, load_host_config
 from agent_framework.memory import (
     CatalogMemoryQueryProvider,
     InMemoryMemoryBackend,
@@ -22,6 +22,17 @@ from agent_framework.memory import (
 class FakeModelDriver:
     def decide(self, *, agent_id, provider_name, model_names, temperature, context):
         raise AssertionError("FakeModelDriver.decide should not be called in these tests")
+
+
+class CapturingModelDriver:
+    def __init__(self, payloads):
+        self._payloads = list(payloads)
+        self.contexts: list[tuple[str | None, object]] = []
+
+    def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+        self.contexts.append((agent_id, context))
+        payload = self._payloads.pop(0)
+        return ModelResponse(payload=payload, raw_text=json.dumps(payload))
 
 
 def test_in_memory_backend_put_get_list_and_query() -> None:
@@ -158,3 +169,112 @@ def test_load_host_config_reads_memory_settings(tmp_path: Path) -> None:
     assert cfg.memory_builtin_tools_enabled is False
     assert cfg.memory_auto_store_threshold_bytes == 4096
     assert cfg.memory_default_projection_mode == "catalog_only"
+
+
+def test_memory_threshold_default_is_sensible_in_code() -> None:
+    cfg = HostConfig()
+    assert cfg.memory_auto_store_threshold_bytes == DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES
+    assert cfg.memory_auto_store_threshold_bytes == 32768
+
+
+def test_agent_run_auto_stores_large_seed_parameter_and_rerenders_prompt() -> None:
+    driver = CapturingModelDriver([{"kind": "final_message", "message": "done"}])
+    host = AgentHost.create(
+        model_driver=driver,
+        config=HostConfig(memory_auto_store_threshold_bytes=32),
+    )
+    agent = Agent(
+        agent_id="reviewer",
+        role="reviewer",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="<deck>{{deck_json}}</deck>",
+        parameters=(AgentParameter(name="deck_json", description="Deck JSON"),),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+    payload = {"slides": [{"title": "Overview", "body": "X" * 128}]}
+
+    result = agent.run(host=host, parameters={"deck_json": payload}, caller_id="host")
+    assert result.message == "done"
+
+    _, context = driver.contexts[0]
+    assert "mem://session/" in context.user_prompt
+    joined = "\n".join(str(message.get("content", "")) for message in context.messages)
+    assert "<memory " in joined
+    assert '"slides"' in joined
+    assert "X" * 64 in joined
+
+
+def test_subagent_call_auto_stores_large_parameter_before_child_run(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "OPENAI_API_KEY=test-key",
+                "DEFAULT_PROVIDER=openai",
+                "DEFAULT_MODEL=gpt-4o-mini",
+                "AGENT_DIRECTORY=agents",
+                "TOOLS_DIRECTORY=tools",
+                "WORLD_DIRECTORY=world",
+                "ROOT_AGENT=orchestrator",
+                "MEMORY_AUTO_STORE_THRESHOLD_BYTES=32",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "orchestrator.md").write_text(
+        "---\n"
+        "id: orchestrator\n"
+        "role: orchestrator\n"
+        "subagents:\n"
+        "  - child\n"
+        "---\n"
+        "sys\n"
+        "---\n"
+        "go\n",
+        encoding="utf-8",
+    )
+    (agents_dir / "child.md").write_text(
+        "---\n"
+        "id: child\n"
+        "role: child\n"
+        "parameters:\n"
+        "  deck_json:\n"
+        "    description: deck payload\n"
+        "    required: true\n"
+        "---\n"
+        "sys\n"
+        "---\n"
+        "<deck>{{deck_json}}</deck>\n",
+        encoding="utf-8",
+    )
+    large_payload = {"slides": [{"title": "Overview", "body": "Y" * 128}]}
+    driver = CapturingModelDriver(
+        [
+            {
+                "kind": "call_subagent",
+                "subagent_id": "child",
+                "parameters": {"deck_json": large_payload},
+            },
+            {"kind": "final_message", "message": "child done"},
+            {"kind": "final_message", "message": "done"},
+        ]
+    )
+    host = AgentHost.from_env(env_path, model_driver=driver)
+
+    result = host.run_root(initial_instruction="review this")
+    assert result.message == "done"
+
+    child_context = next(context for agent_id, context in driver.contexts if agent_id == "child")
+    assert "mem://session/" in child_context.user_prompt
+    joined = "\n".join(str(message.get("content", "")) for message in child_context.messages)
+    assert "<memory " in joined
+    assert '"slides"' in joined
+
+    orchestrator_second = [context for agent_id, context in driver.contexts if agent_id == "orchestrator"][1]
+    parent_joined = "\n".join(str(message.get("content", "")) for message in orchestrator_second.messages)
+    assert "Subagent call child:" in parent_joined
+    assert "mem://session/" in parent_joined

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 _LOGGER = logging.getLogger(__name__)
+DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES = 32768
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +71,7 @@ class HostConfig:
     mcp_enabled: bool = True
     missing_tool_policy: Literal["graceful", "strict"] = "graceful"
     memory_enabled: bool = True
-    memory_auto_store_threshold_bytes: int = 32768
+    memory_auto_store_threshold_bytes: int = DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES
     memory_builtin_tools_enabled: bool = True
     memory_default_projection_mode: str = "catalog_and_selected_content"
     memory_backend_kind: str = "memory"
@@ -171,7 +172,9 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         missing_tool_policy = "graceful"
     memory_enabled = values.get("MEMORY_ENABLED", "true").strip().lower() not in ("false", "0", "no")
     raw_memory_threshold = values.get("MEMORY_AUTO_STORE_THRESHOLD_BYTES", "").strip()
-    memory_auto_store_threshold_bytes = int(raw_memory_threshold) if raw_memory_threshold else 32768
+    memory_auto_store_threshold_bytes = (
+        int(raw_memory_threshold) if raw_memory_threshold else DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES
+    )
     memory_builtin_tools_enabled = (
         values.get("MEMORY_BUILTIN_TOOLS_ENABLED", "true").strip().lower() not in ("false", "0", "no")
     )
@@ -277,4 +280,9 @@ def read_optional_path_relative_to_env_file(env_file: Path, key: str) -> Path | 
     return _resolve_config_path(env_file, raw, default_relative=".")
 
 
-__all__ = ["HostConfig", "load_host_config", "read_optional_path_relative_to_env_file"]
+__all__ = [
+    "DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES",
+    "HostConfig",
+    "load_host_config",
+    "read_optional_path_relative_to_env_file",
+]

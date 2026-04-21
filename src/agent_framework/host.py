@@ -21,7 +21,11 @@ from agent_framework.agent_registry import AgentRegistry
 from agent_framework.agent_event_publisher import agent_events
 from agent_framework.audit_trace import AuditTraceSubscriber, InMemoryAuditTracer
 from agent_framework.command import CommandDefinition, CommandRegistry, render as render_command
-from agent_framework.config import HostConfig, load_host_config
+from agent_framework.config import (
+    DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES,
+    HostConfig,
+    load_host_config,
+)
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
@@ -741,6 +745,13 @@ class AgentHost:
             return ()
         return (MemoryScope(kind="session", key=self.session_id),)
 
+    def get_memory_auto_store_threshold_bytes(self) -> int:
+        """Return the byte threshold above which payloads are auto-stored in memory."""
+        configured = int(
+            getattr(self.config, "memory_auto_store_threshold_bytes", DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES)
+        )
+        return configured if configured > 0 else DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES
+
     def store_memory(
         self,
         *,
@@ -834,6 +845,94 @@ class AgentHost:
         content_xml = projector.render_entries(entries)
         parts = [part for part in (catalog_xml, content_xml) if part]
         return scopes, tuple(refs), "\n\n".join(parts)
+
+    def normalize_memory_parameters(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        parameters: dict[str, Any],
+        child_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Replace oversized parameter payloads with session-scoped memory refs."""
+        if not getattr(self.config, "memory_enabled", True):
+            return dict(parameters)
+
+        normalized: dict[str, Any] = {}
+        for name, value in parameters.items():
+            normalized[name] = self._normalize_memory_parameter_value(
+                name=name,
+                value=value,
+                agent_id=agent_id,
+                run_id=run_id,
+                child_agent_id=child_agent_id,
+            )
+        return normalized
+
+    def _normalize_memory_parameter_value(
+        self,
+        *,
+        name: str,
+        value: Any,
+        agent_id: str,
+        run_id: str,
+        child_agent_id: str | None = None,
+    ) -> Any:
+        if isinstance(value, str) and value.startswith("mem://"):
+            return value
+        try:
+            size_bytes = _size_bytes_for_content(value)
+        except TypeError:
+            return value
+        if size_bytes < self.get_memory_auto_store_threshold_bytes():
+            return value
+
+        scope = MemoryScope(kind="session", key=self.session_id)
+        target = child_agent_id or agent_id
+        path = f"runs/{run_id}/agents/{target}/parameters/{name}"
+        ref = self.store_memory(
+            path=path,
+            content=value,
+            mime_type=self._infer_memory_mime_type(value),
+            scope=scope,
+            title=f"Auto-stored parameter {name}",
+            summary=(
+                f"Auto-stored parameter {name!r} for agent {target!r} because it exceeded "
+                f"{self.get_memory_auto_store_threshold_bytes()} bytes."
+            ),
+            metadata={
+                "source_agent_id": agent_id,
+                "target_agent_id": target,
+                "parameter_name": name,
+                "run_id": run_id,
+                "size_bytes": size_bytes,
+                "auto_stored": True,
+            },
+        )
+        self.publish_trace_event(
+            kind="runtime.memory_autostore",
+            title=f"Auto-stored parameter: {name}",
+            summary=f"Stored oversized parameter {name!r} as {ref.uri}.",
+            payload={
+                "agent_id": agent_id,
+                "child_agent_id": child_agent_id,
+                "run_id": run_id,
+                "parameter_name": name,
+                "memory_uri": ref.uri,
+                "size_bytes": size_bytes,
+                "threshold_bytes": self.get_memory_auto_store_threshold_bytes(),
+            },
+            context=TraceContext(run_id=run_id, agent_id=agent_id),
+        )
+        return ref.uri
+
+    @staticmethod
+    def _infer_memory_mime_type(value: Any) -> str:
+        if isinstance(value, str):
+            return "text/plain"
+        if isinstance(value, bytes):
+            return "application/octet-stream"
+        return "application/json"
 
     def register_tool(self, tool: Tool) -> None:
         """Register a concrete tool instance for runtime execution."""
@@ -1041,11 +1140,17 @@ class AgentHost:
         """Synchronously invoke a child agent from a caller agent."""
         base_dir = caller.source_path.parent if caller.source_path is not None else None
         callee = self._agent_with_runtime_tracing(self.get_agent(callee_id, base_dir=base_dir))
+        normalized_parameters = self.normalize_memory_parameters(
+            agent_id=caller.agent_id,
+            run_id=run_id or (f"{parent_run_id}.{callee_id}" if parent_run_id else f"{callee_id}.{self.session_id}"),
+            parameters=parameters,
+            child_agent_id=callee_id,
+        )
         child_run_id = run_id or (f"{parent_run_id}.{callee_id}" if parent_run_id else None)
         with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
             return callee.run(
                 host=self,
-                parameters=parameters,
+                parameters=normalized_parameters,
                 caller_id=caller.agent_id,
                 parent_run_id=parent_run_id,
                 run_id=child_run_id,

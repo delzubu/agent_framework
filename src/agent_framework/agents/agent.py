@@ -350,6 +350,17 @@ class Agent:
             conversation_messages=conversation_messages,
             prompt_fragments=prompt_fragments,
         )
+        normalize_memory_parameters = getattr(host, "normalize_memory_parameters", None)
+        if callable(normalize_memory_parameters):
+            normalized_seed_parameters = normalize_memory_parameters(
+                agent_id=self.agent_id,
+                run_id=run.run_id,
+                parameters=run.seed_parameters,
+            )
+            if normalized_seed_parameters != run.seed_parameters:
+                run.seed_parameters = normalized_seed_parameters
+                if rendered_prompt_override is None:
+                    run.rendered_prompt = self._render_seed_prompt(run.seed_parameters)
         # Bootstrap the invocation contract before any `before_run` behavior or
         # pre-agent hook executes. Those hooks act as gatekeepers and need access
         # to resolved parameters, missing required fields, and invalid values.
@@ -791,6 +802,14 @@ class Agent:
 
         subagent_id = pre_decision.updated_subagent_id or event.subagent_id
         subagent_input = pre_decision.updated_subagent_input or dict(event.subagent_input)
+        normalize_memory_parameters = getattr(host, "normalize_memory_parameters", None)
+        if callable(normalize_memory_parameters):
+            subagent_input = normalize_memory_parameters(
+                agent_id=self.agent_id,
+                run_id=run.run_id,
+                parameters=subagent_input,
+                child_agent_id=subagent_id,
+            )
         from agent_framework.agent_event_publisher import agent_events
 
         agent_events.audit_named_event(
@@ -926,10 +945,27 @@ class Agent:
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
             return None
 
+        normalize_memory_parameters = getattr(host, "normalize_memory_parameters", None)
+        normalized_specs = decision.subagent_calls
+        if callable(normalize_memory_parameters):
+            normalized_specs = tuple(
+                SubagentCallSpec(
+                    subagent_id=spec.subagent_id,
+                    parameters=normalize_memory_parameters(
+                        agent_id=self.agent_id,
+                        run_id=run.run_id,
+                        parameters=dict(spec.parameters),
+                        child_agent_id=spec.subagent_id,
+                    ),
+                    output_key=spec.output_key,
+                )
+                for spec in decision.subagent_calls
+            )
+
         try:
             results = call_batch_fn(
                 caller=self,
-                specs=decision.subagent_calls,
+                specs=normalized_specs,
                 mode=decision.batch_mode,
                 timeout_seconds=decision.batch_timeout_seconds,
                 parent_run_id=run.run_id,
