@@ -1257,7 +1257,35 @@ function appendConversationBubble(role, text, opts) {
   } else {
     body.textContent = text;
   }
+  const controls = document.createElement("div");
+  controls.className = "conv-msg-controls";
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "conv-msg-copy";
+  copyBtn.textContent = "Copy";
+  copyBtn.setAttribute("aria-label", `Copy ${roleKey} message`);
+  copyBtn.addEventListener("click", async () => {
+    const originalLabel = "Copy";
+    try {
+      await copyTextToClipboard(text);
+      copyBtn.textContent = "Copied";
+      copyBtn.classList.add("conv-msg-copy--ok");
+      window.setTimeout(() => {
+        copyBtn.textContent = originalLabel;
+        copyBtn.classList.remove("conv-msg-copy--ok");
+      }, 1200);
+    } catch (_) {
+      copyBtn.textContent = "Failed";
+      copyBtn.classList.add("conv-msg-copy--error");
+      window.setTimeout(() => {
+        copyBtn.textContent = originalLabel;
+        copyBtn.classList.remove("conv-msg-copy--error");
+      }, 1200);
+    }
+  });
+  controls.appendChild(copyBtn);
   wrap.appendChild(meta);
+  wrap.appendChild(controls);
   wrap.appendChild(body);
   conversationThread.appendChild(wrap);
   scrollThreadToBottom();
@@ -1269,6 +1297,27 @@ function setAppStatus(message) {
 
 function clearAppStatus() {
   if (appStatus) appStatus.textContent = "";
+}
+
+async function copyTextToClipboard(text) {
+  const value = typeof text === "string" ? text : String(text ?? "");
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }
 
 /**
