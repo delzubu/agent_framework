@@ -847,6 +847,57 @@ def test_cli_run_supports_prompt_file(tmp_path: Path, monkeypatch) -> None:
     assert captured.get("prompt") == "hello"
 
 
+def test_cli_run_defaults_env_to_current_directory_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_once(self, **kwargs):
+        captured["env_path"] = self.env_path
+        captured.update(kwargs)
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+
+    code = main(["run", "--agent", "root", "--prompt", "hello"])
+
+    assert code == 0
+    assert captured["env_path"] == Path(".env")
+
+
+def test_cli_evaluate_defaults_env_to_current_directory_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_f = tmp_path / ".env"
+    env_f.write_text(f"AGENT_EVAL_INITIALIZER_DIR={tmp_path.as_posix()}\n", encoding="utf-8")
+    _make_case_md(tmp_path, title="default-env")
+    init_f = tmp_path / "init.py"
+    init_f.write_text(
+        "from pathlib import Path\n"
+        "from agent_framework_evaluator.case_markdown import MarkdownCaseLoader\n"
+        "def get_test_cases():\n"
+        "    return MarkdownCaseLoader(Path(__file__).parent, '*.md').get_test_cases()\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_once(self, **kwargs):
+        captured["env_path"] = self.env_path
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    monkeypatch.setattr("agent_framework_evaluator.evaluation.run_evaluation", _fake_run_evaluation)
+
+    code = main(["evaluate", "--initializer", "init.py", "--case", "0"])
+
+    assert code == 0
+    assert captured["env_path"] == Path(".env")
+
+
 # ---------------------------------------------------------------------------
 # CLI evaluate subcommand tests
 # ---------------------------------------------------------------------------

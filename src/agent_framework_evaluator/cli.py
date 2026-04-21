@@ -10,13 +10,19 @@ from pathlib import Path
 from agent_framework_evaluator.evaluation import CASE_NO_CALLBACKS_POSTFIX
 from agent_framework_evaluator.runtime.session_runner import SessionRunner
 
+DEFAULT_ENV_ARGUMENT = ".env"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Agent evaluator and debugger.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     web = subparsers.add_parser("web")
-    web.add_argument("--env", default=".env", help="Path to .env (default for the web UI; overridable in the UI).")
+    web.add_argument(
+        "--env",
+        default=DEFAULT_ENV_ARGUMENT,
+        help="Path to .env (default: ./.env; overridable in the UI).",
+    )
     web.add_argument(
         "--agent",
         default=None,
@@ -33,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--open-browser", action="store_true")
 
     run = subparsers.add_parser("run")
-    run.add_argument("--env", default=".env")
+    run.add_argument("--env", default=DEFAULT_ENV_ARGUMENT)
     run.add_argument("--agent", default=None)
     run.add_argument("--setup")
     run.add_argument("--prompt")
@@ -56,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         "evaluate",
         help="Run and evaluate test cases without the web UI.",
     )
-    evaluate.add_argument("--env", default=".env", help="Path to .env file.")
+    evaluate.add_argument("--env", default=DEFAULT_ENV_ARGUMENT, help="Path to .env file (default: ./.env).")
     src = evaluate.add_mutually_exclusive_group(required=True)
     src.add_argument(
         "--initializer",
@@ -88,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _ensure_default_env_argument(args: argparse.Namespace) -> None:
+    """Treat omitted/empty ``--env`` as if the caller had passed ``--env .env``."""
+    if hasattr(args, "env") and not getattr(args, "env", None):
+        args.env = DEFAULT_ENV_ARGUMENT
 
 
 def _cmd_web(args: argparse.Namespace) -> int:
@@ -345,6 +357,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _ensure_default_env_argument(args)
     if args.command == "web":
         return _cmd_web(args)
     if args.command == "run":
