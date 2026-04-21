@@ -21,7 +21,11 @@ from agent_framework.agent_registry import AgentRegistry
 from agent_framework.agent_event_publisher import agent_events
 from agent_framework.audit_trace import AuditTraceSubscriber, InMemoryAuditTracer
 from agent_framework.command import CommandDefinition, CommandRegistry, render as render_command
-from agent_framework.config import HostConfig, load_host_config
+from agent_framework.config import (
+    DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES,
+    HostConfig,
+    load_host_config,
+)
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
@@ -38,6 +42,26 @@ from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tool_registry import ToolRegistry
 from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
+from agent_framework.memory import (
+    CatalogMemoryQueryProvider,
+    ConfiguredMemoryScopeResolver,
+    InMemoryMemoryBackend,
+    MemoryBackend,
+    MemoryEntry,
+    MemoryProjector,
+    MemoryQueryHit,
+    MemoryQueryProvider,
+    MemoryRef,
+    MemoryScope,
+    MemoryScopeResolver,
+    XmlMemoryProjector,
+    _entry_from_content,
+    _size_bytes_for_content,
+    build_memory_uri,
+    find_memory_uris,
+    next_memory_version,
+    parse_memory_uri,
+)
 from agent_framework.tracing import (
     CompositeRuntimeTracer,
     NullRuntimeTracer,
@@ -112,6 +136,10 @@ class AgentHost:
     _audit_trace_subscriber: AuditTraceSubscriber | None = field(default=None, repr=False)
     _llm_traces_wired: bool = field(default=False, repr=False)
     skill_registry: SkillRegistry | None = None
+    memory_backend: MemoryBackend | None = None
+    memory_query_provider: MemoryQueryProvider | None = None
+    memory_projector: MemoryProjector | None = None
+    memory_scope_resolver: MemoryScopeResolver | None = None
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
     file_ref_resolver: FileReferenceResolver | None = field(
         default_factory=DefaultFileReferenceResolver, repr=False
@@ -291,6 +319,10 @@ class AgentHost:
         if builtin_tools:
             from agent_framework.builtin_tools import register_builtin_tools
             register_builtin_tools(tool_registry)
+            if getattr(config, "memory_enabled", True) and getattr(config, "memory_builtin_tools_enabled", True):
+                from agent_framework.memory_tools import register_memory_tools
+
+                register_memory_tools(tool_registry)
 
         mcp_manager: Any = None
         if mcp_enabled and getattr(config, "mcp_enabled", True):
@@ -693,6 +725,428 @@ class AgentHost:
             self.skill_registry.discover()
         return self.skill_registry
 
+    def create_memory_backend(self) -> MemoryBackend:
+        """Construct the default memory backend for this host.
+
+        Override in subclasses to provide persistent or remote-backed memory.
+        The default implementation returns :class:`InMemoryMemoryBackend`.
+        """
+        return InMemoryMemoryBackend()
+
+    def get_memory_backend(self) -> MemoryBackend:
+        """Lazy-initialize and return the host-level memory backend.
+
+        The backend owns canonical storage and exact lookup for ``mem://``
+        entries.
+        """
+        if self.memory_backend is None:
+            self.memory_backend = self.create_memory_backend()
+        return self.memory_backend
+
+    def create_memory_query_provider(self) -> MemoryQueryProvider:
+        """Construct the default memory query provider for this host.
+
+        Override in subclasses to plug in semantic retrieval or hybrid catalog
+        implementations. The default implementation returns
+        :class:`CatalogMemoryQueryProvider`.
+        """
+        return CatalogMemoryQueryProvider(self.get_memory_backend())
+
+    def get_memory_query_provider(self) -> MemoryQueryProvider:
+        """Lazy-initialize and return the host-level memory query provider.
+
+        Query providers handle discovery and ranking of memory refs within the
+        visible scopes of a run.
+        """
+        if self.memory_query_provider is None:
+            self.memory_query_provider = self.create_memory_query_provider()
+        return self.memory_query_provider
+
+    def create_memory_projector(self) -> MemoryProjector:
+        """Construct the default memory projector for this host.
+
+        Override in subclasses to emit alternative prompt formats. The default
+        implementation returns :class:`XmlMemoryProjector`.
+        """
+        return XmlMemoryProjector()
+
+    def get_memory_projector(self) -> MemoryProjector:
+        """Lazy-initialize and return the host-level memory projector.
+
+        Projectors render already-resolved memory metadata and content into the
+        deterministic prompt format used by model calls.
+        """
+        if self.memory_projector is None:
+            self.memory_projector = self.create_memory_projector()
+        return self.memory_projector
+
+    def create_memory_scope_resolver(self) -> MemoryScopeResolver:
+        """Construct the default visibility policy for scoped memory.
+
+        Override in subclasses to enforce caller-aware or product-specific
+        scope rules. The default implementation returns a
+        :class:`ConfiguredMemoryScopeResolver` seeded from :class:`HostConfig`.
+        """
+        return ConfiguredMemoryScopeResolver(
+            global_scope_keys=tuple(getattr(self.config, "memory_global_scopes", ())),
+            group_scope_keys=tuple(getattr(self.config, "memory_group_scopes", ())),
+            use_case_scope_keys=tuple(getattr(self.config, "memory_use_case_scopes", ())),
+            enable_agent_scope=bool(getattr(self.config, "memory_enable_agent_scope", False)),
+        )
+
+    def get_memory_scope_resolver(self) -> MemoryScopeResolver:
+        """Lazy-initialize and return the host-level memory scope resolver.
+
+        The resolver decides which scoped memory namespaces are visible to a
+        host operation or agent run before any query or projection occurs.
+        """
+        if self.memory_scope_resolver is None:
+            self.memory_scope_resolver = self.create_memory_scope_resolver()
+        return self.memory_scope_resolver
+
+    def get_visible_memory_scopes(self, *, agent_id: str, run_id: str) -> tuple[MemoryScope, ...]:
+        """Return the memory scopes visible to a host operation or agent run."""
+        if not getattr(self.config, "memory_enabled", True):
+            return ()
+        return self.get_memory_scope_resolver().visible_scopes(
+            session_id=self.session_id,
+            agent_id=agent_id,
+            run_id=run_id,
+        )
+
+    def get_default_agent_tool_names(self) -> tuple[str, ...]:
+        """Return tools implicitly available to every agent.
+
+        Memory read tools are injected here rather than in agent frontmatter so
+        they remain available across the framework without granting write access
+        by default.
+        """
+        if not getattr(self.config, "memory_enabled", True):
+            return ()
+        if not getattr(self.config, "memory_builtin_tools_enabled", True):
+            return ()
+        return ("memory_get", "memory_list", "memory_query")
+
+    def get_memory_auto_store_threshold_bytes(self) -> int:
+        """Return the byte threshold above which payloads are auto-stored in memory."""
+        configured = int(
+            getattr(self.config, "memory_auto_store_threshold_bytes", DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES)
+        )
+        return configured if configured > 0 else DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES
+
+    def store_memory(
+        self,
+        *,
+        path: str,
+        content: Any,
+        mime_type: str,
+        scope: MemoryScope | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryRef:
+        """Store a memory entry and return its stable ref."""
+        scope_value = scope or MemoryScope(kind="session", key=self.session_id)
+        uri = build_memory_uri(scope_value, path)
+        ref = MemoryRef(
+            uri=uri,
+            scope=scope_value,
+            mime_type=mime_type,
+            title=title,
+            summary=summary,
+            size_bytes=_size_bytes_for_content(content),
+            metadata=dict(metadata or {}),
+        )
+        entry = _entry_from_content(ref, content)
+        stored_ref = self.get_memory_backend().put(entry)
+        self.publish_trace_event(
+            kind="runtime.memory_put",
+            title=f"Memory stored: {path}",
+            summary=f"Stored memory entry {stored_ref.uri}.",
+            payload={
+                "memory_uri": stored_ref.uri,
+                "scope": stored_ref.scope.as_text(),
+                "mime_type": stored_ref.mime_type,
+                "title": stored_ref.title,
+                "summary": stored_ref.summary,
+                "size_bytes": stored_ref.size_bytes,
+                "version": stored_ref.version,
+                "metadata": dict(stored_ref.metadata),
+            },
+            context=TraceContext(session_id=self.session_id),
+        )
+        return stored_ref
+
+    def create_memory(
+        self,
+        *,
+        path: str,
+        content: Any,
+        mime_type: str | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        scope: MemoryScope | None = None,
+    ) -> MemoryRef:
+        """Create a new memory entry using inferred defaults where possible.
+
+        Args:
+            path: Relative path under the target scope.
+            content: Content to store. Strings become text; objects become JSON.
+            mime_type: Optional MIME type override. Inferred when omitted.
+            title: Optional short human-readable label.
+            summary: Optional short discovery summary for list/query output.
+            metadata: Optional arbitrary metadata persisted on the ref.
+            scope: Optional explicit scope override. Defaults to the current
+                host session scope.
+        """
+        inferred_mime = mime_type or self._infer_memory_mime_type(content)
+        return self.store_memory(
+            path=path,
+            content=content,
+            mime_type=inferred_mime,
+            scope=scope,
+            title=title,
+            summary=summary,
+            metadata=metadata,
+        )
+
+    def get_memory(self, uri: str) -> MemoryEntry:
+        """Return one memory entry by URI."""
+        return self.get_memory_backend().get(uri)
+
+    def update_memory(
+        self,
+        *,
+        uri: str,
+        content: Any,
+        mime_type: str | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryRef:
+        """Update an existing memory entry and bump its version."""
+        current = self.get_memory(uri)
+        updated_ref = MemoryRef(
+            uri=current.ref.uri,
+            scope=current.ref.scope,
+            mime_type=mime_type or current.ref.mime_type,
+            title=title if title is not None else current.ref.title,
+            summary=summary if summary is not None else current.ref.summary,
+            size_bytes=_size_bytes_for_content(content),
+            version=next_memory_version(current.ref.version),
+            metadata=dict(current.ref.metadata) | dict(metadata or {}),
+        )
+        entry = _entry_from_content(updated_ref, content)
+        stored_ref = self.get_memory_backend().put(entry)
+        self.publish_trace_event(
+            kind="runtime.memory_update",
+            title=f"Memory updated: {uri}",
+            summary=f"Updated memory entry {stored_ref.uri} to version {stored_ref.version}.",
+            payload={
+                "memory_uri": stored_ref.uri,
+                "scope": stored_ref.scope.as_text(),
+                "mime_type": stored_ref.mime_type,
+                "title": stored_ref.title,
+                "summary": stored_ref.summary,
+                "size_bytes": stored_ref.size_bytes,
+                "version": stored_ref.version,
+                "metadata": dict(stored_ref.metadata),
+            },
+            context=TraceContext(session_id=self.session_id),
+        )
+        return stored_ref
+
+    def render_memory_entry(self, uri: str) -> str:
+        """Render one memory entry as XML."""
+        entry = self.get_memory(uri)
+        return self.get_memory_projector().render_entries((entry,))
+
+    def list_memory_refs(
+        self,
+        *,
+        scope_kind: str | None = None,
+        scope_key: str | None = None,
+        limit: int = 20,
+    ) -> tuple[MemoryRef, ...]:
+        """List visible memory refs, optionally filtered to a single visible scope.
+
+        This method returns lightweight refs only and never materialises full
+        content.
+        """
+        scopes = self._filter_visible_memory_scopes(
+            scope_kind=scope_kind,
+            scope_key=scope_key,
+            agent_id="",
+            run_id="",
+        )
+        hits = self.get_memory_query_provider().list(scopes, limit=limit)
+        return tuple(hit.ref for hit in hits)
+
+    def query_memory(
+        self,
+        text: str,
+        *,
+        scope_kind: str | None = None,
+        scope_key: str | None = None,
+        limit: int = 10,
+    ) -> tuple[MemoryQueryHit, ...]:
+        """Query visible memory by text.
+
+        Query semantics depend on the active :class:`MemoryQueryProvider`.
+        """
+        scopes = self._filter_visible_memory_scopes(
+            scope_kind=scope_kind,
+            scope_key=scope_key,
+            agent_id="",
+            run_id="",
+        )
+        return self.get_memory_query_provider().query(text, scopes, limit=limit)
+
+    def build_memory_prompt(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        parameter_values: dict[str, Any],
+        seed_parameters: dict[str, Any],
+    ) -> tuple[tuple[MemoryScope, ...], tuple[MemoryRef, ...], str]:
+        """Build deterministic memory XML for one model call."""
+        scopes = self.get_visible_memory_scopes(agent_id=agent_id, run_id=run_id)
+        if not scopes:
+            return scopes, (), ""
+
+        query_provider = self.get_memory_query_provider()
+        projector = self.get_memory_projector()
+        catalog_hits = query_provider.list(scopes, limit=20)
+        catalog_xml = projector.render_catalog(catalog_hits)
+
+        explicit_uris = find_memory_uris(parameter_values) + find_memory_uris(seed_parameters)
+        seen: set[str] = set()
+        entries: list[MemoryEntry] = []
+        refs: list[MemoryRef] = []
+        visible_scope_pairs = {(scope.kind, scope.key) for scope in scopes}
+        for uri in explicit_uris:
+            if uri in seen:
+                continue
+            seen.add(uri)
+            scope_kind, scope_key, _ = parse_memory_uri(uri)
+            if visible_scope_pairs and (scope_kind, scope_key) not in visible_scope_pairs:
+                continue
+            entry = self.get_memory_backend().get(uri)
+            entries.append(entry)
+            refs.append(entry.ref)
+
+        content_xml = projector.render_entries(entries)
+        parts = [part for part in (catalog_xml, content_xml) if part]
+        return scopes, tuple(refs), "\n\n".join(parts)
+
+    def normalize_memory_parameters(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        parameters: dict[str, Any],
+        child_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Replace oversized parameter payloads with session-scoped memory refs."""
+        if not getattr(self.config, "memory_enabled", True):
+            return dict(parameters)
+
+        normalized: dict[str, Any] = {}
+        for name, value in parameters.items():
+            normalized[name] = self._normalize_memory_parameter_value(
+                name=name,
+                value=value,
+                agent_id=agent_id,
+                run_id=run_id,
+                child_agent_id=child_agent_id,
+            )
+        return normalized
+
+    def _normalize_memory_parameter_value(
+        self,
+        *,
+        name: str,
+        value: Any,
+        agent_id: str,
+        run_id: str,
+        child_agent_id: str | None = None,
+    ) -> Any:
+        if isinstance(value, str) and value.startswith("mem://"):
+            return value
+        try:
+            size_bytes = _size_bytes_for_content(value)
+        except TypeError:
+            return value
+        if size_bytes < self.get_memory_auto_store_threshold_bytes():
+            return value
+
+        scope = MemoryScope(kind="session", key=self.session_id)
+        target = child_agent_id or agent_id
+        path = f"runs/{run_id}/agents/{target}/parameters/{name}"
+        ref = self.store_memory(
+            path=path,
+            content=value,
+            mime_type=self._infer_memory_mime_type(value),
+            scope=scope,
+            title=f"Auto-stored parameter {name}",
+            summary=(
+                f"Auto-stored parameter {name!r} for agent {target!r} because it exceeded "
+                f"{self.get_memory_auto_store_threshold_bytes()} bytes."
+            ),
+            metadata={
+                "source_agent_id": agent_id,
+                "target_agent_id": target,
+                "parameter_name": name,
+                "run_id": run_id,
+                "size_bytes": size_bytes,
+                "auto_stored": True,
+            },
+        )
+        self.publish_trace_event(
+            kind="runtime.memory_autostore",
+            title=f"Auto-stored parameter: {name}",
+            summary=f"Stored oversized parameter {name!r} as {ref.uri}.",
+            payload={
+                "agent_id": agent_id,
+                "child_agent_id": child_agent_id,
+                "run_id": run_id,
+                "parameter_name": name,
+                "memory_uri": ref.uri,
+                "size_bytes": size_bytes,
+                "threshold_bytes": self.get_memory_auto_store_threshold_bytes(),
+            },
+            context=TraceContext(run_id=run_id, agent_id=agent_id),
+        )
+        return ref.uri
+
+    def _filter_visible_memory_scopes(
+        self,
+        *,
+        scope_kind: str | None,
+        scope_key: str | None,
+        agent_id: str,
+        run_id: str,
+    ) -> tuple[MemoryScope, ...]:
+        """Return visible scopes, optionally narrowed to one explicit scope."""
+        scopes = self.get_visible_memory_scopes(agent_id=agent_id, run_id=run_id)
+        if scope_kind or scope_key:
+            if not (scope_kind and scope_key):
+                raise ValueError("scope_kind and scope_key must be supplied together.")
+            scopes = tuple(
+                scope for scope in scopes if scope.kind == scope_kind and scope.key == scope_key
+            )
+        return scopes
+
+    @staticmethod
+    def _infer_memory_mime_type(value: Any) -> str:
+        if isinstance(value, str):
+            return "text/plain"
+        if isinstance(value, bytes):
+            return "application/octet-stream"
+        return "application/json"
+
     def register_tool(self, tool: Tool) -> None:
         """Register a concrete tool instance for runtime execution."""
         self.tool_registry.register(tool)
@@ -899,11 +1353,17 @@ class AgentHost:
         """Synchronously invoke a child agent from a caller agent."""
         base_dir = caller.source_path.parent if caller.source_path is not None else None
         callee = self._agent_with_runtime_tracing(self.get_agent(callee_id, base_dir=base_dir))
+        normalized_parameters = self.normalize_memory_parameters(
+            agent_id=caller.agent_id,
+            run_id=run_id or (f"{parent_run_id}.{callee_id}" if parent_run_id else f"{callee_id}.{self.session_id}"),
+            parameters=parameters,
+            child_agent_id=callee_id,
+        )
         child_run_id = run_id or (f"{parent_run_id}.{callee_id}" if parent_run_id else None)
         with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
             return callee.run(
                 host=self,
-                parameters=parameters,
+                parameters=normalized_parameters,
                 caller_id=caller.agent_id,
                 parent_run_id=parent_run_id,
                 run_id=child_run_id,

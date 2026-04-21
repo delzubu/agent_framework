@@ -75,6 +75,22 @@ class PermissionRequestRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryOperationRecord:
+    """Session-level record of a memory mutation or normalization event."""
+
+    timestamp: str
+    operation: str
+    memory_uri: str | None = None
+    scope: str | None = None
+    mime_type: str | None = None
+    title: str | None = None
+    summary: str | None = None
+    size_bytes: int | None = None
+    version: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class AgentCallAuditRecord:
     """Immutable audit record for a single agent invocation."""
 
@@ -279,6 +295,36 @@ class InMemoryAuditTracer:
         )
         self._append_session_record("permission_request", asdict(record))
 
+    def record_memory_operation(
+        self,
+        *,
+        operation: str,
+        memory_uri: str | None = None,
+        scope: str | None = None,
+        mime_type: str | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        size_bytes: int | None = None,
+        version: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Append a host-level memory operation record to the session JSONL."""
+        if self.output_path is None:
+            return
+        record = MemoryOperationRecord(
+            timestamp=_utc_now(),
+            operation=operation,
+            memory_uri=memory_uri,
+            scope=scope,
+            mime_type=mime_type,
+            title=title,
+            summary=summary,
+            size_bytes=size_bytes,
+            version=version,
+            metadata=dict(metadata or {}),
+        )
+        self._append_session_record("memory_operation", asdict(record))
+
     def _append_session_record(self, record_type: str, payload: dict) -> None:
         """Write a typed top-level record to the session JSONL file."""
         entry = {"type": record_type, **payload}
@@ -348,6 +394,19 @@ class AuditTraceSubscriber:
             ev = dict(payload.get("event") or {})
             self._store.record_event(run_id=run_id, event=ev)
             return
+        if kind in ("runtime.memory_put", "runtime.memory_update", "runtime.memory_autostore"):
+            self._store.record_memory_operation(
+                operation=kind.split(".")[-1],
+                memory_uri=payload.get("memory_uri"),
+                scope=payload.get("scope"),
+                mime_type=payload.get("mime_type"),
+                title=payload.get("title"),
+                summary=payload.get("summary"),
+                size_bytes=payload.get("size_bytes"),
+                version=payload.get("version"),
+                metadata=dict(payload),
+            )
+            return
         if kind == "runtime.audit.skill_invocation" and run_id:
             self._store.record_skill_invocation(
                 run_id=run_id,
@@ -382,6 +441,7 @@ __all__ = [
     "UserOutputRecord",
     "UserInputRecord",
     "PermissionRequestRecord",
+    "MemoryOperationRecord",
     "AgentCallAuditRecord",
     "InMemoryAuditTracer",
 ]
