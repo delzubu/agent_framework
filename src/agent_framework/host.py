@@ -44,6 +44,7 @@ from agent_framework.tool_registry import ToolRegistry
 from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
 from agent_framework.memory import (
     CatalogMemoryQueryProvider,
+    ConfiguredMemoryScopeResolver,
     InMemoryMemoryBackend,
     MemoryBackend,
     MemoryEntry,
@@ -52,6 +53,7 @@ from agent_framework.memory import (
     MemoryQueryProvider,
     MemoryRef,
     MemoryScope,
+    MemoryScopeResolver,
     XmlMemoryProjector,
     _entry_from_content,
     _size_bytes_for_content,
@@ -137,6 +139,7 @@ class AgentHost:
     memory_backend: MemoryBackend | None = None
     memory_query_provider: MemoryQueryProvider | None = None
     memory_projector: MemoryProjector | None = None
+    memory_scope_resolver: MemoryScopeResolver | None = None
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
     file_ref_resolver: FileReferenceResolver | None = field(
         default_factory=DefaultFileReferenceResolver, repr=False
@@ -777,11 +780,39 @@ class AgentHost:
             self.memory_projector = self.create_memory_projector()
         return self.memory_projector
 
+    def create_memory_scope_resolver(self) -> MemoryScopeResolver:
+        """Construct the default visibility policy for scoped memory.
+
+        Override in subclasses to enforce caller-aware or product-specific
+        scope rules. The default implementation returns a
+        :class:`ConfiguredMemoryScopeResolver` seeded from :class:`HostConfig`.
+        """
+        return ConfiguredMemoryScopeResolver(
+            global_scope_keys=tuple(getattr(self.config, "memory_global_scopes", ())),
+            group_scope_keys=tuple(getattr(self.config, "memory_group_scopes", ())),
+            use_case_scope_keys=tuple(getattr(self.config, "memory_use_case_scopes", ())),
+            enable_agent_scope=bool(getattr(self.config, "memory_enable_agent_scope", False)),
+        )
+
+    def get_memory_scope_resolver(self) -> MemoryScopeResolver:
+        """Lazy-initialize and return the host-level memory scope resolver.
+
+        The resolver decides which scoped memory namespaces are visible to a
+        host operation or agent run before any query or projection occurs.
+        """
+        if self.memory_scope_resolver is None:
+            self.memory_scope_resolver = self.create_memory_scope_resolver()
+        return self.memory_scope_resolver
+
     def get_visible_memory_scopes(self, *, agent_id: str, run_id: str) -> tuple[MemoryScope, ...]:
-        """Return scopes visible to a run. Initial implementation is session-scoped."""
+        """Return the memory scopes visible to a host operation or agent run."""
         if not getattr(self.config, "memory_enabled", True):
             return ()
-        return (MemoryScope(kind="session", key=self.session_id),)
+        return self.get_memory_scope_resolver().visible_scopes(
+            session_id=self.session_id,
+            agent_id=agent_id,
+            run_id=run_id,
+        )
 
     def get_default_agent_tool_names(self) -> tuple[str, ...]:
         """Return tools implicitly available to every agent.
@@ -943,20 +974,33 @@ class AgentHost:
         This method returns lightweight refs only and never materialises full
         content.
         """
-        scopes = list(self.get_visible_memory_scopes(agent_id="", run_id=""))
-        if scope_kind or scope_key:
-            if not (scope_kind and scope_key):
-                raise ValueError("scope_kind and scope_key must be supplied together.")
-            scopes = [scope for scope in scopes if scope.kind == scope_kind and scope.key == scope_key]
-        hits = self.get_memory_query_provider().list(tuple(scopes), limit=limit)
+        scopes = self._filter_visible_memory_scopes(
+            scope_kind=scope_kind,
+            scope_key=scope_key,
+            agent_id="",
+            run_id="",
+        )
+        hits = self.get_memory_query_provider().list(scopes, limit=limit)
         return tuple(hit.ref for hit in hits)
 
-    def query_memory(self, text: str, *, limit: int = 10) -> tuple[MemoryQueryHit, ...]:
+    def query_memory(
+        self,
+        text: str,
+        *,
+        scope_kind: str | None = None,
+        scope_key: str | None = None,
+        limit: int = 10,
+    ) -> tuple[MemoryQueryHit, ...]:
         """Query visible memory by text.
 
         Query semantics depend on the active :class:`MemoryQueryProvider`.
         """
-        scopes = self.get_visible_memory_scopes(agent_id="", run_id="")
+        scopes = self._filter_visible_memory_scopes(
+            scope_kind=scope_kind,
+            scope_key=scope_key,
+            agent_id="",
+            run_id="",
+        )
         return self.get_memory_query_provider().query(text, scopes, limit=limit)
 
     def build_memory_prompt(
@@ -1076,6 +1120,24 @@ class AgentHost:
             context=TraceContext(run_id=run_id, agent_id=agent_id),
         )
         return ref.uri
+
+    def _filter_visible_memory_scopes(
+        self,
+        *,
+        scope_kind: str | None,
+        scope_key: str | None,
+        agent_id: str,
+        run_id: str,
+    ) -> tuple[MemoryScope, ...]:
+        """Return visible scopes, optionally narrowed to one explicit scope."""
+        scopes = self.get_visible_memory_scopes(agent_id=agent_id, run_id=run_id)
+        if scope_kind or scope_key:
+            if not (scope_kind and scope_key):
+                raise ValueError("scope_kind and scope_key must be supplied together.")
+            scopes = tuple(
+                scope for scope in scopes if scope.kind == scope_kind and scope.key == scope_key
+            )
+        return scopes
 
     @staticmethod
     def _infer_memory_mime_type(value: Any) -> str:

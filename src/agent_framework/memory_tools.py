@@ -38,6 +38,8 @@ _MEMORY_QUERY_DEFINITION = build_definition(
     "Search visible memory identifiers and summaries for a query string.",
     [
         ToolParameter("query", "Search text to match against ids, titles, and summaries.", required=True),
+        ToolParameter("scope_kind", "Optional scope kind filter.", required=False),
+        ToolParameter("scope_key", "Optional scope key filter.", required=False),
         ToolParameter("limit", "Maximum number of results to return.", required=False, value_type="integer"),
     ],
 )
@@ -114,7 +116,12 @@ class _MemoryQueryTool(Tool):
             return "Error: query is required."
         limit_raw = arguments.get("limit")
         limit = int(limit_raw) if limit_raw is not None else 10
-        hits = host.query_memory(query, limit=limit)
+        scope_kind = str(arguments.get("scope_kind", "")).strip() or None
+        scope_key = str(arguments.get("scope_key", "")).strip() or None
+        try:
+            hits = host.query_memory(query, scope_kind=scope_kind, scope_key=scope_key, limit=limit)
+        except ValueError as exc:
+            return f"Error: {exc}"
         payload = [
             {
                 "uri": hit.ref.uri,

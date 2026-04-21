@@ -50,6 +50,10 @@ class HostConfig:
             skips that tool for the model API and prompt metadata but logs and
             emits a trace event; ``strict`` fails the run when resolving tools.
             Loaded from ``MISSING_TOOL_POLICY`` (default: graceful).
+        memory_*: Configuration for the scoped memory subsystem. These fields
+            control whether memory is enabled, when large parameters are
+            auto-stored, which read tools are injected by default, and which
+            extra non-session scopes are visible to runs.
     """
 
     openai_api_key: str = ""
@@ -77,6 +81,10 @@ class HostConfig:
     memory_backend_kind: str = "memory"
     memory_query_provider_kind: str = "catalog"
     memory_projector_kind: str = "xml"
+    memory_global_scopes: tuple[str, ...] = ()
+    memory_group_scopes: tuple[str, ...] = ()
+    memory_use_case_scopes: tuple[str, ...] = ()
+    memory_enable_agent_scope: bool = False
 
     def model_for(self, agent_id: str, fallback: tuple[str, ...] | None = None) -> tuple[str, ...]:
         """Return the configured model list for an agent.
@@ -185,6 +193,12 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
     memory_backend_kind = values.get("MEMORY_BACKEND", "memory").strip() or "memory"
     memory_query_provider_kind = values.get("MEMORY_QUERY_PROVIDER", "catalog").strip() or "catalog"
     memory_projector_kind = values.get("MEMORY_PROJECTOR", "xml").strip() or "xml"
+    memory_global_scopes = _parse_csv_values(values.get("MEMORY_GLOBAL_SCOPES", ""))
+    memory_group_scopes = _parse_csv_values(values.get("MEMORY_GROUP_SCOPES", ""))
+    memory_use_case_scopes = _parse_csv_values(values.get("MEMORY_USE_CASE_SCOPES", ""))
+    memory_enable_agent_scope = (
+        values.get("MEMORY_ENABLE_AGENT_SCOPE", "false").strip().lower() in ("true", "1", "yes", "on")
+    )
     return HostConfig(
         openai_api_key=values.get("OPENAI_API_KEY", ""),
         default_provider=default_provider,
@@ -210,6 +224,10 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         memory_backend_kind=memory_backend_kind,
         memory_query_provider_kind=memory_query_provider_kind,
         memory_projector_kind=memory_projector_kind,
+        memory_global_scopes=memory_global_scopes,
+        memory_group_scopes=memory_group_scopes,
+        memory_use_case_scopes=memory_use_case_scopes,
+        memory_enable_agent_scope=memory_enable_agent_scope,
     )
 
 
@@ -258,6 +276,19 @@ def _parse_agent_models(raw_value: str) -> dict[str, tuple[str, ...]]:
         if models:
             mappings[key.strip()] = models
     return mappings
+
+
+def _parse_csv_values(raw_value: str) -> tuple[str, ...]:
+    """Parse a comma-separated configuration value into a deduplicated tuple."""
+    seen: set[str] = set()
+    values: list[str] = []
+    for item in raw_value.split(","):
+        value = item.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        values.append(value)
+    return tuple(values)
 
 
 def _strip_quotes(value: str) -> str:

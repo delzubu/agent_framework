@@ -51,11 +51,13 @@ from agent_framework.messages import (
 )
 from agent_framework.memory import (
     CatalogMemoryQueryProvider,
+    ConfiguredMemoryScopeResolver,
     InMemoryMemoryBackend,
     MemoryEntry,
     MemoryQueryHit,
     MemoryRef,
     MemoryScope,
+    MemoryScopeResolver,
     XmlMemoryProjector,
     build_memory_uri,
     find_memory_uris,
@@ -125,11 +127,13 @@ __all__ = [
     "ToolCallMessage",
     # Memory
     "CatalogMemoryQueryProvider",
+    "ConfiguredMemoryScopeResolver",
     "InMemoryMemoryBackend",
     "MemoryEntry",
     "MemoryQueryHit",
     "MemoryRef",
     "MemoryScope",
+    "MemoryScopeResolver",
     "XmlMemoryProjector",
     "build_memory_uri",
     "find_memory_uris",

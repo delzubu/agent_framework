@@ -245,6 +245,67 @@ class MemoryProjector(Protocol):
         ...
 
 
+class MemoryScopeResolver(Protocol):
+    """Policy object that decides which memory scopes a run may see.
+
+    Scope resolution is intentionally separate from storage and retrieval. A
+    resolver can enforce product policy, caller identity, agent grouping, or
+    use-case-specific visibility without changing the memory backend or prompt
+    projection layers.
+    """
+
+    def visible_scopes(
+        self,
+        *,
+        session_id: str,
+        agent_id: str,
+        run_id: str,
+    ) -> tuple[MemoryScope, ...]:
+        """Return the scopes visible to one host-level operation or agent run."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredMemoryScopeResolver:
+    """Default scope resolver driven by host configuration.
+
+    The resolver always includes the current session scope. Additional global,
+    group, use-case, and optional agent scopes are appended in stable order and
+    deduplicated.
+    """
+
+    global_scope_keys: tuple[str, ...] = ()
+    group_scope_keys: tuple[str, ...] = ()
+    use_case_scope_keys: tuple[str, ...] = ()
+    enable_agent_scope: bool = False
+
+    def visible_scopes(
+        self,
+        *,
+        session_id: str,
+        agent_id: str,
+        run_id: str,
+    ) -> tuple[MemoryScope, ...]:
+        """Return the configured scopes visible to the given run.
+
+        Args:
+            session_id: Stable host session identifier.
+            agent_id: Runtime agent identifier when the call originates from an
+                agent. Host-level operations may pass an empty string.
+            run_id: Runtime invocation identifier. Reserved for future policy
+                decisions that depend on the exact run lineage.
+        """
+        del run_id
+
+        scopes = [MemoryScope(kind="session", key=session_id)]
+        scopes.extend(MemoryScope(kind="global", key=key) for key in self.global_scope_keys if key)
+        scopes.extend(MemoryScope(kind="group", key=key) for key in self.group_scope_keys if key)
+        scopes.extend(MemoryScope(kind="use_case", key=key) for key in self.use_case_scope_keys if key)
+        if self.enable_agent_scope and agent_id:
+            scopes.append(MemoryScope(kind="agent", key=agent_id))
+        return _dedupe_scopes(scopes)
+
+
 @dataclass(slots=True)
 class InMemoryMemoryBackend:
     """Simple process-local backend keyed by URI.
@@ -440,8 +501,21 @@ def next_memory_version(version: str) -> str:
         return f"{version}.next"
 
 
+def _dedupe_scopes(scopes: Sequence[MemoryScope]) -> tuple[MemoryScope, ...]:
+    seen: set[tuple[str, str]] = set()
+    ordered: list[MemoryScope] = []
+    for scope in scopes:
+        key = (scope.kind, scope.key)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(scope)
+    return tuple(ordered)
+
+
 __all__ = [
     "CatalogMemoryQueryProvider",
+    "ConfiguredMemoryScopeResolver",
     "InMemoryMemoryBackend",
     "MemoryBackend",
     "MemoryEntry",
@@ -450,6 +524,7 @@ __all__ = [
     "MemoryQueryProvider",
     "MemoryRef",
     "MemoryScope",
+    "MemoryScopeResolver",
     "XmlMemoryProjector",
     "build_memory_uri",
     "find_memory_uris",

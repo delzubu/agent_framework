@@ -9,6 +9,7 @@ from agent_framework import Agent, AgentHost, AgentParameter, HostConfig, ModelR
 from agent_framework.config import DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES, load_host_config
 from agent_framework.memory import (
     CatalogMemoryQueryProvider,
+    ConfiguredMemoryScopeResolver,
     InMemoryMemoryBackend,
     MemoryEntry,
     MemoryQueryHit,
@@ -98,6 +99,55 @@ def test_host_memory_factories_are_extension_points() -> None:
     host = CustomHost.create(model_driver=FakeModelDriver(), config=HostConfig())
     assert isinstance(host.get_memory_backend(), CustomBackend)
     assert isinstance(host.get_memory_query_provider(), CatalogMemoryQueryProvider)
+    assert isinstance(host.get_memory_scope_resolver(), ConfiguredMemoryScopeResolver)
+
+
+def test_default_visible_memory_scopes_are_session_only() -> None:
+    host = AgentHost.create(model_driver=FakeModelDriver(), config=HostConfig())
+
+    assert host.get_visible_memory_scopes(agent_id="reviewer", run_id="run-1") == (
+        MemoryScope(kind="session", key=host.session_id),
+    )
+
+
+def test_host_uses_configured_extra_memory_scopes() -> None:
+    host = AgentHost.create(
+        model_driver=FakeModelDriver(),
+        config=HostConfig(
+            memory_global_scopes=("default",),
+            memory_group_scopes=("deck-reviewers",),
+            memory_use_case_scopes=("slide-review",),
+            memory_enable_agent_scope=True,
+        ),
+    )
+
+    assert host.get_visible_memory_scopes(agent_id="reviewer", run_id="run-1") == (
+        MemoryScope(kind="session", key=host.session_id),
+        MemoryScope(kind="global", key="default"),
+        MemoryScope(kind="group", key="deck-reviewers"),
+        MemoryScope(kind="use_case", key="slide-review"),
+        MemoryScope(kind="agent", key="reviewer"),
+    )
+
+
+def test_memory_scope_resolver_is_an_extension_point() -> None:
+    class FixedScopeResolver:
+        def visible_scopes(self, *, session_id: str, agent_id: str, run_id: str):
+            return (
+                MemoryScope(kind="session", key=session_id),
+                MemoryScope(kind="group", key=f"{agent_id}:{run_id}"),
+            )
+
+    class CustomHost(AgentHost):
+        def create_memory_scope_resolver(self):
+            return FixedScopeResolver()
+
+    host = CustomHost.create(model_driver=FakeModelDriver(), config=HostConfig())
+
+    assert host.get_visible_memory_scopes(agent_id="reviewer", run_id="run-1") == (
+        MemoryScope(kind="session", key=host.session_id),
+        MemoryScope(kind="group", key="reviewer:run-1"),
+    )
 
 
 def test_agents_receive_memory_read_tools_by_default() -> None:
@@ -120,7 +170,10 @@ def test_agents_receive_memory_read_tools_by_default() -> None:
 
 
 def test_memory_tools_list_get_and_query() -> None:
-    host = AgentHost.create(model_driver=FakeModelDriver(), config=HostConfig())
+    host = AgentHost.create(
+        model_driver=FakeModelDriver(),
+        config=HostConfig(memory_global_scopes=("shared",)),
+    )
     ref = host.store_memory(
         path="deck/full",
         content={"slides": [{"title": "Overview"}]},
@@ -128,10 +181,33 @@ def test_memory_tools_list_get_and_query() -> None:
         title="Deck JSON",
         summary="Session deck",
     )
+    global_ref = host.store_memory(
+        path="deck/style-guide",
+        content="Prefer concise slide titles.",
+        mime_type="text/markdown",
+        scope=MemoryScope(kind="global", key="shared"),
+        title="Deck Style Guide",
+        summary="Global review rules",
+    )
 
     list_result = host.get_tool("memory_list").invoke({}, host)
     list_payload = json.loads(list_result)
-    assert list_payload[0]["uri"] == ref.uri
+    assert {item["uri"] for item in list_payload} == {ref.uri, global_ref.uri}
+
+    filtered_list = host.get_tool("memory_list").invoke(
+        {"scope_kind": "global", "scope_key": "shared"},
+        host,
+    )
+    filtered_list_payload = json.loads(filtered_list)
+    assert filtered_list_payload == [
+        {
+            "uri": global_ref.uri,
+            "scope": "global:shared",
+            "mime_type": "text/markdown",
+            "title": "Deck Style Guide",
+            "summary": "Global review rules",
+        }
+    ]
 
     get_result = host.get_tool("memory_get").invoke({"uri": ref.uri}, host)
     assert "<memory " in get_result
@@ -139,7 +215,14 @@ def test_memory_tools_list_get_and_query() -> None:
 
     query_result = host.get_tool("memory_query").invoke({"query": "deck"}, host)
     query_payload = json.loads(query_result)
-    assert query_payload[0]["uri"] == ref.uri
+    assert {item["uri"] for item in query_payload} == {ref.uri, global_ref.uri}
+
+    filtered_query = host.get_tool("memory_query").invoke(
+        {"query": "deck", "scope_kind": "global", "scope_key": "shared"},
+        host,
+    )
+    filtered_query_payload = json.loads(filtered_query)
+    assert [item["uri"] for item in filtered_query_payload] == [global_ref.uri]
 
 
 def test_memory_put_and_update_tools_are_available_but_not_default() -> None:
@@ -245,6 +328,10 @@ def test_load_host_config_reads_memory_settings(tmp_path: Path) -> None:
                 "MEMORY_BACKEND=memory",
                 "MEMORY_QUERY_PROVIDER=catalog",
                 "MEMORY_PROJECTOR=xml",
+                "MEMORY_GLOBAL_SCOPES=default,shared",
+                "MEMORY_GROUP_SCOPES=deck-reviewers",
+                "MEMORY_USE_CASE_SCOPES=slide-review",
+                "MEMORY_ENABLE_AGENT_SCOPE=true",
             ]
         ),
         encoding="utf-8",
@@ -254,6 +341,10 @@ def test_load_host_config_reads_memory_settings(tmp_path: Path) -> None:
     assert cfg.memory_builtin_tools_enabled is False
     assert cfg.memory_auto_store_threshold_bytes == 4096
     assert cfg.memory_default_projection_mode == "catalog_only"
+    assert cfg.memory_global_scopes == ("default", "shared")
+    assert cfg.memory_group_scopes == ("deck-reviewers",)
+    assert cfg.memory_use_case_scopes == ("slide-review",)
+    assert cfg.memory_enable_agent_scope is True
 
 
 def test_memory_threshold_default_is_sensible_in_code() -> None:
