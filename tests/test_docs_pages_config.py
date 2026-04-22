@@ -21,6 +21,13 @@ def test_pages_config_enables_pretty_permalinks() -> None:
     assert "sdk" in config.get("exclude", [])
 
 
+def test_gitignore_does_not_hide_docs_build_section() -> None:
+    content = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    assert "/build/" in content
+    assert "\nbuild/\n" not in content
+
+
 def test_sdk_reference_links_to_sdk_section_root() -> None:
     content = (PAGES_ROOT / "reference" / "sdk-reference.md").read_text(encoding="utf-8")
 

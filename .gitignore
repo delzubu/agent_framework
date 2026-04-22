@@ -5,7 +5,7 @@ __pycache__/
 logs/
 tmp/
 *.out.json
-build/
+/build/
 *.egg-info/
 .claude/settings.local.json
 .playwright-cli/
