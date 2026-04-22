@@ -4,12 +4,14 @@ from __future__ import annotations
 import base64
 import re
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Callable, Protocol, runtime_checkable
 
 # Matches:
 #   @"path/with spaces.txt"   — quoted (any chars except newline/quote)
 #   @word.ext                 — unquoted with at least one dot (avoids @dataclass etc.)
 _REF_PATTERN = re.compile(r'@(?:"([^"\n]+)"|([^\s"@\n]*\.[^\s"@\n]+))')
+_FILE_BLOCK_PATTERN = re.compile(r"<file\b(?P<attrs>[^>]*)>(?P<content>.*?)</file>", re.DOTALL | re.IGNORECASE)
+_FILE_ATTR_PATTERN = re.compile(r'([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)"')
 
 
 @runtime_checkable
@@ -69,3 +71,25 @@ def expand_file_refs(
             return m.group(0)
 
     return _REF_PATTERN.sub(_replace, text)
+
+
+def replace_file_blocks(text: str, replacer: Callable[[str, dict[str, str], int], str]) -> str:
+    """Replace expanded ``<file ...>...</file>`` blocks in *text*.
+
+    This is used by the host bootstrap path after ``@file`` expansion to lift
+    resolved RAG/file inclusions into session memory while leaving normal prose
+    untouched.
+    """
+    if "<file" not in text:
+        return text
+
+    index = 0
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal index
+        index += 1
+        block = match.group(0)
+        attrs = {name.lower(): value for name, value in _FILE_ATTR_PATTERN.findall(match.group("attrs"))}
+        return replacer(block, attrs, index)
+
+    return _FILE_BLOCK_PATTERN.sub(_replace, text)

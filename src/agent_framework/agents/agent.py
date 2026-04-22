@@ -490,6 +490,7 @@ class Agent:
                 run_id=run.run_id,
                 parameter_values=run.parameter_values,
                 seed_parameters=run.seed_parameters,
+                prompt_text=prompt,
             )
             run.visible_memory_scopes = scopes
             run.resolved_memory_refs = refs

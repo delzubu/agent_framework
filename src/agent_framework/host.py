@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait as _futures_wait
@@ -37,7 +38,12 @@ from agent_framework.model import (
     ModelResponse,
     merge_runtime_system_into_messages,
 )
-from agent_framework.file_reference import DefaultFileReferenceResolver, FileReferenceResolver, expand_file_refs
+from agent_framework.file_reference import (
+    DefaultFileReferenceResolver,
+    FileReferenceResolver,
+    expand_file_refs,
+    replace_file_blocks,
+)
 from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tool_registry import ToolRegistry
@@ -1010,6 +1016,7 @@ class AgentHost:
         run_id: str,
         parameter_values: dict[str, Any],
         seed_parameters: dict[str, Any],
+        prompt_text: str = "",
     ) -> tuple[tuple[MemoryScope, ...], tuple[MemoryRef, ...], str]:
         """Build deterministic memory XML for one model call."""
         scopes = self.get_visible_memory_scopes(agent_id=agent_id, run_id=run_id)
@@ -1021,7 +1028,11 @@ class AgentHost:
         catalog_hits = query_provider.list(scopes, limit=20)
         catalog_xml = projector.render_catalog(catalog_hits)
 
-        explicit_uris = find_memory_uris(parameter_values) + find_memory_uris(seed_parameters)
+        explicit_uris = (
+            find_memory_uris(parameter_values)
+            + find_memory_uris(seed_parameters)
+            + find_memory_uris(prompt_text)
+        )
         seen: set[str] = set()
         entries: list[MemoryEntry] = []
         refs: list[MemoryRef] = []
@@ -1146,6 +1157,103 @@ class AgentHost:
         if isinstance(value, bytes):
             return "application/octet-stream"
         return "application/json"
+
+    @staticmethod
+    def _sanitize_memory_path_segment(value: str | None, *, fallback: str) -> str:
+        if not value:
+            return fallback
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-.")
+        return cleaned or fallback
+
+    def _lift_prompt_file_blocks_to_memory(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        prompt: str,
+    ) -> str:
+        """Store expanded ``<file>`` prompt blocks in memory and replace them with refs.
+
+        Only host-generated file/RAG inclusions are lifted from the prompt. Freeform
+        user prose is intentionally left inline.
+        """
+        if not prompt or "<file" not in prompt or not getattr(self.config, "memory_enabled", True):
+            return prompt
+
+        scope = MemoryScope(kind="session", key=self.session_id)
+
+        def _replace(block: str, attrs: dict[str, str], index: int) -> str:
+            file_name = attrs.get("name")
+            safe_name = self._sanitize_memory_path_segment(file_name, fallback=f"file-{index}")
+            path = f"runs/{run_id}/agents/{agent_id}/prompt-files/{index:03d}-{safe_name}"
+            ref = self.store_memory(
+                path=path,
+                content=block,
+                mime_type="text/xml",
+                scope=scope,
+                title=f"Prompt file {file_name or index}",
+                summary=(
+                    f"Expanded file content lifted from the root prompt for agent {agent_id!r}."
+                ),
+                metadata={
+                    "source_agent_id": agent_id,
+                    "run_id": run_id,
+                    "file_name": file_name,
+                    "encoding": attrs.get("encoding"),
+                    "source": "prompt_file_block",
+                    "auto_lifted": True,
+                },
+            )
+            self.publish_trace_event(
+                kind="runtime.memory_prompt_lift",
+                title=f"Lifted prompt file block: {file_name or index}",
+                summary=f"Stored root prompt file block as {ref.uri}.",
+                payload={
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "memory_uri": ref.uri,
+                    "file_name": file_name,
+                    "encoding": attrs.get("encoding"),
+                },
+                context=TraceContext(run_id=run_id, agent_id=agent_id),
+            )
+            return f'<memory id="{ref.uri}" />'
+
+        return replace_file_blocks(prompt, _replace)
+
+    def _bootstrap_root_prompt_inputs(
+        self,
+        *,
+        agent: Agent,
+        run_id: str,
+        initial_instruction: str,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Prepare root-run parameters and prompt text before the first model call.
+
+        The bootstrap path is intentionally conservative:
+
+        - when the supplied prompt cleanly matches the agent's template contract,
+          recover structured parameters and let the normal parameter/memory flow run
+        - otherwise, keep the prompt freeform but lift expanded ``<file>`` blocks
+          into memory so large RAG payloads are no longer carried inline
+        """
+        if not initial_instruction:
+            return {}, ""
+
+        parsed_parameters = agent.try_parse_prompt_input(initial_instruction)
+        if parsed_parameters is not None:
+            try:
+                rendered_from_parameters = agent.render_user_prompt(parsed_parameters)
+            except ValueError:
+                rendered_from_parameters = None
+            if rendered_from_parameters is not None and rendered_from_parameters.strip() == initial_instruction.strip():
+                return parsed_parameters, None
+
+        return {}, self._lift_prompt_file_blocks_to_memory(
+            agent_id=agent.agent_id,
+            run_id=run_id,
+            prompt=initial_instruction,
+        )
 
     def register_tool(self, tool: Tool) -> None:
         """Register a concrete tool instance for runtime execution."""
@@ -1312,12 +1420,17 @@ class AgentHost:
         agent = self._agent_with_runtime_tracing(self.get_agent(agent_id))
         prompt_num = self._next_prompt_counter()
         root_run_id = f"{self.session_id}.p{prompt_num}.{agent_id}"
+        parameters, rendered_prompt_override = self._bootstrap_root_prompt_inputs(
+            agent=agent,
+            run_id=root_run_id,
+            initial_instruction=initial_instruction or "",
+        )
         with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
             return agent.run(
                 host=self,
-                parameters={},
+                parameters=parameters,
                 caller_id="host",
-                rendered_prompt_override=initial_instruction or "",
+                rendered_prompt_override=rendered_prompt_override,
                 conversation_messages=conversation_messages,
                 prompt_fragments=prompt_fragments,
                 run_id=root_run_id,
