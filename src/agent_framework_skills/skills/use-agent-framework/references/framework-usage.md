@@ -72,6 +72,31 @@ The agent sees this on every turn as the system message.
 
 **`terminal_tools`** — when the model calls one of these, the loop exits immediately. The tool is NOT executed. `parameters` from the decision become the `AgentResult.message` (JSON-serialised). Used for structured-output agents.
 
+### Adjacent runtime `.json` sidecar
+
+Runtime metadata is loaded from a JSON file next to the agent Markdown file:
+
+```text
+agents/my_agent.md
+agents/my_agent.json
+```
+
+Supported keys:
+
+```json
+{
+  "model": "gpt-4.1,gpt-4o-mini",
+  "provider": "openai",
+  "temperature": 0.1,
+  "behavior": "pkg.behaviors.InputGuard",
+  "behaviors": ["pkg.behaviors.InputGuard", "pkg.behaviors.OutputVerifier"],
+  "can_query_caller": true,
+  "can_use_host_interaction": true
+}
+```
+
+Use the sidecar for runtime metadata only. Keep parameters, tools, subagents, response mode, and prompts in the `.md`.
+
 ---
 
 ## Decision loop — all 6 kinds
@@ -358,36 +383,56 @@ MISSING_TOOL_POLICY=graceful          # graceful (skip + trace) | strict (fail r
 
 ## AgentBehavior extensibility
 
-Subclass `AgentBehavior` and register it via the agent's sidecar `.behavior.json` file.
+Subclass `AgentBehavior` and register it via the agent's adjacent `.json` sidecar.
 
 ```python
-from agent_framework.agent_behavior import AgentBehavior, AgentRun, AgentResult
+from agent_framework.agents.agent_behavior import AgentBehavior
+from agent_framework.agents.agent_end_hook_decision import AgentEndHookDecision
+from agent_framework.agents.agent_hook_decision import AgentHookDecision
+
 
 class MyBehavior(AgentBehavior):
-    def before_run(self, run: AgentRun) -> AgentResult | None:
-        # Called after parameter binding, before the main loop.
-        # Return an AgentResult to short-circuit the run; return None to proceed.
-        run.add_prompt_fragment("<context>Extra context here</context>")
+    def attach(self, agent) -> None:
+        self.agent = agent
+
+    def before_run(self, agent, host, *, run, caller_id):
+        if not run.parameter_values.get("instruction"):
+            return AgentHookDecision(
+                continue_run=True,
+                system_message="Instruction is missing. Ask for clarification before proceeding.",
+            )
         return None
 
-    def respond_to_callback(self, run: AgentRun, decision) -> str | None:
-        # Called when a child sub-agent issues a callback to this parent.
-        # Return the answer string, or None to escalate further up.
-        if decision.callback_intent == "information_request":
-            return self.resolve_from_context(decision.parameters)
+    def respond_to_callback(self, agent, host, *, callee_id, prompt):
         return None
 
-    def after_run(self, run: AgentRun, result: AgentResult) -> AgentResult:
-        # Called after the loop ends. Can transform the result.
-        return result
+    def after_run(self, agent, host, *, run, caller_id, result):
+        if result.status == "completed" and not result.message.strip():
+            return AgentEndHookDecision(
+                continue_run=True,
+                prompt_fragments=(
+                    "<verification_feedback>Your previous answer was empty. Return a concrete result.</verification_feedback>",
+                ),
+            )
+        return None
 ```
 
-**Sidecar file** (`agents/my_agent.behavior.json`):
+**Sidecar file** (`agents/my_agent.json`):
+
 ```json
 {
-  "behavior": "my_module.MyBehavior"
+  "behaviors": [
+    "my_module.MyBehavior"
+  ]
 }
 ```
+
+Behavior guidance:
+
+- `before_run()` runs after initial parameter state refresh
+- if a behavior mutates prompt state or seed inputs, call `agent.refresh_parameter_state(run)` before returning
+- `respond_to_callback()` can answer child callbacks deterministically
+- `after_run()` may return a replacement `AgentResult`, or `AgentEndHookDecision(continue_run=True, ...)` to request one more loop iteration
 
 ---
 

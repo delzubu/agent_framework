@@ -14,7 +14,11 @@ Load reference files on demand as your work requires:
 | Reference | When to load |
 |-----------|-------------|
 | `references/framework-usage.md` | Before writing or modifying any agent, tool, behavior, or host code |
+| `references/agent-usage.md` | Before creating or editing an agent `.md`, adjacent agent `.json`, or Python `AgentBehavior` |
+| `references/tool-authoring.md` | Before creating or changing a custom tool `.md` / `.py` pair |
 | `references/evaluator-usage.md` | Before writing evaluations, case files, initializers, or running the evaluator |
+| `references/memory-usage.md` | When the agent handles large/shared payloads, `mem://...` refs, or memory tools |
+| `references/env-reference.md` | When editing `.env`, debugging configuration resolution, or checking supported keys |
 | `assets/agent-prompt-design-research.md` | When you want a broad survey of how other frameworks design agentic prompts, and the rationale behind patterns |
 | `references/agent-prompt-patterns.md` | Before writing a new agent's system prompt — quick checklist + pattern selector |
 | `assets/agent-prompt-organization.md` | When writing or reviewing a structured agent system prompt — recommended section order (Responsibilities → Boundaries → Workflow → Output Shape → Specific Rules) with rationale, examples, and copy-ready template |
@@ -33,7 +37,11 @@ The `references/` folder is in the same directory as this file. Load any referen
 
 ```
 references/framework-usage.md
+references/agent-usage.md
+references/tool-authoring.md
 references/evaluator-usage.md
+references/memory-usage.md
+references/env-reference.md
 assets/agent-prompt-design-research.md
 assets/agent-prompt-organization.md
 references/agent-prompt-patterns.md
