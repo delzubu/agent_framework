@@ -3,5 +3,7 @@ description: Markdown-defined agent runtime, orchestration host, tracing, and ev
 baseurl: /agent_framework
 permalink: pretty
 markdown: kramdown
+include:
+  - build
 exclude:
   - README.md
