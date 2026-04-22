@@ -18,6 +18,7 @@ def test_pages_config_enables_pretty_permalinks() -> None:
     assert config["baseurl"] == "/agent_framework"
     assert config["permalink"] == "pretty"
     assert "build" in config.get("include", [])
+    assert "sdk" in config.get("exclude", [])
 
 
 def test_sdk_reference_links_to_sdk_section_root() -> None:

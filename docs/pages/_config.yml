@@ -7,3 +7,4 @@ include:
   - build
 exclude:
   - README.md
+  - sdk
