@@ -415,6 +415,57 @@ def test_large_prompt_text_is_not_auto_stored_to_memory() -> None:
     assert "<memory " not in joined
 
 
+def test_root_prompt_file_blocks_are_lifted_to_memory(tmp_path: Path, monkeypatch) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "OPENAI_API_KEY=test-key",
+                "DEFAULT_PROVIDER=openai",
+                "DEFAULT_MODEL=gpt-4o-mini",
+                "AGENT_DIRECTORY=agents",
+                "TOOLS_DIRECTORY=tools",
+                "WORLD_DIRECTORY=world",
+                "ROOT_AGENT=reviewer",
+                "MEMORY_AUTO_STORE_THRESHOLD_BYTES=32",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "reviewer.md").write_text(
+        "---\n"
+        "id: reviewer\n"
+        "role: reviewer\n"
+        "---\n"
+        "sys\n"
+        "---\n"
+        "go\n",
+        encoding="utf-8",
+    )
+    deck_path = tmp_path / "full-extract.json"
+    deck_path.write_text(
+        json.dumps({"slides": [{"title": "Overview", "body": "Z" * 128}]}, indent=2),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    driver = CapturingModelDriver([{"kind": "final_message", "message": "done"}])
+    host = AgentHost.from_env(env_path, model_driver=driver)
+
+    result = host.run_root(initial_instruction="Review this deck: @full-extract.json")
+    assert result.message == "done"
+
+    _, context = driver.contexts[0]
+    assert '<memory id="mem://session/' in context.user_prompt
+    assert "<file name=" not in context.user_prompt
+
+    joined = "\n".join(str(message.get("content", "")) for message in context.messages)
+    assert "<memory " in joined
+    assert '<file name="full-extract.json">' in joined
+    assert "Z" * 64 in joined
+
+
 def test_subagent_call_auto_stores_large_parameter_before_child_run(tmp_path: Path) -> None:
     env_path = tmp_path / ".env"
     env_path.write_text(

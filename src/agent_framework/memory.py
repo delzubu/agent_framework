@@ -10,9 +10,12 @@ changing agent code.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from html import escape
 from typing import Any, Mapping, Protocol, Sequence
+
+_MEMORY_URI_PATTERN = re.compile(r"mem://[^\s\"'<>]+")
 
 
 def is_memory_uri(value: str) -> bool:
@@ -56,6 +59,9 @@ def find_memory_uris(value: Any) -> tuple[str, ...]:
         if isinstance(node, str):
             if is_memory_uri(node):
                 uris.add(node)
+            for match in _MEMORY_URI_PATTERN.findall(node):
+                if is_memory_uri(match):
+                    uris.add(match)
             return
         if isinstance(node, Mapping):
             for child in node.values():
