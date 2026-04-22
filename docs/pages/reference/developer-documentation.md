@@ -15,8 +15,10 @@ Who this is for: contributors and advanced users looking for development-oriente
 - Tracing.
 - Drivers.
 - Extension points.
+- Callback and interaction routing.
 
 ## Next Steps
 
 - [Architecture Overview]({{ '/reference/architecture/overview/' | relative_url }})
+- [Handling Callbacks]({{ '/build/handling-callbacks/' | relative_url }})
 - [Development Setup]({{ '/community/development-setup/' | relative_url }})

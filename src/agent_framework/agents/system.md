@@ -31,7 +31,7 @@ Use `call_subagents` (plural) when multiple independent agents can work concurre
 - `(a ‖ b) → c` — mixed: one parallel `call_subagents` for a and b, then a second turn with `call_subagent` for c
 - `(a ‖ b ‖ c)` — pure parallel: one `call_subagents` with `mode: "parallel"` and three entries
 
-In parallel mode, children cannot emit callbacks. If a child needs information from the caller, use `mode: "sequential"` or gather the information yourself before the fan-out.
+In parallel mode, children cannot emit callbacks. If a child needs information from the caller or user, use `mode: "sequential"` or gather the information yourself before the fan-out.
 
 ## Information Retrieval
 
@@ -49,3 +49,4 @@ If any information is missing, use the following workflow to fill it in:
 1. If the callback intent is `information_request`, first try to satisfy it locally using **Information Retrieval** process
 2. Only escalate the callback to your own caller after your local retrieval and derivation options have been tried and still do not resolve the request.
 3. Do not simply relay a subagent information request upward unchanged if you can make progress on it yourself.
+4. In sequential runs, a specialist subagent may ask the user directly when it owns the clarification loop. Use upward escalation when the caller must review, decide, or synthesize the response.

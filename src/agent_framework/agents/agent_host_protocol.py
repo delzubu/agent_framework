@@ -26,7 +26,17 @@ class AgentHostProtocol(Protocol):
     def get_agent(self, agent_id: str, *, base_dir: Path | None = None) -> "Agent":
         raise NotImplementedError
 
-    def request_user_input(self, prompt: str) -> str:
+    def request_user_input(
+        self,
+        prompt: str,
+        *,
+        intent: str = "information_request",
+        run_id: str = "",
+        agent_id: str = "",
+        caller_id: str | None = None,
+        parent_run_id: str | None = None,
+        interaction_kind: str = "direct_user_input",
+    ) -> str:
         raise NotImplementedError
 
     def call_subagent(
@@ -65,7 +75,18 @@ class AgentHostProtocol(Protocol):
     def get_tool(self, tool_name: str):
         raise NotImplementedError
 
-    def resolve_callback(self, *, caller_id: str, callee: "Agent", prompt: str) -> str:
+    def resolve_callback(
+        self,
+        *,
+        caller_id: str,
+        callee: "Agent",
+        prompt: str,
+        intent: str = "information_request",
+        run_id: str = "",
+        parent_run_id: str | None = None,
+        allow_user_fallback: bool = True,
+        callback_parameters: dict[str, Any] | None = None,
+    ) -> str:
         raise NotImplementedError
 
     def open_context(self, *, caller_id: str, callee_id: str, kind: str) -> CallContext:

@@ -110,10 +110,26 @@ An optional `<agent_filename>.json` file next to the `.md` file holds runtime co
 | `temperature` | `float` | `0.2` | Sampling temperature. |
 | `can_query_caller` | `bool` | `True` | Whether this agent can escalate callbacks to its caller. |
 | `can_use_host_interaction` | `bool` | `True` | Whether this agent can use console I/O for callbacks. |
+| `callback_policy` | `object` | `{}` | Default routing policy for caller-mediated callbacks. Keys: `passthrough_child_callbacks`, `max_bubble_hops`, `fallback_target`. |
 | `behavior` | `str` | — | Single behavior module name (alternative to `behaviors` list). |
 | `behaviors` | `list[str]` | `[]` | List of behavior module names to load and attach. |
 
 A `model_override` passed to `from_markdown()` (from `HostConfig.model_for(agent_id)`) takes precedence over the sidecar's `model` field.
+
+Example:
+
+```json
+{
+  "model": "gpt-4.1,gpt-4o-mini",
+  "can_query_caller": true,
+  "can_use_host_interaction": true,
+  "callback_policy": {
+    "passthrough_child_callbacks": false,
+    "max_bubble_hops": 2,
+    "fallback_target": "user"
+  }
+}
+```
 
 ---
 
@@ -333,25 +349,51 @@ return AgentResult(
 
 Also appends `{"role": "assistant", "content": decision.message}` to `run.conversation_messages` and updates `run.transcript_entries`.
 
-### 6.2 `"callback"` → `handle_callback()`
+### 6.2 Interaction decisions → `handle_callback()`
+
+The runtime now treats callback-style interaction as a family of distinct routing modes, all handled through `handle_callback()`:
+
+| `decision.kind` | Meaning |
+|-----------------|---------|
+| `"callback"` | Generic callback. Used mainly for intent-style kinds normalized from `information_request`, `proposal_review`, etc. |
+| `"callback_to_caller"` | Ask the caller side to try resolving first. |
+| `"request_user_input"` | Open direct host/user interaction for the requesting run. |
+| `"request_resolution"` | Resolve through agents/tools/memory only. No host/user fallback. |
+
+Common steps:
 
 1. Open context: `ctx = host.open_context(caller_id=self.agent_id, callee_id=caller_id or "host", kind=f"callback:{decision.callback_intent}")`
-2. Record to audit tracer: `record_callback(run_id, intent=decision.callback_intent, prompt=decision.message, target=caller_id, response=None)`
-3. Resolve the callback:
+2. Record audit/tracing events for the callback request.
+3. Merge any per-agent and per-decision routing policy:
+   - sidecar `callback_policy`
+   - `can_query_caller`
+   - `can_use_host_interaction`
+   - decision parameters such as `bubble_hops`, `max_bubble_hops`, `fallback_target`, `passthrough_agents`, `resolvable_by`
+4. Resolve according to `decision.kind`:
    ```python
-   if caller_id is not None and self.can_query_caller:
-       response = host.resolve_callback(caller_id=caller_id, callee=self, prompt=decision.message)
+   if decision.kind == "request_user_input":
+       response = host.request_user_input(...)
+   elif routes_to_caller and not passthrough and not reached_hop_limit:
+       response = host.resolve_callback(...)
+   elif decision.kind == "request_resolution":
+       return AgentResult(status="failed", ...)
    elif self.can_use_host_interaction:
-       response = host.request_user_input(decision.message)
+       response = host.request_user_input(...)
    else:
-       response = ""  # agent cannot escalate
+       response = ""
    ```
-4. Update audit record with response.
-5. Set `ctx.status = "resolved"`.
+5. Set `ctx.status = "resolved"` when a response is obtained.
 6. Append response:
    - To `run.conversation_messages`: `{"role": "user", "content": response}`
    - To `run.prompt_fragments`: `<callback_response intent="{intent}">{response}</callback_response>` (via `_upsert_prompt_fragment`)
-7. `return None` — loop continues.
+7. `return None` — loop continues after the answer is injected.
+
+Important behavior:
+
+- Sequential sub-agents may ask the user directly.
+- Parallel batch children still must not synchronously block on direct user interaction.
+- Caller bubbling can skip orchestration layers via host-side run lineage plus `passthrough_agents` / `resolvable_by`.
+- `request_resolution` fails instead of silently falling through to host interaction.
 
 ### 6.3 `"call_tool"` → `handle_tool_call()`
 
@@ -416,13 +458,17 @@ Normalizes raw model output into a structured `AgentDecision`. Called from `deci
 **No `kind` key in payload:**
 → `AgentDecision(kind="final_message", message=response.raw_text)`
 
-**Legacy kind normalization** (backward compatibility):
+**Legacy kind normalization** (minimal compatibility):
 
 | Raw `kind` | Normalized `kind` | `callback_intent` |
 |------------|------------------|--------------------|
-| `"request_parameter"` | `"callback"` | `"information_request"` |
-| `"request_user_input"` | `"callback"` | `"information_request"` |
-| `"callback_to_caller"` | `"callback"` | `"information_request"` |
+| `"request_parameter"` | `"request_user_input"` | `"information_request"` |
+
+The explicit interaction kinds are preserved:
+
+- `"callback_to_caller"` stays `"callback_to_caller"`
+- `"request_user_input"` stays `"request_user_input"`
+- `"request_resolution"` stays `"request_resolution"`
 
 **Callback intent kind normalization:**
 
@@ -437,7 +483,7 @@ Normalizes raw model output into a structured `AgentDecision`. Called from `deci
 
 ### 7.2 `_normalize_decision_capabilities(decision) -> AgentDecision`
 
-Repairs six common model confusion patterns where tool names and subagent IDs land in the wrong slot:
+Repairs common model confusion patterns where tool names and subagent IDs land in the wrong slot. The repair logic applies to the callback family (`callback`, `callback_to_caller`, `request_user_input`, `request_resolution`) when those kinds accidentally carry a tool name or child agent id instead of a real interaction request.
 
 | Case | Detection | Repair |
 |------|-----------|--------|

@@ -68,6 +68,20 @@ from .tool_start_event import ToolStartEvent
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class CallbackRoutingPolicy:
+    """Caller-escalation policy loaded from agent runtime metadata.
+
+    These defaults apply when a child emits a caller-mediated interaction kind
+    and does not provide a more specific routing override in the decision
+    parameters.
+    """
+
+    passthrough_child_callbacks: bool = False
+    max_bubble_hops: int | None = None
+    fallback_target: str = "user"
+
+
 def _emit_context_updated(
     agent: "Agent", host: "AgentHostProtocol", run: AgentRun, message: dict[str, str], source: str
 ) -> None:
@@ -172,6 +186,7 @@ class Agent:
     allowed_skills: tuple[str, ...] = ()
     can_query_caller: bool = True
     can_use_host_interaction: bool = True
+    callback_routing_policy: CallbackRoutingPolicy = field(default_factory=CallbackRoutingPolicy)
     on_pre_agent: SequentialHook = field(default_factory=SequentialHook)
     on_post_agent: SequentialHook = field(default_factory=SequentialHook)
     on_pre_tool: SequentialHook = field(default_factory=SequentialHook)
@@ -243,6 +258,7 @@ class Agent:
             allowed_skills=tuple(metadata.get("skills", []) or ()),
             can_query_caller=bool(runtime_metadata.get("can_query_caller", True)),
             can_use_host_interaction=bool(runtime_metadata.get("can_use_host_interaction", True)),
+            callback_routing_policy=_parse_callback_routing_policy(runtime_metadata),
             behavior_ids=behavior_ids,
             source_path=source_path,
             terminal_tools=tuple(metadata.get("terminal_tools", []) or ()),
@@ -345,11 +361,20 @@ class Agent:
         run = self._create_run(
             parameters or {},
             run_id=run_id,
+            parent_run_id=parent_run_id,
             in_parallel_batch=in_parallel_batch,
             rendered_prompt_override=rendered_prompt_override,
             conversation_messages=conversation_messages,
             prompt_fragments=prompt_fragments,
         )
+        register_run = getattr(host, "register_run", None)
+        if callable(register_run):
+            register_run(
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                caller_id=caller_id,
+                parent_run_id=parent_run_id,
+            )
         normalize_memory_parameters = getattr(host, "normalize_memory_parameters", None)
         if callable(normalize_memory_parameters):
             normalized_seed_parameters = normalize_memory_parameters(
@@ -577,6 +602,9 @@ class Agent:
         handlers = {
             "final_message": self.handle_final_message,
             "callback": self.handle_callback,
+            "callback_to_caller": self.handle_callback,
+            "request_user_input": self.handle_callback,
+            "request_resolution": self.handle_callback,
             "call_subagent": self.handle_subagent_call,
             "call_subagents": self.handle_subagent_calls,
             "call_tool": self.handle_tool_call,
@@ -634,16 +662,24 @@ class Agent:
         decision: AgentDecision,
         caller_id: str | None,
     ) -> AgentResult | None:
-        """Handle all callback-style requests through one unified transport."""
+        """Handle callback-style interaction and resolution requests."""
         if run.in_parallel_batch:
             # Parallel children cannot block on user/caller input — save conversation
             # state so the batch orchestrator can resume after resolving the callback.
+            if decision.kind == "request_user_input":
+                return AgentResult(
+                    status="failed",
+                    message="Parallel children cannot request direct user input synchronously.",
+                    decision=decision,
+                    prompt=run.rendered_prompt,
+                )
             save_fn = getattr(host, "save_checkpoint", None)
             if callable(save_fn):
                 save_fn(run.run_id, list(run.conversation_messages))
             return AgentResult(
                 status="blocked",
                 message=json.dumps({
+                    "kind": decision.kind,
                     "intent": decision.callback_intent or "information_request",
                     "prompt": decision.message,
                     "parameters": decision.parameters,
@@ -655,6 +691,22 @@ class Agent:
         parameter_name = str(decision.parameters.get("parameter_name", "")).strip()
         spec = self._parameter_spec_by_name().get(parameter_name) if parameter_name else None
         prompt = decision.message or (spec.description if spec is not None else "Please provide more information.")
+        routes_to_caller = (
+            decision.kind in {"callback", "callback_to_caller"}
+            and bool(caller_id and caller_id != "host" and self.can_query_caller)
+        )
+        bubble_hops = _coerce_bubble_hops(decision.parameters.get("bubble_hops"))
+        routing_policy = _merge_callback_routing_policy(self.callback_routing_policy, decision.parameters)
+        next_bubble_hops = bubble_hops + 1
+        should_passthrough = (
+            routes_to_caller
+            and routing_policy.passthrough_child_callbacks
+            and next_bubble_hops > 0
+        )
+        reached_hop_limit = (
+            routing_policy.max_bubble_hops is not None
+            and next_bubble_hops > routing_policy.max_bubble_hops
+        )
         from agent_framework.agent_event_publisher import agent_events
 
         agent_events.on_callback_requested(
@@ -663,17 +715,28 @@ class Agent:
             caller_id=caller_id,
             intent=intent,
             prompt=prompt,
-            to_caller=bool(caller_id and caller_id != "host" and self.can_query_caller),
+            to_caller=routes_to_caller,
         )
         answer = ""
-        if caller_id and caller_id != "host" and self.can_query_caller:
+        if routes_to_caller and not should_passthrough and not reached_hop_limit:
             context = host.open_context(
                 caller_id=self.agent_id,
                 callee_id=caller_id,
                 kind=f"callback:{intent}",
             )
             run.contexts.append(context)
-            answer = host.resolve_callback(caller_id=caller_id, callee=self, prompt=prompt)
+            callback_parameters = dict(decision.parameters)
+            callback_parameters["bubble_hops"] = next_bubble_hops
+            answer = host.resolve_callback(
+                caller_id=caller_id,
+                callee=self,
+                prompt=prompt,
+                intent=intent,
+                run_id=run.run_id,
+                parent_run_id=run.parent_run_id,
+                allow_user_fallback=decision.kind != "request_resolution",
+                callback_parameters=callback_parameters,
+            )
             context.status = "resolved"
             cb_event = {
                 "type": "callback",
@@ -705,6 +768,74 @@ class Agent:
                 target=f"caller:{caller_id}",
                 answer=answer,
             )
+        elif routes_to_caller and (should_passthrough or reached_hop_limit):
+            fallback_target = routing_policy.fallback_target
+            if fallback_target == "fail" or decision.kind == "request_resolution":
+                return AgentResult(
+                    status="failed",
+                    message=(
+                        f"{self.agent_id} callback could not be resolved within caller bubble policy."
+                    ),
+                    decision=decision,
+                    prompt=run.rendered_prompt,
+                )
+            if not self.can_use_host_interaction:
+                raise ValueError(f"{self.agent_id} cannot request callback intent '{intent}' from host.")
+            context = host.open_context(
+                caller_id=self.agent_id,
+                callee_id="host",
+                kind=f"callback:{intent}",
+            )
+            run.contexts.append(context)
+            answer = host.request_user_input(
+                prompt,
+                intent=intent,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                caller_id=caller_id,
+                parent_run_id=run.parent_run_id,
+                interaction_kind="callback_passthrough",
+            )
+            context.status = "resolved"
+            cb_event = {
+                "type": "callback",
+                "intent": intent,
+                "target": "host",
+                "prompt": prompt,
+                "response": answer,
+            }
+            agent_events.audit_callback(
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                intent=intent,
+                prompt=prompt,
+                target="host",
+                response=answer,
+                event_dict=cb_event,
+            )
+            run.transcript_entries.append(f"<host_request intent=\"{intent}\">{prompt}</host_request>")
+            run.transcript_entries.append(f"<host_response>{answer}</host_response>")
+            run.conversation_messages.append({"role": "assistant", "content": prompt})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "callback_prompt")
+            run.conversation_messages.append({"role": "user", "content": answer})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "callback_answer")
+            agent_events.on_callback_answered(
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                caller_id=caller_id,
+                intent=intent,
+                target="host",
+                answer=answer,
+            )
+        elif decision.kind == "request_resolution":
+            return AgentResult(
+                status="failed",
+                message=(
+                    f"{self.agent_id} emitted request_resolution but no caller-side resolver was available."
+                ),
+                decision=decision,
+                prompt=run.rendered_prompt,
+            )
         else:
             if not self.can_use_host_interaction:
                 raise ValueError(f"{self.agent_id} cannot request callback intent '{intent}' from host.")
@@ -714,7 +845,15 @@ class Agent:
                 kind=f"callback:{intent}",
             )
             run.contexts.append(context)
-            answer = host.request_user_input(prompt)
+            answer = host.request_user_input(
+                prompt,
+                intent=intent,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                caller_id=caller_id,
+                parent_run_id=run.parent_run_id,
+                interaction_kind="direct_user_input",
+            )
             context.status = "resolved"
             cb_event = {
                 "type": "callback",
@@ -1261,6 +1400,7 @@ class Agent:
         parameters: dict[str, Any],
         *,
         run_id: str | None = None,
+        parent_run_id: str | None = None,
         in_parallel_batch: bool = False,
         rendered_prompt_override: str | None = None,
         conversation_messages: tuple[dict[str, str], ...] | None = None,
@@ -1270,6 +1410,7 @@ class Agent:
         seed_parameters = dict(parameters)
         return AgentRun(
             run_id=run_id or str(uuid4()),
+            parent_run_id=parent_run_id,
             in_parallel_batch=in_parallel_batch,
             rendered_prompt=rendered_prompt_override or self._render_seed_prompt(seed_parameters),
             seed_parameters=seed_parameters,
@@ -1697,12 +1838,13 @@ class Agent:
                 "use exactly one of call_tool, call_subagent, or callback with a single target."
             )
 
-        if decision.kind == "callback":
+        if decision.kind in {"callback", "callback_to_caller", "request_user_input", "request_resolution"}:
             if decision.subagent_id in self.allowed_child_agents:
                 _LOGGER.warning(
-                    "Agent %s: decision kind mismatch — model emitted callback but subagent_id=%r "
+                    "Agent %s: decision kind mismatch — model emitted %s but subagent_id=%r "
                     "matches a declared child agent; normalizing to call_subagent (intentional slot repair).",
                     self.agent_id,
+                    decision.kind,
                     decision.subagent_id,
                 )
                 return AgentDecision(
@@ -1714,9 +1856,10 @@ class Agent:
                 )
             if decision.tool_name in allowed_tools:
                 _LOGGER.warning(
-                    "Agent %s: decision kind mismatch — model emitted callback but tool_name=%r "
+                    "Agent %s: decision kind mismatch — model emitted %s but tool_name=%r "
                     "matches a declared tool; normalizing to call_tool (intentional slot repair).",
                     self.agent_id,
+                    decision.kind,
                     decision.tool_name,
                 )
                 return AgentDecision(
@@ -1805,3 +1948,61 @@ class Agent:
         return tuple(names)
 
 __all__ = ["Agent"]
+
+
+def _parse_callback_routing_policy(runtime_metadata: dict[str, object]) -> CallbackRoutingPolicy:
+    """Parse callback routing defaults from adjacent runtime metadata."""
+    raw = runtime_metadata.get("callback_policy")
+    if not isinstance(raw, dict):
+        return CallbackRoutingPolicy()
+    max_hops_raw = raw.get("max_bubble_hops")
+    max_hops: int | None
+    if max_hops_raw in (None, ""):
+        max_hops = None
+    else:
+        max_hops = int(max_hops_raw)
+        if max_hops < 0:
+            raise ValueError("callback_policy.max_bubble_hops must be >= 0.")
+    fallback_target = str(raw.get("fallback_target", "user")).strip().lower() or "user"
+    if fallback_target not in {"user", "fail"}:
+        raise ValueError("callback_policy.fallback_target must be 'user' or 'fail'.")
+    return CallbackRoutingPolicy(
+        passthrough_child_callbacks=bool(raw.get("passthrough_child_callbacks", False)),
+        max_bubble_hops=max_hops,
+        fallback_target=fallback_target,
+    )
+
+
+def _coerce_bubble_hops(raw: object) -> int:
+    """Normalize decision bubble hop count metadata."""
+    if raw in (None, ""):
+        return 0
+    value = int(raw)
+    return value if value >= 0 else 0
+
+
+def _merge_callback_routing_policy(
+    base: CallbackRoutingPolicy,
+    parameters: dict[str, Any],
+) -> CallbackRoutingPolicy:
+    """Merge per-decision routing overrides into the agent default policy."""
+    max_hops_raw = parameters.get("max_bubble_hops")
+    max_hops = base.max_bubble_hops if max_hops_raw in (None, "") else int(max_hops_raw)
+    fallback_target_raw = parameters.get("fallback_target")
+    fallback_target = (
+        base.fallback_target
+        if fallback_target_raw in (None, "")
+        else str(fallback_target_raw).strip().lower()
+    )
+    if fallback_target not in {"user", "fail"}:
+        fallback_target = base.fallback_target
+    passthrough = (
+        base.passthrough_child_callbacks
+        if "passthrough_child_callbacks" not in parameters
+        else bool(parameters.get("passthrough_child_callbacks"))
+    )
+    return CallbackRoutingPolicy(
+        passthrough_child_callbacks=passthrough,
+        max_bubble_hops=max_hops,
+        fallback_target=fallback_target,
+    )

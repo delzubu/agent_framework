@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait as _futures_wait
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
@@ -48,6 +48,7 @@ from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tool_registry import ToolRegistry
 from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
+from agent_framework.interaction import PendingInteraction
 from agent_framework.memory import (
     CatalogMemoryQueryProvider,
     ConfiguredMemoryScopeResolver,
@@ -95,6 +96,16 @@ class SubagentBatchItemResult:
     parameters_injection: str = "override"
     callback_intent: str | None = None
     callback_prompt: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RunRegistration:
+    """Minimal lineage record for one active or recently active run."""
+
+    run_id: str
+    agent_id: str
+    caller_id: str | None
+    parent_run_id: str | None
 
 
 def _agent_host_receive_log_enabled_from_env() -> bool:
@@ -165,6 +176,10 @@ class AgentHost:
     _checkpoint_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _timed_out_run_ids: set[str] = field(default_factory=set, repr=False)
     _timed_out_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    pending_interactions: dict[str, PendingInteraction] = field(default_factory=dict, repr=False)
+    _pending_interactions_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _run_registry: dict[str, RunRegistration] = field(default_factory=dict, repr=False)
+    _run_registry_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def audit_tracer(self) -> InMemoryAuditTracer | None:
@@ -1406,6 +1421,96 @@ class AgentHost:
             self._prompt_counter += 1
             return self._prompt_counter
 
+    def open_interaction(
+        self,
+        *,
+        prompt: str,
+        intent: str,
+        run_id: str,
+        agent_id: str,
+        caller_id: str | None,
+        parent_run_id: str | None,
+        interaction_kind: str,
+        blocking: bool = True,
+    ) -> PendingInteraction:
+        """Register a pending interactive prompt and emit a trace event."""
+        interaction = PendingInteraction(
+            prompt_id=str(uuid4()),
+            session_id=self.session_id,
+            prompt=prompt,
+            intent=intent,
+            run_id=run_id,
+            agent_id=agent_id,
+            caller_id=caller_id,
+            parent_run_id=parent_run_id,
+            interaction_kind=interaction_kind,
+            blocking=blocking,
+            created_at=datetime.now(timezone.utc),
+        )
+        with self._pending_interactions_lock:
+            self.pending_interactions[interaction.prompt_id] = interaction
+        self.publish_trace_event(
+            kind="runtime.interaction_opened",
+            title="Interaction opened",
+            payload=interaction.metadata(),
+            context=TraceContext(
+                run_id=run_id,
+                agent_id=agent_id,
+                caller_id=caller_id,
+            ),
+        )
+        return interaction
+
+    def close_interaction(self, prompt_id: str, *, answer: str | None = None, cancelled: bool = False) -> None:
+        """Remove a pending interaction and emit the matching trace event."""
+        with self._pending_interactions_lock:
+            interaction = self.pending_interactions.pop(prompt_id, None)
+        if interaction is None:
+            return
+        kind = "runtime.interaction_cancelled" if cancelled else "runtime.interaction_answered"
+        title = "Interaction cancelled" if cancelled else "Interaction answered"
+        payload = interaction.metadata()
+        payload["answer"] = answer
+        self.publish_trace_event(
+            kind=kind,
+            title=title,
+            payload=payload,
+            context=TraceContext(
+                run_id=interaction.run_id,
+                agent_id=interaction.agent_id,
+                caller_id=interaction.caller_id,
+            ),
+        )
+
+    def get_pending_interaction(self, prompt_id: str) -> PendingInteraction | None:
+        """Return a pending interaction by prompt id."""
+        with self._pending_interactions_lock:
+            return self.pending_interactions.get(prompt_id)
+
+    def register_run(
+        self,
+        *,
+        run_id: str,
+        agent_id: str,
+        caller_id: str | None,
+        parent_run_id: str | None,
+    ) -> None:
+        """Record minimal lineage for a run so callback bubbling can skip layers."""
+        with self._run_registry_lock:
+            self._run_registry[run_id] = RunRegistration(
+                run_id=run_id,
+                agent_id=agent_id,
+                caller_id=caller_id,
+                parent_run_id=parent_run_id,
+            )
+
+    def get_run_registration(self, run_id: str | None) -> RunRegistration | None:
+        """Return the stored run lineage record, if any."""
+        if not run_id:
+            return None
+        with self._run_registry_lock:
+            return self._run_registry.get(run_id)
+
     def run_agent(
         self,
         agent_id: str,
@@ -1634,6 +1739,9 @@ class AgentHost:
                         caller_id=caller.agent_id,
                         callee=callee,
                         prompt=br.callback_prompt or "",
+                        intent=br.callback_intent or "information_request",
+                        run_id=br.run_id,
+                        parent_run_id=parent_run_id,
                     )
                 except Exception as exc:
                     self.delete_checkpoint(br.run_id)
@@ -1793,8 +1901,52 @@ class AgentHost:
         """Execute a loaded tool by name."""
         return self.get_tool(tool_name).invoke(parameters, self)
 
-    def resolve_callback(self, *, caller_id: str, callee: Agent, prompt: str) -> str:
+    def resolve_callback(
+        self,
+        *,
+        caller_id: str,
+        callee: Agent,
+        prompt: str,
+        intent: str = "information_request",
+        run_id: str = "",
+        parent_run_id: str | None = None,
+        allow_user_fallback: bool = True,
+        callback_parameters: dict[str, Any] | None = None,
+    ) -> str:
         """Collect a callback response from the caller side."""
+        params = dict(callback_parameters or {})
+        current_hops = int(params.get("bubble_hops", 0) or 0)
+        passthrough_agents = {
+            str(item).strip()
+            for item in (params.get("passthrough_agents") or [])
+            if str(item).strip()
+        }
+        resolvable_by = {
+            str(item).strip()
+            for item in (params.get("resolvable_by") or [])
+            if str(item).strip()
+        }
+        should_passthrough = caller_id in passthrough_agents
+        not_resolvable_here = bool(resolvable_by) and caller_id not in resolvable_by and caller_id != "host"
+        if caller_id != "host" and (should_passthrough or not_resolvable_here):
+            caller_run = self.get_run_registration(parent_run_id)
+            if caller_run is not None and caller_run.caller_id is not None:
+                params["bubble_hops"] = current_hops + 1
+                return self.resolve_callback(
+                    caller_id=caller_run.caller_id,
+                    callee=callee,
+                    prompt=prompt,
+                    intent=intent,
+                    run_id=run_id,
+                    parent_run_id=caller_run.parent_run_id,
+                    allow_user_fallback=allow_user_fallback,
+                    callback_parameters=params,
+                )
+            if not allow_user_fallback:
+                raise RuntimeError(
+                    f"Callback for {callee.agent_id!r} could not be resolved without host/user interaction."
+                )
+            caller_id = "host"
         if caller_id != "host":
             try:
                 caller_agent = self.get_agent(caller_id)
@@ -1806,26 +1958,78 @@ class AgentHost:
                     return response
                 result = caller_agent.run(
                     host=self,
-                    parameters={},
+                    parameters=dict(callback_parameters or {}),
                     caller_id="host",
                     rendered_prompt_override=prompt,
                 )
                 if result.message:
                     return result.message
+                if not allow_user_fallback:
+                    raise RuntimeError(
+                        f"Caller agent {caller_id!r} did not resolve callback for {callee.agent_id!r}."
+                    )
         # Fall back to user_comm
+        if not allow_user_fallback:
+            raise RuntimeError(
+                f"Callback for {callee.agent_id!r} could not be resolved without host/user interaction."
+            )
         if self.user_comm is None:
             return ""
         message = f"{callee.agent_id} asks {caller_id}: {prompt}\nResponse: "
-        result = self._run_user_comm_coro(self.user_comm.read_user_input(message))
+        interaction = self.open_interaction(
+            prompt=message,
+            intent=intent,
+            run_id=run_id or f"{callee.agent_id}.{self.session_id}",
+            agent_id=callee.agent_id,
+            caller_id=caller_id,
+            parent_run_id=parent_run_id,
+            interaction_kind="callback_to_caller",
+            blocking=True,
+        )
+        result = self._run_user_comm_coro(
+            self.user_comm.read_user_input(
+                message,
+                prompt_id=interaction.prompt_id,
+                metadata=interaction.metadata(),
+            )
+        )
+        self.close_interaction(interaction.prompt_id, answer=result, cancelled=result is None)
         return result or ""
 
-    def request_user_input(self, prompt: str) -> str:
+    def request_user_input(
+        self,
+        prompt: str,
+        *,
+        intent: str = "information_request",
+        run_id: str = "",
+        agent_id: str = "",
+        caller_id: str | None = None,
+        parent_run_id: str | None = None,
+        interaction_kind: str = "direct_user_input",
+    ) -> str:
         """Collect direct user input via ``user_comm``."""
         if self.user_comm is None:
             raise RuntimeError(
                 "No UserCommunication configured. Use AgentHost.create() with user_comm=."
             )
-        result = self._run_user_comm_coro(self.user_comm.read_user_input(f"{prompt}\n> "))
+        interaction = self.open_interaction(
+            prompt=prompt,
+            intent=intent,
+            run_id=run_id or f"{agent_id or 'agent'}.{self.session_id}",
+            agent_id=agent_id or "agent",
+            caller_id=caller_id,
+            parent_run_id=parent_run_id,
+            interaction_kind=interaction_kind,
+            blocking=True,
+        )
+        result = self._run_user_comm_coro(
+            self.user_comm.read_user_input(
+                f"{prompt}\n> ",
+                prompt_id=interaction.prompt_id,
+                metadata=interaction.metadata(),
+            )
+        )
+        self.close_interaction(interaction.prompt_id, answer=result, cancelled=result is None)
         return result or ""
 
     def open_context(self, *, caller_id: str, callee_id: str, kind: str) -> CallContext:

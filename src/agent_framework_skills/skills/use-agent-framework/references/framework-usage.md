@@ -156,7 +156,11 @@ Child runs to completion. Its `AgentResult.message` is injected back. Loop conti
 - **Parallel children must not emit `callback`** — if they do, that child returns `status="blocked"` and siblings continue normally.
 - All results are injected as one `<subagent_results>` block. Loop continues.
 
-### `callback` — ask a question / escalate
+### Interaction decisions
+
+Treat interaction routing as a first-class decision. The framework may support distinct decision kinds for caller escalation, direct user input, and agent-only resolution. Do not collapse these semantically when designing prompts or runtime behavior.
+
+### `callback` — generic escalation / clarification
 ```json
 {
   "kind": "callback",
@@ -169,6 +173,45 @@ Child runs to completion. Its `AgentResult.message` is injected back. Loop conti
 ```
 The model may also emit the intent name directly as `kind` (e.g. `"kind": "information_request"`); the framework normalises both forms.
 
+### `callback_to_caller` — ask the caller agent first
+```json
+{
+  "kind": "callback_to_caller",
+  "intent": "information_request",
+  "message": "Need caller-side resolution.",
+  "parameters": {
+    "parameter_name": "shipping_address"
+  }
+}
+```
+Use when the caller may resolve, transform, or escalate the request.
+
+### `request_user_input` — ask the user directly
+```json
+{
+  "kind": "request_user_input",
+  "intent": "information_request",
+  "message": "What is the preferred shipping address?",
+  "parameters": {
+    "parameter_name": "shipping_address"
+  }
+}
+```
+Use when the answer must come from the user and bubbling through parent agents would only add token cost.
+
+### `request_resolution` — resolve through agents/tools only
+```json
+{
+  "kind": "request_resolution",
+  "intent": "information_request",
+  "message": "Resolve the customer id from known system state.",
+  "parameters": {
+    "allowed_resolvers": ["parent", "memory", "tools"]
+  }
+}
+```
+Use when the host/user must not be asked. If unresolved, fail or choose another explicit path.
+
 **Callback intents:**
 | Intent | Use |
 |--------|-----|
@@ -178,6 +221,13 @@ The model may also emit the intent name directly as `kind` (e.g. `"kind": "infor
 | `delegation_return` | Child returning to parent with result/question |
 | `policy_or_approval` | Agent needs authorisation for a sensitive action |
 | `guardrail_trip` | Policy violation detected; agent stops to report |
+
+Routing guidance:
+
+- `callback_to_caller`: caller-mediated resolution, with optional upward escalation
+- `request_user_input`: direct host/user interaction for the requesting run
+- `request_resolution`: agent-side resolution only, no host/user fallback
+- generic `callback`: use only when the runtime version you are editing does not expose the more specific forms
 
 ### `invoke_skill` — load a named skill
 ```json
