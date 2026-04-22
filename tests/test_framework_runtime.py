@@ -641,7 +641,8 @@ def test_no_skills_catalog_message_when_no_skills(tmp_path: Path) -> None:
 
 def test_capability_metadata_does_not_include_skills_section() -> None:
     """_capability_metadata no longer returns skills_section key."""
-    from agent_framework.model import OpenAiModelDriver, CapabilityDefinition
+    from agent_framework.drivers import OpenAiModelDriver
+    from agent_framework.model import CapabilityDefinition
     skills = (CapabilityDefinition(capability_id="my-skill", description="Does things"),)
     metadata = OpenAiModelDriver._capability_metadata(tools=(), subagents=(), skills=skills)
     assert "skills_section" not in metadata
@@ -649,7 +650,7 @@ def test_capability_metadata_does_not_include_skills_section() -> None:
 
 def test_capability_metadata_has_no_skills_section_key_when_empty() -> None:
     """_capability_metadata no longer returns skills_section key even when no skills."""
-    from agent_framework.model import OpenAiModelDriver
+    from agent_framework.drivers import OpenAiModelDriver
     metadata = OpenAiModelDriver._capability_metadata(tools=(), subagents=(), skills=())
     assert "skills_section" not in metadata
 

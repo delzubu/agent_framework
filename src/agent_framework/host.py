@@ -26,6 +26,7 @@ from agent_framework.config import (
     HostConfig,
     load_host_config,
 )
+from agent_framework.drivers import OpenAiModelDriver
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
@@ -34,7 +35,6 @@ from agent_framework.model import (
     ModelContext,
     ModelDriver,
     ModelResponse,
-    OpenAiModelDriver,
     merge_runtime_system_into_messages,
 )
 from agent_framework.file_reference import DefaultFileReferenceResolver, FileReferenceResolver, expand_file_refs

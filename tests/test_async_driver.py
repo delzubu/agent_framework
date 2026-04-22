@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from agent_framework.drivers import OpenAiModelDriver
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
@@ -11,7 +12,6 @@ from agent_framework.model import (
     ModelContext,
     ModelDriver,
     ModelResponse,
-    OpenAiModelDriver,
     SyncToAsyncAdapter,
     get_driver_capabilities,
 )
