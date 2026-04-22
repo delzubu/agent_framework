@@ -345,6 +345,7 @@ class Agent:
         run = self._create_run(
             parameters or {},
             run_id=run_id,
+            parent_run_id=parent_run_id,
             in_parallel_batch=in_parallel_batch,
             rendered_prompt_override=rendered_prompt_override,
             conversation_messages=conversation_messages,
@@ -673,7 +674,14 @@ class Agent:
                 kind=f"callback:{intent}",
             )
             run.contexts.append(context)
-            answer = host.resolve_callback(caller_id=caller_id, callee=self, prompt=prompt)
+            answer = host.resolve_callback(
+                caller_id=caller_id,
+                callee=self,
+                prompt=prompt,
+                intent=intent,
+                run_id=run.run_id,
+                parent_run_id=run.parent_run_id,
+            )
             context.status = "resolved"
             cb_event = {
                 "type": "callback",
@@ -714,7 +722,15 @@ class Agent:
                 kind=f"callback:{intent}",
             )
             run.contexts.append(context)
-            answer = host.request_user_input(prompt)
+            answer = host.request_user_input(
+                prompt,
+                intent=intent,
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                caller_id=caller_id,
+                parent_run_id=run.parent_run_id,
+                interaction_kind="direct_user_input",
+            )
             context.status = "resolved"
             cb_event = {
                 "type": "callback",
@@ -1261,6 +1277,7 @@ class Agent:
         parameters: dict[str, Any],
         *,
         run_id: str | None = None,
+        parent_run_id: str | None = None,
         in_parallel_batch: bool = False,
         rendered_prompt_override: str | None = None,
         conversation_messages: tuple[dict[str, str], ...] | None = None,
@@ -1270,6 +1287,7 @@ class Agent:
         seed_parameters = dict(parameters)
         return AgentRun(
             run_id=run_id or str(uuid4()),
+            parent_run_id=parent_run_id,
             in_parallel_batch=in_parallel_batch,
             rendered_prompt=rendered_prompt_override or self._render_seed_prompt(seed_parameters),
             seed_parameters=seed_parameters,

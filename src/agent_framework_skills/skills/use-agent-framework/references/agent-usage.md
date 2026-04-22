@@ -130,7 +130,8 @@ Use `.json` when:
 
 - one agent needs a different model than the repo default
 - a deterministic behavior must be attached
-- a child agent should not directly query the host/user
+- a child agent should not query its caller
+- a child agent should bypass caller bubbling and query the host/user directly
 
 Do not put these in `.json`:
 
@@ -290,6 +291,76 @@ Use the `.json` flags to control whether an agent may query its caller or the ho
 - `can_query_caller`
 - `can_use_host_interaction`
 
+### Interaction routing semantics
+
+Do not treat every missing-information path as the same generic callback. There are three distinct routing patterns to model:
+
+#### `callback_to_caller`
+
+Use when the current agent wants its caller to try resolving the request first.
+
+Pattern:
+
+- the child escalates to the parent
+- the parent may answer directly
+- the parent may transform the request and escalate further
+- if the chain reaches the host, the host asks the user
+- the answer should flow back down to the original requester
+
+Use this when:
+
+- the caller may already know the answer
+- the caller should mediate approvals or workflow choices
+- upward escalation adds real value rather than token cost
+
+#### `request_user_input`
+
+Use when the current agent needs information from the user and bubbling through parent agents would just waste tokens.
+
+Pattern:
+
+- the runtime opens a direct host/user interaction for the requesting run
+- parent agents do not spend turns relaying or interpreting the question
+- the reply resumes the same blocked run directly
+
+Use this when:
+
+- a specialist intake or clarification agent owns the interview loop
+- the answer must come from the human, not from another agent
+- caller mediation adds cost but no useful reasoning
+
+#### `request_resolution`
+
+Use when the request must be resolved by agents, tools, memory, or system state only.
+
+Pattern:
+
+- the runtime attempts agent-side resolution only
+- host/user interaction is forbidden
+- if unresolved, the agent should fail, return blocked/not-applicable, or choose another explicit path
+
+Use this when:
+
+- the user must never be asked
+- the answer should come only from internal state or tool access
+- the workflow needs a deterministic unresolved path
+
+### Practical guidance
+
+Preferred default:
+
+- use caller-mediated resolution when the caller can genuinely help
+
+Token-optimized path:
+
+- use direct user input for specialist clarification agents
+
+Hard boundary:
+
+- use agent-only resolution when the user must not be involved
+
+If the runtime you are editing still collapses these into plain `callback`, note that explicitly and avoid pretending prompt prose alone can preserve the distinction.
+
 ---
 
 ## Use-case suggestions
@@ -340,6 +411,22 @@ This works well for:
 - deck reviews
 - policy-heavy extractors
 - synthesis agents that must cite evidence
+
+### Clarification / intake agent
+
+Use `.md` + `.json` when a specialist sub-agent should own the clarification loop.
+
+Pattern:
+
+- `.json` controls whether the agent may query its caller and/or the host
+- the prompt emits the correct interaction-routing decision kind
+- use direct user input for questionnaires and intake when parent mediation adds no value
+
+Good fits:
+
+- deck review intake
+- onboarding questionnaire
+- missing-business-context collector
 
 ---
 

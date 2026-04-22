@@ -15,6 +15,7 @@ class AgentRun:
     """Mutable per-invocation runtime state."""
 
     run_id: str
+    parent_run_id: str | None
     rendered_prompt: str
     seed_parameters: dict[str, Any]
     parameter_values: dict[str, Any]

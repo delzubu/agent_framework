@@ -486,7 +486,7 @@ def test_callback_resume_restores_history(tmp_path: Path):
     with mock.patch.object(Agent, "run", patched_run):
         root = host.get_agent("root")
 
-        def fake_resolve_callback(*, caller_id, callee, prompt):
+        def fake_resolve_callback(*, caller_id, callee, prompt, intent="information_request", run_id="", parent_run_id=None):
             return "the answer is 42"
 
         with mock.patch.object(AgentHost, "resolve_callback", side_effect=fake_resolve_callback):

@@ -30,6 +30,31 @@ class ConsoleUserCommunication:
         # (tool_name, action) -> PermissionDecision
         self._session_decisions: dict[tuple[str, str], PermissionDecision] = {}
 
+    @staticmethod
+    def _format_prompt(prompt: str, metadata: dict[str, object] | None) -> str:
+        """Render an interactive prompt with optional provenance.
+
+        Console sessions are single-threaded from the user's perspective, so a
+        short provenance prefix is enough to explain which agent is asking.
+        """
+        if not metadata:
+            return prompt
+        agent_id = str(metadata.get("agent_id") or "").strip()
+        caller_id = str(metadata.get("caller_id") or "").strip()
+        intent = str(metadata.get("intent") or "").strip()
+        pieces: list[str] = []
+        if agent_id:
+            if caller_id:
+                pieces.append(f"{agent_id} <- {caller_id}")
+            else:
+                pieces.append(agent_id)
+        if intent:
+            pieces.append(intent)
+        if not pieces:
+            return prompt
+        prefix = f"[{' | '.join(pieces)}]"
+        return f"{prefix}\n{prompt}"
+
     async def send_message(self, text: str, *, role: str = "assistant") -> None:
         try_publish_trace(
             channel="user",
@@ -113,21 +138,35 @@ class ConsoleUserCommunication:
         )
         return decision
 
-    async def read_user_input(self, prompt: str = "") -> str | None:
+    async def read_user_input(
+        self,
+        prompt: str = "",
+        *,
+        prompt_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> str | None:
+        full_prompt = self._format_prompt(prompt, metadata)
         try_publish_trace(
             channel="user",
             kind="user.prompt_requested",
             title="Console input",
-            summary=prompt[:200],
-            payload={"prompt": prompt[:2000]},
+            summary=full_prompt[:200],
+            payload={
+                "prompt": full_prompt[:2000],
+                "prompt_id": prompt_id,
+                "metadata": dict(metadata or {}),
+            },
         )
         try:
-            result = await asyncio.to_thread(input, prompt)
+            result = await asyncio.to_thread(input, full_prompt)
             try_publish_trace(
                 channel="user",
                 kind="user.prompt_answered",
                 title="Console input received",
-                payload={"text": (result or "")[:2000]},
+                payload={
+                    "text": (result or "")[:2000],
+                    "prompt_id": prompt_id,
+                },
             )
             return result
         except EOFError:
@@ -135,7 +174,7 @@ class ConsoleUserCommunication:
                 channel="user",
                 kind="user.prompt_answered",
                 title="Console EOF",
-                payload={"text": None},
+                payload={"text": None, "prompt_id": prompt_id},
             )
             return None
 

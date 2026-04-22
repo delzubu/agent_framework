@@ -26,7 +26,7 @@ Load reference files on demand as your work requires:
 ## Quick orientation
 
 - **Agents** are `.md` files with YAML frontmatter + system prompt + user prompt template
-- **Decisions** are JSON objects emitted by the model each loop iteration (`final_message`, `call_tool`, `call_subagent`, `call_subagents`, `callback`, `invoke_skill`)
+- **Decisions** are JSON objects emitted by the model each loop iteration. For interaction routing, distinguish caller escalation, direct user input, and agent-only resolution instead of treating every question as a generic callback.
 - **Tools** are `.md` files with a Python sibling that exports `build_tool(definition)`
 - **The evaluator** runs agents against test cases and scores the output with a second LLM
 - **Case files** are three-section `.md` files: frontmatter / prompt / criteria

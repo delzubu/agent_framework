@@ -107,6 +107,21 @@ class TestAgentHostCreate:
         host = AgentHost.create(model_driver=FakeModelDriver(), user_comm=comm)
         assert host.user_comm is comm
 
+    def test_open_and_close_interaction_tracks_pending_prompt(self):
+        host = AgentHost.create(model_driver=FakeModelDriver(), mcp_enabled=False)
+        interaction = host.open_interaction(
+            prompt="Question?",
+            intent="information_request",
+            run_id="run-1",
+            agent_id="child",
+            caller_id="root",
+            parent_run_id="root-run",
+            interaction_kind="direct_user_input",
+        )
+        assert host.get_pending_interaction(interaction.prompt_id) == interaction
+        host.close_interaction(interaction.prompt_id, answer="hello")
+        assert host.get_pending_interaction(interaction.prompt_id) is None
+
     def test_create_with_command_fallback(self):
         async def fallback(name, raw_args):
             return f"fallback:{name}"
