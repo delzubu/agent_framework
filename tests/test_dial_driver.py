@@ -262,6 +262,35 @@ class TestDecideSuccess:
         assert result.tool_calls[0]["function"]["name"] == "search"
 
     @pytest.mark.asyncio
+    async def test_json_object_tool_call_response_is_translated_to_call_tool(self):
+        driver = _make_driver()
+        ctx = _make_context(response_mode=DEFAULT_RESPONSE_MODE)
+        payload = _make_tool_call_payload("memory_get", '{"uri": "mem://session/s1/deck/full"}')
+
+        mock_resp = _mock_httpx_response(200, payload)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        driver._client = mock_client
+
+        result = await driver.decide(
+            agent_id="a1",
+            provider_name="dial",
+            model_names=("gpt-4o",),
+            temperature=0.2,
+            context=ctx,
+        )
+
+        assert result.payload == {
+            "kind": "call_tool",
+            "tool_name": "memory_get",
+            "parameters": {"uri": "mem://session/s1/deck/full"},
+            "message": "",
+        }
+        assert result.tool_calls is not None
+        assert len(result.tool_calls) == 1
+        assert result.finish_reason == "tool_calls"
+
+    @pytest.mark.asyncio
     async def test_request_trace_callback_fires(self):
         driver = _make_driver()
         ctx = _make_context(response_mode="text")
@@ -376,6 +405,36 @@ class TestDecideErrors:
         assert seen[0].parsed_payload is not None
         assert seen[0].parsed_payload.get("error") is True
         assert seen[0].parsed_payload.get("status_code") == 404
+
+    @pytest.mark.asyncio
+    async def test_parse_error_emits_raw_response_trace_before_raise(self):
+        driver = _make_driver()
+        ctx = _make_context()
+        seen: list = []
+
+        def on_response(event):
+            seen.append(event)
+
+        driver.set_trace_callbacks(on_response=on_response)
+
+        payload = _make_response_payload("not json at all")
+        mock_resp = _mock_httpx_response(200, payload)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        driver._client = mock_client
+
+        with pytest.raises(ModelDriverError, match="structured response is not valid JSON"):
+            await driver.decide(
+                agent_id="a1",
+                provider_name="dial",
+                model_names=("gpt-4o",),
+                temperature=0.2,
+                context=ctx,
+            )
+
+        assert len(seen) == 1
+        assert seen[0].parsed_payload is None
+        assert seen[0].raw_text == mock_resp.text
 
     @pytest.mark.asyncio
     async def test_transport_error_raises_502(self):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -53,6 +54,20 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
         if self._client is None:
             self._client = OpenAI(api_key=self.api_key)
         return self._client
+
+    @staticmethod
+    def _raw_response_text(response: Any) -> str:
+        """Return the raw provider response body when the SDK exposes it."""
+        if hasattr(response, "model_dump_json"):
+            try:
+                return response.model_dump_json(indent=2)
+            except TypeError:
+                return response.model_dump_json()
+        if hasattr(response, "model_dump"):
+            return json.dumps(response.model_dump(), indent=2, ensure_ascii=False)
+        if hasattr(response, "to_dict"):
+            return json.dumps(response.to_dict(), indent=2, ensure_ascii=False)
+        return getattr(response, "output_text", "") or str(response)
 
     def decide(
         self,
@@ -109,23 +124,38 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
                     "format": openai_responses_text_format_field(fmt_dict),
                 }
             response = client.responses.create(**create_kwargs)
+            raw_response_text = self._raw_response_text(response)
             raw_text = response.output_text.strip()
             parsed_payload: dict[str, object] | None = None
             normalized_text = raw_text
             if context.response_mode == "text":
                 parsed_payload = {"kind": "final_message", "message": raw_text}
             else:
-                parsed_payload, normalized_text = parse_json_object_model_output(
-                    raw_text,
-                    provider_label="OpenAI",
-                )
+                try:
+                    parsed_payload, normalized_text = parse_json_object_model_output(
+                        raw_text,
+                        provider_label="OpenAI",
+                    )
+                except Exception:
+                    if callable(self.on_response_trace):
+                        self.on_response_trace(
+                            ProviderResponseTrace(
+                                agent_id=agent_id,
+                                provider_name=provider_name,
+                                model_name=model_name,
+                                raw_text=raw_response_text,
+                                parsed_payload=None,
+                                run_id=context.run_id,
+                            )
+                        )
+                    raise
             if callable(self.on_response_trace):
                 self.on_response_trace(
                     ProviderResponseTrace(
                         agent_id=agent_id,
                         provider_name=provider_name,
                         model_name=model_name,
-                        raw_text=raw_text,
+                        raw_text=raw_response_text,
                         parsed_payload=parsed_payload,
                         run_id=context.run_id,
                     )

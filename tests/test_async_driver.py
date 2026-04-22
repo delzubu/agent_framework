@@ -1,10 +1,12 @@
 """Tests for AsyncModelDriver protocol, DriverCapabilities, and adapters."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
 from agent_framework.drivers import OpenAiModelDriver
+from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
@@ -81,6 +83,43 @@ class TestGetDriverCapabilities:
         caps = get_driver_capabilities(OpenAiModelDriver(api_key="x"))
         assert caps.is_async is False
         assert caps.supports_response_format is True
+
+
+class TestOpenAiDriverTracing:
+    def test_parse_error_emits_raw_response_trace_before_raise(self):
+        driver = OpenAiModelDriver(api_key="x")
+        seen = []
+
+        class FakeResponse:
+            output_text = "not json"
+
+            def model_dump_json(self, indent=2):
+                return '{"id":"resp_1","output_text":"not json"}'
+
+        class FakeClient:
+            def __init__(self):
+                self.responses = SimpleNamespace(create=lambda **kwargs: FakeResponse())
+
+        driver._client = FakeClient()
+        driver.set_trace_callbacks(on_response=lambda event: seen.append(event))
+        ctx = ModelContext(
+            system_prompt="",
+            user_prompt="hi",
+            messages=({"role": "user", "content": "hi"},),
+        )
+
+        with pytest.raises(ModelDriverError, match="structured response is not valid JSON"):
+            driver.decide(
+                agent_id="a1",
+                provider_name="openai",
+                model_names=("gpt-4o-mini",),
+                temperature=0.0,
+                context=ctx,
+            )
+
+        assert len(seen) == 1
+        assert seen[0].parsed_payload is None
+        assert seen[0].raw_text == '{"id":"resp_1","output_text":"not json"}'
 
 
 # ---------------------------------------------------------------------------
