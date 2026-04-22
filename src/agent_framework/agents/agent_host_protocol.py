@@ -84,6 +84,7 @@ class AgentHostProtocol(Protocol):
         intent: str = "information_request",
         run_id: str = "",
         parent_run_id: str | None = None,
+        allow_user_fallback: bool = True,
     ) -> str:
         raise NotImplementedError
 

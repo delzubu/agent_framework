@@ -182,6 +182,122 @@ You are the root narrator.
     assert result.message == 'ok'
 
 
+def test_agent_decision_preserves_callback_to_caller_kind() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "callback_to_caller",
+                "intent": "information_request",
+                "message": "Need caller help",
+                "parameters": {},
+            },
+            raw_text="",
+        )
+    )
+    assert decision.kind == "callback_to_caller"
+    assert decision.callback_intent == "information_request"
+
+
+def test_agent_decision_preserves_request_user_input_kind() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "request_user_input",
+                "intent": "information_request",
+                "message": "Ask the user",
+                "parameters": {},
+            },
+            raw_text="",
+        )
+    )
+    assert decision.kind == "request_user_input"
+    assert decision.callback_intent == "information_request"
+
+
+def test_agent_decision_alias_request_parameter_maps_to_request_user_input() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "request_parameter",
+                "message": "Need one field",
+                "parameters": {},
+            },
+            raw_text="",
+        )
+    )
+    assert decision.kind == "request_user_input"
+    assert decision.callback_intent == "information_request"
+
+
+def test_agent_decision_preserves_request_resolution_kind() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "request_resolution",
+                "intent": "information_request",
+                "message": "Resolve internally",
+                "parameters": {},
+            },
+            raw_text="",
+        )
+    )
+    assert decision.kind == "request_resolution"
+    assert decision.callback_intent == "information_request"
+
+
+def test_request_user_input_bypasses_caller_resolution() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    class _Host:
+        def __init__(self) -> None:
+            self.resolve_calls = 0
+            self.input_calls = 0
+
+        def open_context(self, *, caller_id, callee_id, kind):
+            class _Ctx:
+                status = "open"
+            return _Ctx()
+
+        def resolve_callback(self, **kwargs):
+            self.resolve_calls += 1
+            return "caller-answer"
+
+        def request_user_input(self, prompt, **kwargs):
+            self.input_calls += 1
+            return "user-answer"
+
+    agent = Agent(
+        agent_id="child",
+        role="tester",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="Hello",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+    host = _Host()
+    run = agent._create_run({}, run_id="run-1", parent_run_id="root-run")
+    decision = AgentDecision(
+        kind="request_user_input",
+        callback_intent="information_request",
+        message="Ask the user directly",
+    )
+
+    result = agent.handle_callback(host=host, run=run, decision=decision, caller_id="parent")
+    assert result is None
+    assert host.resolve_calls == 0
+    assert host.input_calls == 1
+
+
 def test_skill_definition_is_frozen(tmp_path: Path) -> None:
     from agent_framework.skill import SkillDefinition
     defn = SkillDefinition(

@@ -1874,6 +1874,7 @@ class AgentHost:
         intent: str = "information_request",
         run_id: str = "",
         parent_run_id: str | None = None,
+        allow_user_fallback: bool = True,
     ) -> str:
         """Collect a callback response from the caller side."""
         if caller_id != "host":
@@ -1893,7 +1894,15 @@ class AgentHost:
                 )
                 if result.message:
                     return result.message
+                if not allow_user_fallback:
+                    raise RuntimeError(
+                        f"Caller agent {caller_id!r} did not resolve callback for {callee.agent_id!r}."
+                    )
         # Fall back to user_comm
+        if not allow_user_fallback:
+            raise RuntimeError(
+                f"Callback for {callee.agent_id!r} could not be resolved without host/user interaction."
+            )
         if self.user_comm is None:
             return ""
         message = f"{callee.agent_id} asks {caller_id}: {prompt}\nResponse: "

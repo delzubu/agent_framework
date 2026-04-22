@@ -578,6 +578,9 @@ class Agent:
         handlers = {
             "final_message": self.handle_final_message,
             "callback": self.handle_callback,
+            "callback_to_caller": self.handle_callback,
+            "request_user_input": self.handle_callback,
+            "request_resolution": self.handle_callback,
             "call_subagent": self.handle_subagent_call,
             "call_subagents": self.handle_subagent_calls,
             "call_tool": self.handle_tool_call,
@@ -635,16 +638,24 @@ class Agent:
         decision: AgentDecision,
         caller_id: str | None,
     ) -> AgentResult | None:
-        """Handle all callback-style requests through one unified transport."""
+        """Handle callback-style interaction and resolution requests."""
         if run.in_parallel_batch:
             # Parallel children cannot block on user/caller input — save conversation
             # state so the batch orchestrator can resume after resolving the callback.
+            if decision.kind == "request_user_input":
+                return AgentResult(
+                    status="failed",
+                    message="Parallel children cannot request direct user input synchronously.",
+                    decision=decision,
+                    prompt=run.rendered_prompt,
+                )
             save_fn = getattr(host, "save_checkpoint", None)
             if callable(save_fn):
                 save_fn(run.run_id, list(run.conversation_messages))
             return AgentResult(
                 status="blocked",
                 message=json.dumps({
+                    "kind": decision.kind,
                     "intent": decision.callback_intent or "information_request",
                     "prompt": decision.message,
                     "parameters": decision.parameters,
@@ -656,6 +667,10 @@ class Agent:
         parameter_name = str(decision.parameters.get("parameter_name", "")).strip()
         spec = self._parameter_spec_by_name().get(parameter_name) if parameter_name else None
         prompt = decision.message or (spec.description if spec is not None else "Please provide more information.")
+        routes_to_caller = (
+            decision.kind in {"callback", "callback_to_caller"}
+            and bool(caller_id and caller_id != "host" and self.can_query_caller)
+        )
         from agent_framework.agent_event_publisher import agent_events
 
         agent_events.on_callback_requested(
@@ -664,10 +679,10 @@ class Agent:
             caller_id=caller_id,
             intent=intent,
             prompt=prompt,
-            to_caller=bool(caller_id and caller_id != "host" and self.can_query_caller),
+            to_caller=routes_to_caller,
         )
         answer = ""
-        if caller_id and caller_id != "host" and self.can_query_caller:
+        if routes_to_caller:
             context = host.open_context(
                 caller_id=self.agent_id,
                 callee_id=caller_id,
@@ -681,6 +696,7 @@ class Agent:
                 intent=intent,
                 run_id=run.run_id,
                 parent_run_id=run.parent_run_id,
+                allow_user_fallback=decision.kind != "request_resolution",
             )
             context.status = "resolved"
             cb_event = {
@@ -712,6 +728,15 @@ class Agent:
                 intent=intent,
                 target=f"caller:{caller_id}",
                 answer=answer,
+            )
+        elif decision.kind == "request_resolution":
+            return AgentResult(
+                status="failed",
+                message=(
+                    f"{self.agent_id} emitted request_resolution but no caller-side resolver was available."
+                ),
+                decision=decision,
+                prompt=run.rendered_prompt,
             )
         else:
             if not self.can_use_host_interaction:
@@ -1715,12 +1740,13 @@ class Agent:
                 "use exactly one of call_tool, call_subagent, or callback with a single target."
             )
 
-        if decision.kind == "callback":
+        if decision.kind in {"callback", "callback_to_caller", "request_user_input", "request_resolution"}:
             if decision.subagent_id in self.allowed_child_agents:
                 _LOGGER.warning(
-                    "Agent %s: decision kind mismatch — model emitted callback but subagent_id=%r "
+                    "Agent %s: decision kind mismatch — model emitted %s but subagent_id=%r "
                     "matches a declared child agent; normalizing to call_subagent (intentional slot repair).",
                     self.agent_id,
+                    decision.kind,
                     decision.subagent_id,
                 )
                 return AgentDecision(
@@ -1732,9 +1758,10 @@ class Agent:
                 )
             if decision.tool_name in allowed_tools:
                 _LOGGER.warning(
-                    "Agent %s: decision kind mismatch — model emitted callback but tool_name=%r "
+                    "Agent %s: decision kind mismatch — model emitted %s but tool_name=%r "
                     "matches a declared tool; normalizing to call_tool (intentional slot repair).",
                     self.agent_id,
+                    decision.kind,
                     decision.tool_name,
                 )
                 return AgentDecision(
