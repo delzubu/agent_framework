@@ -1221,6 +1221,61 @@ def test_call_subagent_ignore_mode_drops_parameters(tmp_path: Path) -> None:
     assert content == "summary only"
 
 
+def test_subagent_call_exception_is_reported_without_secondary_type_error() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    class RaisingHost:
+        config = type("Config", (), {"skills_catalog_max_tokens": 2000, "memory_builtin_tools_enabled": True})()
+
+        def resolve_model_tool_definitions(self, tool_names, *, agent_id=None, run_id=None):
+            return ()
+
+        def get_agent(self, agent_id, *, base_dir=None):
+            raise AssertionError("get_agent should not be used in this test")
+
+        def get_tool(self, name):
+            raise AssertionError("get_tool should not be used in this test")
+
+        def call_subagent(self, *, caller, callee_id, parameters, parent_run_id=None, **kwargs):
+            raise RuntimeError("boom")
+
+    agent = Agent(
+        agent_id="orchestrator",
+        role="orchestrator",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="go",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+        allowed_child_agents=("child",),
+    )
+    host = RaisingHost()
+    run = agent._create_run({})
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "call_subagent",
+                "subagent_id": "child",
+                "parameters": {"topic": "x"},
+            },
+            raw_text="",
+        )
+    )
+    outcome = agent.handle_subagent_call(host=host, run=run, decision=decision, caller_id="host")
+
+    assert outcome is None
+    assert any(
+        item["content"] == "Subagent error child: RuntimeError: boom"
+        for item in run.conversation_messages
+    )
+    assert any(
+        "<subagent_error id=\"child\">RuntimeError: boom</subagent_error>" in item
+        for item in run.prompt_fragments
+    )
+
+
 def _make_subagent_host(tmp_path: Path, parent_id: str, child_id: str, decisions: list) -> tuple:
     """Build a host with two agents (parent calls child) using FakeModelDriver.
 

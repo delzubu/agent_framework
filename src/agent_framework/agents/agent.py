@@ -842,7 +842,6 @@ class Agent:
             )
         except Exception as exc:
             agent_events.audit_named_event(
-                host=host,
                 run_id=run.run_id,
                 agent_id=self.agent_id,
                 event={

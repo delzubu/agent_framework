@@ -466,6 +466,33 @@ def test_root_prompt_file_blocks_are_lifted_to_memory(tmp_path: Path, monkeypatc
     assert "Z" * 64 in joined
 
 
+def test_prompt_text_ignores_malformed_memory_like_tokens() -> None:
+    driver = CapturingModelDriver([{"kind": "final_message", "message": "done"}])
+    host = AgentHost.create(model_driver=driver, config=HostConfig())
+    agent = Agent(
+        agent_id="reviewer",
+        role="reviewer",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="go",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+
+    result = agent.run(
+        host=host,
+        parameters={},
+        caller_id="host",
+        rendered_prompt_override="Notes: `mem://`+projection), should stay literal.",
+    )
+    assert result.message == "done"
+
+    _, context = driver.contexts[0]
+    joined = "\n".join(str(message.get("content", "")) for message in context.messages)
+    assert "<memory " not in joined
+
+
 def test_subagent_call_auto_stores_large_parameter_before_child_run(tmp_path: Path) -> None:
     env_path = tmp_path / ".env"
     env_path.write_text(

@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from html import escape
 from typing import Any, Mapping, Protocol, Sequence
 
-_MEMORY_URI_PATTERN = re.compile(r"mem://[^\s\"'<>]+")
+_MEMORY_URI_PATTERN = re.compile(
+    r"mem://[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._~:%+\-]+)+"
+)
 
 
 def is_memory_uri(value: str) -> bool:
@@ -55,13 +57,20 @@ def find_memory_uris(value: Any) -> tuple[str, ...]:
     """Return all distinct memory URIs contained recursively in *value*."""
     uris: set[str] = set()
 
+    def _maybe_add(uri: str) -> None:
+        try:
+            parse_memory_uri(uri)
+        except ValueError:
+            return
+        uris.add(uri)
+
     def _walk(node: Any) -> None:
         if isinstance(node, str):
             if is_memory_uri(node):
-                uris.add(node)
+                _maybe_add(node)
             for match in _MEMORY_URI_PATTERN.findall(node):
                 if is_memory_uri(match):
-                    uris.add(match)
+                    _maybe_add(match)
             return
         if isinstance(node, Mapping):
             for child in node.values():
