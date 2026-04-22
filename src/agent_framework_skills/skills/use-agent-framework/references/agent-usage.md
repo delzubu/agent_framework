@@ -434,6 +434,7 @@ Good fits:
 
 Load these alongside this file as needed:
 
+- `references/callback-handling.md` for callback kind selection, bubbling rules, and passthrough policy
 - `references/framework-usage.md` for full runtime contracts
 - `references/agent-prompt-patterns.md` before editing a system prompt
 - `references/memory-usage.md` when the agent handles large/shared payloads

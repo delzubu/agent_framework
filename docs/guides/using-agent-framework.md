@@ -287,9 +287,19 @@ You do not write this JSON.  The bundled system prompt templates teach the model
 
 If the model produces an invalid decision — wrong `kind`, missing required field, both `tool_name` and `subagent_id` set — the framework raises a `ValueError`.  It does not try to guess what the model meant.  This strictness is documented in `CLAUDE.md` and intentional: silent repair would hide prompt bugs.
 
-### The five decision kinds
+### Decision kinds and interaction modes
 
-Every loop iteration ends with exactly one decision of one of these five kinds:
+Every loop iteration ends with exactly one decision. The runtime supports these primary kinds:
+
+- `final_message`
+- `call_tool`
+- `call_subagent`
+- `call_subagents`
+- `callback`
+- `callback_to_caller`
+- `request_user_input`
+- `request_resolution`
+- `invoke_skill`
 
 **`final_message`** — The agent is done.  The `message` field contains the answer.  The loop ends and `AgentResult` is returned to the caller.
 
@@ -327,7 +337,20 @@ Every loop iteration ends with exactly one decision of one of these five kinds:
 }
 ```
 
-**`callback`** — Ask a question.  Callbacks can go to the host (a human at the console, a web user) or to the caller agent.  The `intent` field clarifies what kind of question is being asked.  The answer comes back as a user message and the loop continues.
+**`call_subagents`** — Dispatch multiple children in one decision, either sequentially or in parallel.  Parallel children still cannot synchronously block on direct user input; a blocked child is checkpointed and resumed later.
+
+```json
+{
+  "kind": "call_subagents",
+  "mode": "parallel",
+  "calls": [
+    {"subagent_id": "researcher", "parameters": {"topic": "X"}, "output_key": "research"},
+    {"subagent_id": "critic", "parameters": {"topic": "X"}, "output_key": "critique"}
+  ]
+}
+```
+
+**`callback`** — Generic interaction request.  This is still used for intent-style kinds such as `information_request` and `proposal_review`, but newer runtimes also expose more specific routing kinds below.
 
 ```json
 {
@@ -336,6 +359,41 @@ Every loop iteration ends with exactly one decision of one of these five kinds:
   "message": "What is the customer's preferred shipping address?",
   "parameters": {
     "parameter_name": "shipping_address"
+  }
+}
+```
+
+**`callback_to_caller`** — Ask the caller side to try resolving first.  Use this when the parent may already know the answer or should mediate approvals.
+
+```json
+{
+  "kind": "callback_to_caller",
+  "intent": "information_request",
+  "message": "Need caller-side resolution for retry mode.",
+  "parameters": {}
+}
+```
+
+**`request_user_input`** — Ask the user directly.  Use this when bubbling through parent agents would only waste tokens.
+
+```json
+{
+  "kind": "request_user_input",
+  "intent": "information_request",
+  "message": "Which audience should this deck target?",
+  "parameters": {}
+}
+```
+
+**`request_resolution`** — Resolve through agents, tools, memory, or system state only.  The host/user must not be asked.  If unresolved, the run fails or takes another explicit path.
+
+```json
+{
+  "kind": "request_resolution",
+  "intent": "information_request",
+  "message": "Resolve the customer id from current system state.",
+  "parameters": {
+    "resolvable_by": ["account_lookup_specialist"]
   }
 }
 ```
@@ -353,7 +411,7 @@ Every loop iteration ends with exactly one decision of one of these five kinds:
 
 ### Callback intents
 
-Callbacks carry an `intent` that tells the caller (human or parent agent) what kind of response is needed.  Intents can appear either as the `kind` field directly (the model emits `information_request` as the top-level kind) or as the `intent` field inside a `callback` decision — the framework normalises both forms.
+Callbacks carry an `intent` that tells the caller, host, or user what kind of response is needed.  Intents can appear either as the `kind` field directly (the model emits `information_request` as the top-level kind) or as the `intent` field inside a callback-family decision — the framework normalises both forms.
 
 | Intent | When to use |
 |--------|-------------|
@@ -363,6 +421,31 @@ Callbacks carry an `intent` that tells the caller (human or parent agent) what k
 | `delegation_return` | Child agent returning to parent with a result or question |
 | `policy_or_approval` | Agent needs authorisation for a sensitive action |
 | `guardrail_trip` | Agent encountered a policy violation and is stopping to report it |
+
+### Choosing the right interaction path
+
+Use `callback_to_caller` when:
+
+- the caller may already know the answer
+- the caller should transform, approve, or contextualise the request
+- upward escalation adds value
+
+Use `request_user_input` when:
+
+- the answer must come from the user
+- a specialist child owns the clarification loop
+- parent mediation would only burn tokens
+
+Use `request_resolution` when:
+
+- the user must not be asked
+- the answer should come from tools, memory, or another agent only
+- unresolved state should fail loudly instead of drifting into UI interaction
+
+Use generic `callback` only when:
+
+- the prompt is written against an older runtime contract, or
+- the distinction truly does not matter for the current host
 
 ### Terminal tools
 
@@ -1846,6 +1929,19 @@ python -m agent_framework_evaluator web --env .env --open-browser
 | `behaviors` | list | `[]` | Behavior ids to attach |
 | `can_query_caller` | bool | `true` | Allow callbacks to caller agent |
 | `can_use_host_interaction` | bool | `true` | Allow callbacks to host/user |
+| `callback_policy` | object | `{}` | Default bubbling/passthrough policy for child callbacks |
+
+`callback_policy` supports:
+
+```json
+{
+  "passthrough_child_callbacks": true,
+  "max_bubble_hops": 1,
+  "fallback_target": "user"
+}
+```
+
+Use it when orchestration layers should forward child clarifications instead of processing them themselves.
 
 ### Decision kinds
 
@@ -1854,7 +1950,11 @@ python -m agent_framework_evaluator web --env .env --open-browser
 | `final_message` | Yes | `message` |
 | `call_tool` | No | `tool_name`, `parameters` |
 | `call_subagent` | No | `subagent_id`, `parameters` |
+| `call_subagents` | No | `mode`, `calls` |
 | `callback` | No | `intent`, `message` |
+| `callback_to_caller` | No | `intent`, `message` |
+| `request_user_input` | No | `intent`, `message` |
+| `request_resolution` | No | `intent`, `message` |
 | `invoke_skill` | No | `skill_name` |
 
 ### Environment variables
