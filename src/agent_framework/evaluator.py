@@ -295,6 +295,7 @@ class RecordingAgentHost(AgentHost):
         run_id: str = "",
         parent_run_id: str | None = None,
         allow_user_fallback: bool = True,
+        callback_parameters: dict[str, Any] | None = None,
     ) -> str:
         """Record a callback request and avoid interactive roundtrips at the host boundary."""
         self.recorded_interactions.append(
@@ -316,6 +317,7 @@ class RecordingAgentHost(AgentHost):
                 run_id=run_id,
                 parent_run_id=parent_run_id,
                 allow_user_fallback=allow_user_fallback,
+                callback_parameters=callback_parameters,
             )
         self.recorded_interactions.append(
             RecordedInteraction(

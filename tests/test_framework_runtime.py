@@ -4,7 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from agent_framework.agent import Agent, AgentBehavior, AgentEndHookDecision, AgentHookDecision, AgentParameter, AgentResult
+from agent_framework.agent import (
+    Agent,
+    AgentBehavior,
+    AgentEndHookDecision,
+    AgentHookDecision,
+    AgentParameter,
+    AgentResult,
+)
+from agent_framework.agents.agent import CallbackRoutingPolicy
 from agent_framework.config import load_host_config
 from agent_framework.host import AgentHost
 from agent_framework.model import ModelContext, ModelResponse
@@ -293,6 +301,103 @@ def test_request_user_input_bypasses_caller_resolution() -> None:
     )
 
     result = agent.handle_callback(host=host, run=run, decision=decision, caller_id="parent")
+    assert result is None
+    assert host.resolve_calls == 0
+    assert host.input_calls == 1
+
+
+def test_callback_to_caller_passthrough_policy_redirects_to_host() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    class _Host:
+        def __init__(self) -> None:
+            self.resolve_calls = 0
+            self.input_calls = 0
+
+        def open_context(self, *, caller_id, callee_id, kind):
+            class _Ctx:
+                status = "open"
+            return _Ctx()
+
+        def resolve_callback(self, **kwargs):
+            self.resolve_calls += 1
+            return "caller-answer"
+
+        def request_user_input(self, prompt, **kwargs):
+            self.input_calls += 1
+            return "user-answer"
+
+    agent = Agent(
+        agent_id="workflow_step",
+        role="tester",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="Hello",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+        callback_routing_policy=CallbackRoutingPolicy(
+            passthrough_child_callbacks=True,
+            max_bubble_hops=None,
+            fallback_target="user",
+        ),
+    )
+    host = _Host()
+    run = agent._create_run({}, run_id="run-1", parent_run_id="root-run")
+    decision = AgentDecision(
+        kind="callback_to_caller",
+        callback_intent="information_request",
+        message="Forward this upward",
+        parameters={},
+    )
+
+    result = agent.handle_callback(host=host, run=run, decision=decision, caller_id="controller")
+    assert result is None
+    assert host.resolve_calls == 0
+    assert host.input_calls == 1
+
+
+def test_callback_to_caller_hop_limit_redirects_to_host() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    class _Host:
+        def __init__(self) -> None:
+            self.resolve_calls = 0
+            self.input_calls = 0
+
+        def open_context(self, *, caller_id, callee_id, kind):
+            class _Ctx:
+                status = "open"
+            return _Ctx()
+
+        def resolve_callback(self, **kwargs):
+            self.resolve_calls += 1
+            return "caller-answer"
+
+        def request_user_input(self, prompt, **kwargs):
+            self.input_calls += 1
+            return "user-answer"
+
+    agent = Agent(
+        agent_id="controller",
+        role="tester",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="Hello",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+    host = _Host()
+    run = agent._create_run({}, run_id="run-1", parent_run_id="root-run")
+    decision = AgentDecision(
+        kind="callback_to_caller",
+        callback_intent="information_request",
+        message="Hop-limited escalation",
+        parameters={"bubble_hops": 1, "max_bubble_hops": 1, "fallback_target": "user"},
+    )
+
+    result = agent.handle_callback(host=host, run=run, decision=decision, caller_id="hosting_parent")
     assert result is None
     assert host.resolve_calls == 0
     assert host.input_calls == 1

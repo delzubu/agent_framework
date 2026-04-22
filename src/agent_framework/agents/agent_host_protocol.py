@@ -85,6 +85,7 @@ class AgentHostProtocol(Protocol):
         run_id: str = "",
         parent_run_id: str | None = None,
         allow_user_fallback: bool = True,
+        callback_parameters: dict[str, Any] | None = None,
     ) -> str:
         raise NotImplementedError
 

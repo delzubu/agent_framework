@@ -122,6 +122,76 @@ class TestAgentHostCreate:
         host.close_interaction(interaction.prompt_id, answer="hello")
         assert host.get_pending_interaction(interaction.prompt_id) is None
 
+    def test_resolve_callback_skips_passthrough_agents_by_run_lineage(self):
+        class _Comm:
+            async def read_user_input(self, prompt="", *, prompt_id=None, metadata=None):
+                return "user-answer"
+
+        host = AgentHost.create(model_driver=FakeModelDriver(), mcp_enabled=False, user_comm=_Comm())
+        host.register_run(
+            run_id="workflow-run",
+            agent_id="workflow_step",
+            caller_id="controller",
+            parent_run_id="controller-run",
+        )
+        host.register_run(
+            run_id="controller-run",
+            agent_id="controller",
+            caller_id="host",
+            parent_run_id=None,
+        )
+
+        def _unexpected_get_agent(*args, **kwargs):
+            raise AssertionError("passthrough agents should not be resolved via model")
+
+        callee = type("Callee", (), {"agent_id": "step_specialist"})()
+        with patch.object(AgentHost, "get_agent", side_effect=_unexpected_get_agent):
+            answer = host.resolve_callback(
+                caller_id="workflow_step",
+                callee=callee,
+                prompt="Need a decision",
+                intent="information_request",
+                run_id="child-run",
+                parent_run_id="workflow-run",
+                callback_parameters={"passthrough_agents": ["workflow_step", "controller"]},
+            )
+        assert answer == "user-answer"
+
+    def test_resolve_callback_skips_non_resolver_agents_by_run_lineage(self):
+        class _Comm:
+            async def read_user_input(self, prompt="", *, prompt_id=None, metadata=None):
+                return "user-answer"
+
+        host = AgentHost.create(model_driver=FakeModelDriver(), mcp_enabled=False, user_comm=_Comm())
+        host.register_run(
+            run_id="workflow-run",
+            agent_id="workflow_step",
+            caller_id="controller",
+            parent_run_id="controller-run",
+        )
+        host.register_run(
+            run_id="controller-run",
+            agent_id="controller",
+            caller_id="host",
+            parent_run_id=None,
+        )
+
+        def _unexpected_get_agent(*args, **kwargs):
+            raise AssertionError("non-resolver agents should not be resolved via model")
+
+        callee = type("Callee", (), {"agent_id": "step_specialist"})()
+        with patch.object(AgentHost, "get_agent", side_effect=_unexpected_get_agent):
+            answer = host.resolve_callback(
+                caller_id="workflow_step",
+                callee=callee,
+                prompt="Need a decision",
+                intent="information_request",
+                run_id="child-run",
+                parent_run_id="workflow-run",
+                callback_parameters={"resolvable_by": ["operation_specialist"]},
+            )
+        assert answer == "user-answer"
+
     def test_create_with_command_fallback(self):
         async def fallback(name, raw_args):
             return f"fallback:{name}"

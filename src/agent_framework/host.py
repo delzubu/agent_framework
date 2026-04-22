@@ -98,6 +98,16 @@ class SubagentBatchItemResult:
     callback_prompt: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RunRegistration:
+    """Minimal lineage record for one active or recently active run."""
+
+    run_id: str
+    agent_id: str
+    caller_id: str | None
+    parent_run_id: str | None
+
+
 def _agent_host_receive_log_enabled_from_env() -> bool:
     """Default on; set ``AGENT_HOST_RECEIVE_LOG=0`` / ``false`` / ``no`` / ``off`` to disable."""
     raw = os.environ.get("AGENT_HOST_RECEIVE_LOG")
@@ -168,6 +178,8 @@ class AgentHost:
     _timed_out_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     pending_interactions: dict[str, PendingInteraction] = field(default_factory=dict, repr=False)
     _pending_interactions_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _run_registry: dict[str, RunRegistration] = field(default_factory=dict, repr=False)
+    _run_registry_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def audit_tracer(self) -> InMemoryAuditTracer | None:
@@ -1475,6 +1487,30 @@ class AgentHost:
         with self._pending_interactions_lock:
             return self.pending_interactions.get(prompt_id)
 
+    def register_run(
+        self,
+        *,
+        run_id: str,
+        agent_id: str,
+        caller_id: str | None,
+        parent_run_id: str | None,
+    ) -> None:
+        """Record minimal lineage for a run so callback bubbling can skip layers."""
+        with self._run_registry_lock:
+            self._run_registry[run_id] = RunRegistration(
+                run_id=run_id,
+                agent_id=agent_id,
+                caller_id=caller_id,
+                parent_run_id=parent_run_id,
+            )
+
+    def get_run_registration(self, run_id: str | None) -> RunRegistration | None:
+        """Return the stored run lineage record, if any."""
+        if not run_id:
+            return None
+        with self._run_registry_lock:
+            return self._run_registry.get(run_id)
+
     def run_agent(
         self,
         agent_id: str,
@@ -1875,8 +1911,42 @@ class AgentHost:
         run_id: str = "",
         parent_run_id: str | None = None,
         allow_user_fallback: bool = True,
+        callback_parameters: dict[str, Any] | None = None,
     ) -> str:
         """Collect a callback response from the caller side."""
+        params = dict(callback_parameters or {})
+        current_hops = int(params.get("bubble_hops", 0) or 0)
+        passthrough_agents = {
+            str(item).strip()
+            for item in (params.get("passthrough_agents") or [])
+            if str(item).strip()
+        }
+        resolvable_by = {
+            str(item).strip()
+            for item in (params.get("resolvable_by") or [])
+            if str(item).strip()
+        }
+        should_passthrough = caller_id in passthrough_agents
+        not_resolvable_here = bool(resolvable_by) and caller_id not in resolvable_by and caller_id != "host"
+        if caller_id != "host" and (should_passthrough or not_resolvable_here):
+            caller_run = self.get_run_registration(parent_run_id)
+            if caller_run is not None and caller_run.caller_id is not None:
+                params["bubble_hops"] = current_hops + 1
+                return self.resolve_callback(
+                    caller_id=caller_run.caller_id,
+                    callee=callee,
+                    prompt=prompt,
+                    intent=intent,
+                    run_id=run_id,
+                    parent_run_id=caller_run.parent_run_id,
+                    allow_user_fallback=allow_user_fallback,
+                    callback_parameters=params,
+                )
+            if not allow_user_fallback:
+                raise RuntimeError(
+                    f"Callback for {callee.agent_id!r} could not be resolved without host/user interaction."
+                )
+            caller_id = "host"
         if caller_id != "host":
             try:
                 caller_agent = self.get_agent(caller_id)
@@ -1888,7 +1958,7 @@ class AgentHost:
                     return response
                 result = caller_agent.run(
                     host=self,
-                    parameters={},
+                    parameters=dict(callback_parameters or {}),
                     caller_id="host",
                     rendered_prompt_override=prompt,
                 )
