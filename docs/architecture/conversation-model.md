@@ -1,13 +1,15 @@
 # Conversation Model
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [Overview](./overview.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md)
+> See also: [Overview](./overview.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Memory System](./memory-system.md)
 
 ---
 
 ## 1. Design Rationale
 
 The conversation store is an **opt-in add-on**. When not configured, the framework works exactly as it did before — no multi-turn state is maintained between calls. When configured, it enables stateful multi-turn workflows where the full conversation history is automatically loaded before each model call and saved after.
+
+This is separate from the framework memory subsystem. The conversation store persists ordered chat messages by `conversation_id`; memory stores scoped resources by `mem://...` URI for shared agent access, large parameter normalization, and deterministic prompt projection.
 
 Key design constraints:
 - **Storage-agnostic**: The `ConversationStore` and `AsyncConversationStore` are `typing.Protocol` classes. In-process (in-memory dict), out-of-process (Redis, database), and hybrid implementations all satisfy the same interface.

@@ -1,7 +1,7 @@
 # Architecture Overview
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [ADR: Model context & drivers](./adr-model-context-and-drivers.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Extension Points](./extension-points.md) · [Tracing & Evaluation](./tracing-evaluation.md) · [Interface Specifications](./interfaces.md) · [Agent Evaluator & Web Runtime](./agent-evaluator-web-runtime.md) · User guides: [Using the agent framework](../guides/using-agent-framework.md) · [Using the agent evaluator](../guides/using-agent-evaluator.md)
+> See also: [ADR: Model context & drivers](./adr-model-context-and-drivers.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Memory System](./memory-system.md) · [Extension Points](./extension-points.md) · [Tracing & Evaluation](./tracing-evaluation.md) · [Interface Specifications](./interfaces.md) · [Agent Evaluator & Web Runtime](./agent-evaluator-web-runtime.md) · User guides: [Using the agent framework](../guides/using-agent-framework.md) · [Using the agent evaluator](../guides/using-agent-evaluator.md) · [Using Memory](../guides/using-memory.md)
 
 ---
 
@@ -14,6 +14,7 @@ The framework ships with an `OpenAiModelDriver` (synchronous, Responses API) and
 **What it is:**
 - A runtime for executing markdown-defined agents with a structured decision loop
 - An orchestration host managing agent registries, tool execution, and multi-agent call hierarchies
+- A scoped memory subsystem for URI-addressed shared runtime resources and deterministic memory projection
 - A tracing and audit system for recording LLM calls, decisions, and agent interactions
 - A **unified runtime tracer** (`tracing.py`) for structured `TraceEvent` streams with pluggable subscribers (JSONL, LLM log files, debugger bridges) and logging ingress via `LoggingTraceHandler`
 - A separate **`agent_framework_evaluator`** package (CLI `agent-eval`, local FastAPI + WebSocket UI) for interactive debugging and headless runs on top of the same `AgentHost`

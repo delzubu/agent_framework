@@ -1881,8 +1881,10 @@ python -m agent_framework_evaluator web --env .env --open-browser
 ## Further reading
 
 - [Architecture overview](../architecture/overview.md)
+- [Using Memory](./using-memory.md)
 - [Using the agent evaluator](using-agent-evaluator.md)
 - [Using DIAL](using-dial.md)
+- [Memory System](../architecture/memory-system.md)
 - [ADR: Model context and drivers](../architecture/adr-model-context-and-drivers.md)
 - [Agent evaluator and web runtime](../architecture/agent-evaluator-web-runtime.md)
 - [Tracing and evaluation](../architecture/tracing-evaluation.md)
