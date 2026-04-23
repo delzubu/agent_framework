@@ -442,7 +442,15 @@ class Agent:
                 result=self.complete_without_result(run),
             )[0]
         finally:
-            agent_events.audit_agent_call_finished(run_id=run.run_id)
+            usage_summary = {"usage_self": {}, "usage_inclusive": {}}
+            finish_runtime_usage = getattr(host, "finish_runtime_usage", None)
+            if callable(finish_runtime_usage):
+                usage_summary = finish_runtime_usage(run_id=run.run_id)
+            agent_events.audit_agent_call_finished(
+                run_id=run.run_id,
+                usage_self=usage_summary.get("usage_self"),
+                usage_inclusive=usage_summary.get("usage_inclusive"),
+            )
 
     def should_continue(self, run: AgentRun) -> bool:
         """Return whether another loop iteration should execute."""

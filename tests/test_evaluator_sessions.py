@@ -182,6 +182,28 @@ def test_evaluator_usage_tracker_prefers_runtime_summaries() -> None:
     assert snapshot["runs"]["parent"]["llm_calls"][0]["usage"]["total_tokens"] == 15
 
 
+def test_evaluator_usage_tracker_accepts_audit_agent_call_finished_usage() -> None:
+    tracker = EvaluatorUsageTracker()
+    tracker.consume_trace_event({
+        "kind": "runtime.audit.agent_call_started",
+        "payload": {"run_id": "parent", "parent_run_id": None, "agent_name": "root"},
+        "context": {"run_id": "parent", "agent_id": "root"},
+    })
+    tracker.consume_trace_event({
+        "kind": "runtime.audit.agent_call_finished",
+        "payload": {
+            "run_id": "parent",
+            "usage_self": {"input_tokens": 10, "input_cached_tokens": 2, "output_tokens": 5, "output_cached_tokens": 0, "total_tokens": 15},
+            "usage_inclusive": {"input_tokens": 17, "input_cached_tokens": 3, "output_tokens": 8, "output_cached_tokens": 0, "total_tokens": 25},
+        },
+        "context": {"run_id": "parent", "agent_id": "root"},
+    })
+
+    snapshot = tracker.snapshot()
+    assert snapshot["runs"]["parent"]["self_totals"]["total_tokens"] == 15
+    assert snapshot["runs"]["parent"]["inclusive_totals"]["total_tokens"] == 25
+
+
 def test_session_runner_populates_usage_summary_without_external_runtime_tracer(tmp_path: Path) -> None:
     setup_path = tmp_path / "setup.py"
     setup_path.write_text("", encoding="utf-8")

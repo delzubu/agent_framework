@@ -132,6 +132,21 @@ class EvaluatorUsageTracker:
             )
             return
 
+        if kind == "runtime.audit.agent_call_finished":
+            run_id = str(payload.get("run_id") or context.get("run_id") or "")
+            if not run_id:
+                return
+            summary = self._ensure_run(
+                run_id=run_id,
+                agent_id=str(payload.get("agent_id") or context.get("agent_id") or ""),
+                parent_run_id=None,
+            )
+            if isinstance(payload.get("usage_self"), dict):
+                summary.self_totals.replace(payload["usage_self"])
+            if isinstance(payload.get("usage_inclusive"), dict):
+                summary.inclusive_totals.replace(payload["usage_inclusive"])
+            return
+
         if kind == "llm.response":
             run_id = str(payload.get("run_id") or context.get("run_id") or "")
             if not run_id:

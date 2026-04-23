@@ -19,7 +19,7 @@ from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
 from agent_framework.model import ModelContext, ModelResponse
 from agent_framework.model import LlmUsage
 from agent_framework.model_validation import ModelValidationContext
-from agent_framework.tracing import CompositeRuntimeTracer
+from agent_framework.tracing import CompositeRuntimeTracer, TraceEvent
 
 
 
@@ -74,6 +74,14 @@ class FakeUsageDriver(FakeModelDriver):
             usage=response_usage,
             raw_usage=response_usage.to_dict(),
         )
+
+
+class _TraceRecorder:
+    def __init__(self) -> None:
+        self.events: list[TraceEvent] = []
+
+    def consume(self, event: TraceEvent) -> None:
+        self.events.append(event)
 
 
 def write_env(path: Path, root_agent: str = 'root') -> None:
@@ -243,6 +251,7 @@ def test_host_runtime_usage_totals_include_subagent_usage(tmp_path: Path) -> Non
             {"kind": "final_message", "message": "parent done"},
         ],
     )
+    recorder = _TraceRecorder()
     usage_driver = FakeUsageDriver(
         payloads=[
             {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
@@ -256,7 +265,7 @@ def test_host_runtime_usage_totals_include_subagent_usage(tmp_path: Path) -> Non
         ],
     )
     host.model_driver = usage_driver
-    host.runtime_tracer = CompositeRuntimeTracer()
+    host.runtime_tracer = CompositeRuntimeTracer(subscribers=[recorder])
     host._llm_traces_wired = False
     wire_llm_traces_to_runtime_tracer(host)
     host.run_root(initial_instruction="go")
@@ -273,6 +282,16 @@ def test_host_runtime_usage_totals_include_subagent_usage(tmp_path: Path) -> Non
     assert parent_usage["usage_self"]["total_tokens"] == 21
     assert parent_usage["usage_inclusive"]["total_tokens"] == 31
     assert session_totals["total_tokens"] == 31
+    audit_finished = [e for e in recorder.events if e.kind == "runtime.audit.agent_call_finished"]
+    assert len(audit_finished) == 2
+    assert all(isinstance(e.payload.get("usage_self"), dict) for e in audit_finished)
+    assert all(isinstance(e.payload.get("usage_inclusive"), dict) for e in audit_finished)
+    child_audit = next(e for e in audit_finished if e.payload["run_id"] == child_run_id)
+    parent_audit = next(e for e in audit_finished if e.payload["run_id"] == parent_run_id)
+    assert child_audit.payload["usage_self"]["total_tokens"] == 10
+    assert child_audit.payload["usage_inclusive"]["total_tokens"] == 10
+    assert parent_audit.payload["usage_self"]["total_tokens"] == 21
+    assert parent_audit.payload["usage_inclusive"]["total_tokens"] == 31
 
 
 def test_agent_decision_preserves_callback_to_caller_kind() -> None:

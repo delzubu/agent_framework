@@ -77,16 +77,6 @@ body {
   flex-shrink: 0;
 }
 
-.trace-usage-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.14);
-}
-
 .usage-panel-title,
 .usage-summary-heading {
   font-size: 0.72rem;
@@ -1089,6 +1079,30 @@ body {
   font-weight: 400;
   color: var(--muted);
   font-size: 0.8rem;
+}
+
+.trace-agent-call-usage {
+  flex-basis: 100%;
+  margin-left: 0;
+  margin-top: 0.12rem;
+}
+
+.trace-agent-call-usage-line,
+.trace-event-usage-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.73rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.trace-event-usage {
+  flex-basis: 100%;
+  margin-top: 0.12rem;
 }
 
 .trace-agent-call-body {

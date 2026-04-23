@@ -35,7 +35,6 @@ const evalCodeInlineDetail = document.getElementById("eval-code-inline-detail");
 const batchSummaryPanel = document.getElementById("batch-summary-panel");
 const batchSummaryTableBody = document.getElementById("batch-summary-table-body");
 const runUsageSummary = document.getElementById("run-usage-summary");
-const traceUsagePanel = document.getElementById("trace-usage-panel");
 const batchAvgScoreBar = document.getElementById("batch-avg-score-bar");
 const batchAvgScoreLabel = document.getElementById("batch-avg-score-label");
 const evaluationDetailModal = document.getElementById("evaluation-detail-modal");
@@ -72,6 +71,8 @@ let lastEvaluationPayload = null;
 let lastAgentResultPayload = null;
 /** @type {Record<string, unknown> | null} */
 let lastUsageSummary = null;
+/** @type {Map<string, Record<string, unknown>>} */
+let liveRunUsage = new Map();
 
 /**
  * Snapshots from the last run (first LLM request).
@@ -212,30 +213,99 @@ function renderSessionUsageSummary(summary) {
 }
 
 function renderTraceUsagePanel(summary, selectedRunId = null) {
-  if (!traceUsagePanel) return;
-  if (!summary || typeof summary !== "object") {
-    traceUsagePanel.hidden = true;
-    traceUsagePanel.innerHTML = "";
-    return;
+  void summary;
+  void selectedRunId;
+}
+
+function formatTokenCount(value) {
+  const n = Number(value ?? 0) || 0;
+  return n.toLocaleString();
+}
+
+function formatUsageLine(totals, opts = {}) {
+  const t = normalizeUsageTotals(totals);
+  const suffix = typeof opts.suffix === "string" ? opts.suffix : "";
+  return [
+    `I${suffix}: ${formatTokenCount(t.input_tokens)}`,
+    `Ic${suffix}: ${formatTokenCount(t.input_cached_tokens)}`,
+    `O${suffix}: ${formatTokenCount(t.output_tokens)}`,
+    `Oc${suffix}: ${formatTokenCount(t.output_cached_tokens)}`,
+  ].join("   ");
+}
+
+function buildUsageLinesBlock(lines, className) {
+  const wrap = document.createElement("div");
+  wrap.className = className;
+  for (const lineText of lines) {
+    const line = document.createElement("div");
+    line.className = `${className}-line`;
+    line.textContent = lineText;
+    wrap.appendChild(line);
   }
-  traceUsagePanel.innerHTML = "";
+  return wrap;
+}
+
+function formatRunUsageLines(runEntry) {
+  if (!runEntry || typeof runEntry !== "object") return [];
+  const selfTotals = normalizeUsageTotals(runEntry.self_totals);
+  const inclTotals = normalizeUsageTotals(runEntry.inclusive_totals);
+  return [
+    formatUsageLine(selfTotals),
+    formatUsageLine(inclTotals, { suffix: "s" }),
+  ];
+}
+
+function formatLlmUsageLine(usage) {
+  if (!usage || typeof usage !== "object") return "";
+  return formatUsageLine(normalizeUsageTotals(usage));
+}
+
+function renderAgentBubbleUsage(usageEl, usageSelf, usageInclusive) {
+  if (!usageEl) return;
+  const lines = [
+    formatUsageLine(usageSelf),
+    formatUsageLine(usageInclusive, { suffix: "s" }),
+  ];
+  usageEl.innerHTML = "";
+  usageEl.hidden = false;
+  for (const lineText of lines) {
+    const line = document.createElement("div");
+    line.className = "trace-agent-call-usage-line";
+    line.textContent = lineText;
+    usageEl.appendChild(line);
+  }
+}
+
+function syncTraceRunUsage(runId) {
+  if (!runId) return;
+  const fr = runFrames.get(runId);
+  if (!fr || !fr.usageEl) return;
+  const runMap = lastUsageSummary && typeof lastUsageSummary === "object" && lastUsageSummary.runs && typeof lastUsageSummary.runs === "object"
+    ? lastUsageSummary.runs
+    : {};
+  const runEntry = liveRunUsage.get(runId) || runMap[runId];
+  const lines = formatRunUsageLines(runEntry);
+  fr.usageEl.innerHTML = "";
+  fr.usageEl.hidden = lines.length === 0;
+  if (lines.length > 0) {
+    fr.usageEl.appendChild(buildUsageLinesBlock(lines, "trace-agent-call-usage"));
+  }
+}
+
+function syncAllTraceRunUsage() {
+  for (const runId of runFrames.keys()) {
+    syncTraceRunUsage(runId);
+  }
+}
+
+function absorbUsageSummary(summary) {
+  if (!summary || typeof summary !== "object") return;
   const runMap = summary.runs && typeof summary.runs === "object" ? summary.runs : {};
-  const runEntry = selectedRunId && runMap[selectedRunId] ? runMap[selectedRunId] : null;
-  if (runEntry) {
-    const title = document.createElement("div");
-    title.className = "usage-panel-title";
-    title.textContent = `${String(runEntry.agent_id || "agent")} usage`;
-    traceUsagePanel.appendChild(title);
-    const selfWrap = document.createElement("div");
-    renderUsageTotals(selfWrap, runEntry.self_totals, { label: "Self" });
-    traceUsagePanel.appendChild(selfWrap);
-    const inclWrap = document.createElement("div");
-    renderUsageTotals(inclWrap, runEntry.inclusive_totals, { label: "Inclusive" });
-    traceUsagePanel.appendChild(inclWrap);
-  } else {
-    renderUsageTotals(traceUsagePanel, summary.session_totals, { label: "Session usage" });
+  for (const [runId, runEntry] of Object.entries(runMap)) {
+    if (runEntry && typeof runEntry === "object") {
+      liveRunUsage.set(runId, /** @type {Record<string, unknown>} */ (runEntry));
+    }
   }
-  traceUsagePanel.hidden = false;
 }
 
 /**
@@ -1659,12 +1729,17 @@ function beginAgentCallFrame(event) {
   subEl.className = "trace-agent-call-sub";
   subEl.textContent = "running…";
 
+  const usageEl = document.createElement("div");
+  usageEl.className = "trace-agent-call-usage";
+  usageEl.hidden = true;
+
   summary.appendChild(spinner);
   summary.appendChild(statusEl);
   summary.appendChild(document.createTextNode(" "));
   summary.appendChild(labelEl);
   summary.appendChild(document.createTextNode(" — "));
   summary.appendChild(subEl);
+  summary.appendChild(usageEl);
 
   const body = document.createElement("div");
   body.className = "trace-agent-call-body";
@@ -1688,6 +1763,7 @@ function beginAgentCallFrame(event) {
     statusEl,
     labelEl,
     subEl,
+    usageEl,
     agentName,
     lastStatus: null,
     depth,
@@ -1717,6 +1793,13 @@ function endAgentCallFrame(event) {
   if (!fr) {
     return;
   }
+  liveRunUsage.set(runId, {
+    agent_id: fr.agentName,
+    run_id: runId,
+    self_totals: p.usage_self,
+    inclusive_totals: p.usage_inclusive,
+  });
+  renderAgentBubbleUsage(fr.usageEl, p.usage_self, p.usage_inclusive);
   if (fr.details.classList.contains("trace-agent-call--running")) {
     applyFrameOutcome(fr.details, fr, fr.lastStatus || "completed");
   }
@@ -1791,13 +1874,20 @@ function onAgentFinished(event) {
   if (!rid || !runFrames.has(rid)) {
     return;
   }
-  const st = getPayload(event).status;
+  const payload = getPayload(event);
+  const st = payload.status;
   const fr = runFrames.get(rid);
   if (st != null && st !== "") {
     fr.lastStatus = String(st);
   }
+  liveRunUsage.set(rid, {
+    agent_id: getContext(event).agent_id || fr.agentName,
+    run_id: rid,
+    self_totals: payload.usage_self,
+    inclusive_totals: payload.usage_inclusive,
+  });
   applyFrameOutcome(fr.details, fr, fr.lastStatus || st || "completed");
-  renderTraceUsagePanel(lastUsageSummary, rid);
+  syncTraceRunUsage(rid);
 }
 
 function buildTraceDetails(event) {
@@ -1820,9 +1910,17 @@ function buildTraceDetails(event) {
     summary.appendChild(document.createTextNode(" "));
     summary.appendChild(badge);
   }
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  if (kind === "llm.response" || kind === "llm.error") {
+    const usageLine = formatLlmUsageLine(payload.usage);
+    if (usageLine) {
+      const usageBlock = buildUsageLinesBlock([usageLine], "trace-event-usage");
+      summary.appendChild(usageBlock);
+    }
+  }
   const body = document.createElement("div");
   body.className = "trace-event-body";
-  body.appendChild(renderPayloadTree(event.payload ?? {}));
+  body.appendChild(renderPayloadTree(payload));
   node.appendChild(summary);
   node.appendChild(body);
   return node;
@@ -2016,8 +2114,9 @@ function onSocketMessage(ev) {
       msg.usage_summary && typeof msg.usage_summary === "object"
         ? /** @type {Record<string, unknown>} */ (msg.usage_summary)
         : null;
+    absorbUsageSummary(lastUsageSummary);
     renderSessionUsageSummary(lastUsageSummary);
-    renderTraceUsagePanel(lastUsageSummary);
+    syncAllTraceRunUsage();
     updateEvaluateUi();
     void refreshAgentPromptView();
 
@@ -2049,9 +2148,10 @@ function onSocketMessage(ev) {
     refreshComposerState();
     if (msg.usage_summary && typeof msg.usage_summary === "object") {
       lastUsageSummary = /** @type {Record<string, unknown>} */ (msg.usage_summary);
+      absorbUsageSummary(lastUsageSummary);
     }
     renderSessionUsageSummary(lastUsageSummary);
-    renderTraceUsagePanel(lastUsageSummary);
+    syncAllTraceRunUsage();
 
     if (pendingAgentRun) {
       const pr = pendingAgentRun;
@@ -2333,8 +2433,9 @@ async function sendChatOrRun() {
   clearStoredAgentResult();
   resetEvaluationPanel();
   lastUsageSummary = null;
+  liveRunUsage = new Map();
   renderSessionUsageSummary(null);
-  renderTraceUsagePanel(null);
+  syncAllTraceRunUsage();
   clearTraceUi();
   appendConversationBubble("user", promptText || "(empty prompt)");
   agentRunInProgress = true;
