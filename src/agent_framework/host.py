@@ -21,7 +21,7 @@ from agent_framework.agents.agent_decision import SubagentCallSpec
 from agent_framework.agent_registry import AgentRegistry
 from agent_framework.agent_event_publisher import agent_events
 from agent_framework.audit_trace import AuditTraceSubscriber, InMemoryAuditTracer
-from agent_framework.command import CommandDefinition, CommandRegistry, render as render_command
+from agent_framework.command import CommandRegistry, render as render_command
 from agent_framework.config import (
     DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES,
     HostConfig,

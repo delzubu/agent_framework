@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,9 +10,9 @@ from agent_framework.agents.agent_result import AgentResult
 import pytest
 
 from agent_framework.host import AgentHost
-from agent_framework.config import HostConfig, load_host_config
+from agent_framework.config import HostConfig
 from agent_framework.builtin_tools import BUILTIN_TOOL_NAMES
-from agent_framework.model import ModelResponse, ModelContext
+from agent_framework.model import ModelResponse
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +245,6 @@ class TestAgentHostStart:
 
     @pytest.mark.asyncio
     async def test_start_does_not_wrap_without_audit_tracer(self):
-        from agent_framework.user_communication import NullUserCommunication
         from agent_framework.host import _TracingUserCommunication
 
         host = AgentHost.create(model_driver=FakeModelDriver(), mcp_enabled=False)

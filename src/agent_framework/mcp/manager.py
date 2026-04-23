@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 from agent_framework.mcp.client import McpClient
 from agent_framework.mcp.types import McpServerConfig, McpToolInfo

@@ -1028,7 +1028,6 @@ def test_capability_metadata_has_no_skills_section_key_when_empty() -> None:
 
 
 def test_agent_build_context_populates_skills_from_registry(tmp_path: Path) -> None:
-    from agent_framework.skill import SkillRegistry
     skills_dir = tmp_path / "skills"
     _write_skill(skills_dir, "my-skill", "Does useful things")
 
@@ -1194,8 +1193,11 @@ def test_skill_invocation_record_serializes(tmp_path: Path) -> None:
 
 
 def test_skill_events_importable_from_top_level_agent_module() -> None:
-    from agent_framework.agent import SkillStartEvent, SkillEndEvent  # noqa: F401
-    from agent_framework.agents import SkillStartEvent, SkillEndEvent  # noqa: F401
+    from agent_framework.agent import SkillStartEvent as AgentSkillStartEvent, SkillEndEvent as AgentSkillEndEvent
+    from agent_framework.agents import SkillStartEvent as PackageSkillStartEvent, SkillEndEvent as PackageSkillEndEvent
+
+    assert AgentSkillStartEvent is PackageSkillStartEvent
+    assert AgentSkillEndEvent is PackageSkillEndEvent
 
 
 # ---------------------------------------------------------------------------
@@ -1646,6 +1648,95 @@ def test_subagent_call_exception_is_reported_without_secondary_type_error() -> N
         "<subagent_error id=\"child\">RuntimeError: boom</subagent_error>" in item
         for item in run.prompt_fragments
     )
+
+
+def test_call_subagents_with_memory_normalization_builds_specs_without_name_error() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    captured: dict[str, object] = {}
+
+    class BatchHost:
+        config = type("Config", (), {"skills_catalog_max_tokens": 2000, "memory_builtin_tools_enabled": True})()
+
+        def resolve_model_tool_definitions(self, tool_names, *, agent_id=None, run_id=None):
+            return ()
+
+        def get_agent(self, agent_id, *, base_dir=None):
+            raise AssertionError("get_agent should not be used in this test")
+
+        def get_tool(self, name):
+            raise AssertionError("get_tool should not be used in this test")
+
+        def normalize_memory_parameters(
+            self,
+            *,
+            agent_id,
+            run_id,
+            parameters,
+            child_agent_id=None,
+        ):
+            captured["normalize_call"] = {
+                "agent_id": agent_id,
+                "run_id": run_id,
+                "parameters": dict(parameters),
+                "child_agent_id": child_agent_id,
+            }
+            return {"normalized": True, **parameters}
+
+        def call_subagent_batch(
+            self,
+            *,
+            caller,
+            specs,
+            mode,
+            timeout_seconds,
+            parent_run_id=None,
+        ):
+            captured["specs"] = specs
+            captured["mode"] = mode
+            captured["timeout_seconds"] = timeout_seconds
+            captured["parent_run_id"] = parent_run_id
+            return []
+
+    agent = Agent(
+        agent_id="orchestrator",
+        role="orchestrator",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="go",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+        allowed_child_agents=("child",),
+    )
+    host = BatchHost()
+    run = agent._create_run({})
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "call_subagents",
+                "mode": "parallel",
+                "calls": [
+                    {
+                        "subagent_id": "child",
+                        "output_key": "child_out",
+                        "parameters": {"topic": "x"},
+                    }
+                ],
+            },
+            raw_text="",
+        )
+    )
+
+    outcome = agent.handle_subagent_calls(host=host, run=run, decision=decision, caller_id="host")
+
+    assert outcome is None
+    specs = captured["specs"]
+    assert len(specs) == 1
+    assert specs[0].subagent_id == "child"
+    assert specs[0].output_key == "child_out"
+    assert specs[0].parameters == {"normalized": True, "topic": "x"}
 
 
 def _make_subagent_host(tmp_path: Path, parent_id: str, child_id: str, decisions: list) -> tuple:

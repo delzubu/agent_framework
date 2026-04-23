@@ -5,7 +5,7 @@ import pytest
 from agent_framework.config import HostConfig
 from agent_framework.conversation import InMemoryConversationStore
 from agent_framework.host import AgentHost, run_tool_loop
-from agent_framework.model import ModelContext, ModelResponse
+from agent_framework.model import ModelResponse
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,6 @@ class TestCreate:
         assert host.model_driver is driver
 
     def test_create_with_custom_config(self):
-        from pathlib import Path
         config = HostConfig(default_model=("gpt-test",))
         driver = FakeDriver(ModelResponse(payload={}, raw_text=""))
         host = AgentHost.create(model_driver=driver, config=config)

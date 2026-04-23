@@ -675,7 +675,6 @@ def test_api_usage_summary_returns_last_summary() -> None:
 def test_ws_run_handler_applies_no_callbacks_postfix(monkeypatch: pytest.MonkeyPatch) -> None:
     """WebSocket 'run' handler appends CASE_NO_CALLBACKS_POSTFIX when case_run_mode=no_callbacks."""
     from agent_framework_evaluator.evaluation import CASE_NO_CALLBACKS_POSTFIX
-    from agent_framework_evaluator.session_manager import session_manager
 
     received_prompts: list[str] = []
 
@@ -720,7 +719,6 @@ def test_api_evaluate_batch_applies_case_run_mode(
 
     from agent_framework_evaluator.app import create_app
     from agent_framework_evaluator.evaluation import CASE_NO_CALLBACKS_POSTFIX
-    from agent_framework_evaluator.initializer_catalog import load_raw_test_cases
     from agent_framework_evaluator.runtime.session_runner import SessionRunner
     from agent_framework_evaluator.session_manager import session_manager
 
@@ -1304,7 +1302,6 @@ def test_case_markdown_missing_ref_left_unchanged(tmp_path: Path) -> None:
 def test_case_markdown_custom_resolver(tmp_path: Path) -> None:
     from pathlib import Path as P
 
-    from agent_framework.file_reference import FileReferenceResolver
     from agent_framework_evaluator.case_markdown import parse_case_markdown_file
 
     class UpperResolver:

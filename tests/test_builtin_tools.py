@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-import pytest
 
 from agent_framework.user_communication import PermissionDecision, PermissionRequest
 from agent_framework.builtin_tools import register_builtin_tools, BUILTIN_TOOL_NAMES

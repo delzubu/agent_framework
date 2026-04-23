@@ -10,7 +10,6 @@ outbound UI messages and resolves input asynchronously via
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal, Protocol, runtime_checkable
 

@@ -41,7 +41,6 @@ from agent_framework_evaluator.initializer_catalog import (
     resolve_env_path,
     resolve_setup_path_for_run,
 )
-from agent_framework_evaluator.runtime.session_runner import SessionRunner
 from agent_framework_evaluator.runtime.setup_loader import load_setup_module
 from agent_framework_evaluator.session_manager import session_manager
 

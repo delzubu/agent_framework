@@ -8,7 +8,6 @@ from typing import Any, Final
 from uuid import uuid4
 
 from agent_framework.agents.agent_decision import AgentDecision
-from agent_framework.agents.agent_run import AgentRun
 from agent_framework.tracing import (
     LogEventPayload,
     NullRuntimeTracer,

@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import AsyncIterator
 
 from agent_framework.tracing_bridge import try_publish_trace
 from agent_framework.user_communication import (
-    NullUserCommunication,
     PermissionDecision,
     PermissionRequest,
-    UserCommunication,
 )
 
 

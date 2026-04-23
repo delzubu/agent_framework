@@ -12,7 +12,7 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Awaitable, Callable, ClassVar, Final, Protocol
+from typing import Any, Awaitable, Callable, Final, Protocol
 
 from agent_framework.errors import ModelDriverError
 from agent_framework.tool import ToolDefinition

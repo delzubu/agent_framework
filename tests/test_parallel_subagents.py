@@ -6,16 +6,12 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any
-from uuid import uuid4
 
 import pytest
 
 from agent_framework.agents.agent_decision import AgentDecision, SubagentCallSpec
 from agent_framework.agents.agent_result import AgentResult
-from agent_framework.agents.agent_run import AgentRun
-from agent_framework.host import AgentHost, SubagentBatchItemResult
-from agent_framework.config import HostConfig
+from agent_framework.host import AgentHost
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +663,6 @@ def test_contextvars_propagate_to_executor_workers():
 def test_timed_out_orphan_cannot_write_checkpoint(tmp_path: Path):
     """A child thread that completes after the parent's wait times out must not
     be able to write a checkpoint via save_checkpoint (tombstone guard)."""
-    import concurrent.futures
 
     host = make_host(tmp_path)
 

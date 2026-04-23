@@ -2,16 +2,14 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
     DEFAULT_RESPONSE_MODE,
-    DriverCapabilities,
     ModelContext,
-    ModelResponse,
     merge_runtime_system_into_messages,
 )
 

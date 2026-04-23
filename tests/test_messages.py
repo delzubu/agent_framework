@@ -1,6 +1,5 @@
 """Tests for the typed chat message model."""
 
-import pytest
 
 from agent_framework.messages import (
     ChatMessage,

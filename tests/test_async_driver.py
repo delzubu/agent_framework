@@ -1,6 +1,5 @@
 """Tests for AsyncModelDriver protocol, DriverCapabilities, and adapters."""
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -8,11 +7,9 @@ import pytest
 from agent_framework.drivers import OpenAiModelDriver
 from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
-    AsyncModelDriver,
     AsyncToSyncAdapter,
     DriverCapabilities,
     ModelContext,
-    ModelDriver,
     ModelResponse,
     SyncToAsyncAdapter,
     get_driver_capabilities,

@@ -18,10 +18,7 @@ import yaml
 from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
     CapabilityDefinition,
-    CapabilityParameter,
-    DEFAULT_RESPONSE_MODE,
     ModelContext,
-    ModelDriver,
     ModelResponse,
     build_skills_catalog as _build_skills_catalog,
     merge_runtime_system_into_messages as _merge_runtime_system_into_messages,
@@ -30,7 +27,7 @@ from agent_framework.model import (
 from agent_framework.model_validation import ModelValidationContext
 
 from .agent_behavior import AgentBehavior
-from .agent_decision import AgentDecision
+from .agent_decision import AgentDecision, SubagentCallSpec
 from .agent_end_event import AgentEndEvent
 from .agent_end_hook_decision import AgentEndHookDecision
 from .agent_hook_decision import AgentHookDecision

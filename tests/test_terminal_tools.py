@@ -2,11 +2,10 @@
 
 import json
 
-import pytest
 
-from agent_framework.agent import Agent, AgentResult
+from agent_framework.agent import Agent
 from agent_framework.host import AgentHost
-from agent_framework.model import ModelContext, ModelResponse
+from agent_framework.model import ModelResponse
 
 
 # ---------------------------------------------------------------------------

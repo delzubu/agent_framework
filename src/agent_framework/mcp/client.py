@@ -154,7 +154,6 @@ class HttpTransport:
         self._pending.clear()
 
     async def request(self, method: str, params: dict | None = None, timeout: int = 30) -> Any:
-        import httpx
         req_id = _next_id()
         payload = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}}
         if self._config.transport == McpTransport.SSE:

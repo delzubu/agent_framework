@@ -51,7 +51,6 @@ _LOGGER = logging.getLogger(__name__)
 try:
     import httpx
     from aidial_sdk.chat_completion.request import (
-        ChatCompletionRequest,
         Function,
         ImageURL,
         Message,
