@@ -81,6 +81,13 @@ from agent_framework.model import (
     parse_json_object_model_output,
     resolved_response_format_dict,
 )
+from agent_framework.model_validation import (
+    ModelExceptionValidator,
+    ModelResponseValidator,
+    ModelValidationChain,
+    ModelValidationContext,
+    MultipleStructuredJsonDocumentsValidator,
+)
 
 __all__ = [
     # Agent runtime
@@ -155,6 +162,11 @@ __all__ = [
     "ModelDriver",
     "ModelDriverBase",
     "ModelResponse",
+    "ModelExceptionValidator",
+    "ModelResponseValidator",
+    "ModelValidationChain",
+    "ModelValidationContext",
+    "MultipleStructuredJsonDocumentsValidator",
     "merge_runtime_system_into_messages",
     "parse_json_object_model_output",
     "ProviderRequestTrace",

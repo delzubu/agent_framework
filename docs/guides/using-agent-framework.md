@@ -1674,6 +1674,48 @@ The bundled system templates instruct the model to output JSON decisions.  If pa
 - The model returned a `kind` value not in the allowed set — this is a prompt issue; the model was not given the right instructions.
 - The model is using a `response_mode` that does not match (check the driver's capabilities).
 
+If the provider returns multiple JSON documents in one structured reply, the runtime now rewrites the generic parse failure into a more specific contract error.  For example, a response like:
+
+```text
+{"kind":"call_subagents", ...}
+{"kind":"call_subagent", ...}
+```
+
+will surface as "returned more than one JSON value in a single structured response" rather than a bare `Extra data` parse error.  The framework still rejects the response — it does not try to guess which object the model intended.
+
+### Runtime model validation
+
+Structured-output validation is no longer hard-coded into the agent loop.  `AgentHost` owns a runtime validation chain that runs:
+
+- exception validators after a model-call failure
+- response validators after a parsed `ModelResponse` is returned
+
+The default chain includes a validator that explains the common "multiple JSON objects in one response" failure.  You can add more validators at runtime without editing `agent.py`:
+
+```python
+from agent_framework.host import AgentHost
+
+class MyResponseValidator:
+    def validate_response(self, response, *, context) -> None:
+        if response.payload.get("kind") == "final_message" and not response.payload.get("message"):
+            raise ValueError("final_message must include a non-empty message")
+
+host = AgentHost.from_env(".env")
+host.register_model_response_validator(MyResponseValidator())
+```
+
+For driver-side parse failures or contract-specific rewrites, register an exception validator instead:
+
+```python
+class MyExceptionValidator:
+    def validate_exception(self, exc, *, context):
+        return None  # return a replacement exception to rewrite the error
+
+host.register_model_exception_validator(MyExceptionValidator())
+```
+
+This keeps the execution loop small while leaving room for project-specific validation and diagnostics.
+
 **A sub-agent never receives the right parameters:**
 
 When a parent calls a child with `call_subagent`, the `parameters` dict in the decision must match the child's declared `parameters:`.  If required parameters are missing, the child will immediately callback asking for them.  Check the parent's system prompt — it should know what parameters to supply when calling each child.

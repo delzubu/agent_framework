@@ -18,6 +18,7 @@ from agent_framework.host import AgentHost
 from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
 from agent_framework.model import ModelContext, ModelResponse
 from agent_framework.model import LlmUsage
+from agent_framework.model_validation import ModelValidationContext
 from agent_framework.tracing import CompositeRuntimeTracer
 
 
@@ -772,6 +773,72 @@ def test_parse_json_object_model_output_rejects_non_object() -> None:
 
     with pytest.raises(ModelDriverError, match="JSON object"):
         parse_json_object_model_output("[1,2]", provider_label="Test")
+
+
+def test_host_rewrites_multiple_json_documents_error(tmp_path: Path) -> None:
+    from agent_framework.errors import ModelDriverError
+
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "root.md").write_text(
+        """---
+id: root
+role: tester
+---
+You are a tester.
+---
+Say hi
+""",
+        encoding="utf-8",
+    )
+
+    class InvalidJsonDriver:
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            raise ModelDriverError(
+                "DIAL structured response is not valid JSON: Extra data: line 45 column 1 (char 7447).",
+                upstream_body='{"kind":"call_subagents"}{"kind":"call_subagent"}',
+            )
+
+    host = AgentHost.from_env(env_path, model_driver=InvalidJsonDriver())
+
+    with pytest.raises(ModelDriverError, match="more than one JSON value") as exc_info:
+        host.run_agent("root", initial_instruction="hello")
+
+    assert "exactly one top-level JSON object per turn" in str(exc_info.value)
+
+
+def test_host_accepts_runtime_model_response_validator(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "root.md").write_text(
+        """---
+id: root
+role: tester
+---
+You are a tester.
+---
+Say hi
+""",
+        encoding="utf-8",
+    )
+
+    class CustomResponseValidator:
+        def validate_response(self, response: ModelResponse, *, context: ModelValidationContext) -> None:
+            del response, context
+            raise ValueError("custom runtime validator blocked this response")
+
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=FakeModelDriver([{"kind": "final_message", "message": "ok"}]),
+    )
+    host.register_model_response_validator(CustomResponseValidator())
+
+    with pytest.raises(ValueError, match="custom runtime validator blocked this response"):
+        host.run_agent("root", initial_instruction="hello")
 
 
 def test_agent_decision_extracts_skill_name() -> None:

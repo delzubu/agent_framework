@@ -38,6 +38,7 @@ from agent_framework.model import (
     ModelResponse,
     merge_runtime_system_into_messages,
 )
+from agent_framework.model_validation import ModelValidationChain, ModelValidationContext
 from agent_framework.file_reference import (
     DefaultFileReferenceResolver,
     FileReferenceResolver,
@@ -182,11 +183,47 @@ class AgentHost:
     _run_registry: dict[str, RunRegistration] = field(default_factory=dict, repr=False)
     _run_registry_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     runtime_usage_tracker: RuntimeUsageTracker = field(default_factory=RuntimeUsageTracker, repr=False)
+    model_validation_chain: ModelValidationChain = field(
+        default_factory=ModelValidationChain.with_defaults,
+        repr=False,
+    )
 
     @property
     def audit_tracer(self) -> InMemoryAuditTracer | None:
         """JSONL audit store when :meth:`enable_audit_trace` is used (read-only)."""
         return self._audit_jsonl
+
+    def register_model_exception_validator(self, validator: Any) -> None:
+        """Append one model-call exception validator to the runtime chain."""
+        self.model_validation_chain.register_exception_validator(validator)
+
+    def register_model_response_validator(self, validator: Any) -> None:
+        """Append one parsed-response validator to the runtime chain."""
+        self.model_validation_chain.register_response_validator(validator)
+
+    def validate_model_exception(
+        self,
+        exc: BaseException,
+        *,
+        validation_context: ModelValidationContext,
+    ) -> BaseException:
+        """Run registered exception validators and return the final exception."""
+        return self.model_validation_chain.validate_exception(
+            exc,
+            context=validation_context,
+        )
+
+    def validate_model_response(
+        self,
+        response: ModelResponse,
+        *,
+        validation_context: ModelValidationContext,
+    ) -> None:
+        """Run registered parsed-response validators."""
+        self.model_validation_chain.validate_response(
+            response,
+            context=validation_context,
+        )
 
     @property
     def host_receive_log_path(self) -> Path | None:

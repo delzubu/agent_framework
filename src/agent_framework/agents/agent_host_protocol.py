@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Protocol, TYPE_CHECKING
 
 from agent_framework.model import ModelDriver
+from agent_framework.model_validation import ModelValidationContext
 
 from .agent_decision import SubagentCallSpec
 from .agent_result import AgentResult
@@ -96,6 +97,22 @@ class AgentHostProtocol(Protocol):
         raise NotImplementedError
 
     def run_post_model_hooks(self, event: ModelEndEvent) -> None:
+        raise NotImplementedError
+
+    def validate_model_exception(
+        self,
+        exc: BaseException,
+        *,
+        validation_context: ModelValidationContext,
+    ) -> BaseException:
+        raise NotImplementedError
+
+    def validate_model_response(
+        self,
+        response: Any,
+        *,
+        validation_context: ModelValidationContext,
+    ) -> None:
         raise NotImplementedError
 
     def get_skill_registry(self) -> "Any":

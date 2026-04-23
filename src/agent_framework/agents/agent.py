@@ -27,6 +27,7 @@ from agent_framework.model import (
     merge_runtime_system_into_messages as _merge_runtime_system_into_messages,
     runtime_prompt_source_paths as _runtime_prompt_source_paths,
 )
+from agent_framework.model_validation import ModelValidationContext
 
 from .agent_behavior import AgentBehavior
 from .agent_decision import AgentDecision
@@ -552,6 +553,12 @@ class Agent:
         pre_model_hooks = getattr(host, "run_pre_model_hooks", None)
         if callable(pre_model_hooks):
             pre_model_hooks(ModelStartEvent(invocation=self._hook_invocation(run, None), context=context))
+        validation_context = ModelValidationContext.from_model_context(
+            agent_id=self.agent_id,
+            provider_name=self.provider_name,
+            model_names=self.model_names,
+            context=context,
+        )
         try:
             response = host.get_model_driver(self).decide(
                 agent_id=self.agent_id,
@@ -563,17 +570,32 @@ class Agent:
         except BaseException as exc:
             from agent_framework.agent_event_publisher import agent_events
 
-            sc = exc.status_code if isinstance(exc, ModelDriverError) else None
-            ub = exc.upstream_body if isinstance(exc, ModelDriverError) else None
+            validated_exc = exc
+            validate_model_exception = getattr(host, "validate_model_exception", None)
+            if callable(validate_model_exception):
+                validated_exc = validate_model_exception(
+                    exc,
+                    validation_context=validation_context,
+                )
+            sc = validated_exc.status_code if isinstance(validated_exc, ModelDriverError) else None
+            ub = validated_exc.upstream_body if isinstance(validated_exc, ModelDriverError) else None
             agent_events.on_model_call_failed(
                 run_id=run.run_id,
                 agent_id=self.agent_id,
                 caller_id=None,
-                exc=exc,
+                exc=validated_exc,
                 status_code=sc,
                 upstream_body=ub,
             )
-            raise
+            if validated_exc is exc:
+                raise
+            raise validated_exc from exc
+        validate_model_response = getattr(host, "validate_model_response", None)
+        if callable(validate_model_response):
+            validate_model_response(
+                response,
+                validation_context=validation_context,
+            )
         self._run_post_model_hooks(run=run, caller_id=None, context=context, response=response)
         post_model_hooks = getattr(host, "run_post_model_hooks", None)
         if callable(post_model_hooks):
@@ -584,7 +606,19 @@ class Agent:
                     response=response,
                 )
             )
-        return AgentDecision.from_model_response(response)
+        try:
+            return AgentDecision.from_model_response(response)
+        except BaseException as exc:
+            validate_model_exception = getattr(host, "validate_model_exception", None)
+            if not callable(validate_model_exception):
+                raise
+            validated_exc = validate_model_exception(
+                exc,
+                validation_context=validation_context,
+            )
+            if validated_exc is exc:
+                raise
+            raise validated_exc from exc
 
     def dispatch_decision(
         self,
