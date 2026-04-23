@@ -1647,6 +1647,14 @@ In the evaluator:
 - the Flow tab shows compact inclusive totals next to each agent node
 - CLI `run` / `evaluate` output includes the same normalized session usage summary
 
+### Running deterministic programmatic workflows
+
+Some controller agents should not spend an LLM turn deciding the next step.  Typical examples are "run intake, then parallel specialists, then consolidate" or approval chains whose branching is fixed in code.  The supported pattern for that is `AgentBehavior.before_run(...)` plus `Agent.execute_programmatic_workflow(...)`.
+
+The workflow API is framework-owned, not a host-side shortcut, so parent-side subagent tracing and callback semantics are preserved.
+
+For the full developer reference, examples, step model, and current limits, see [Programmatic Workflow Agents]({{ '/reference/programmatic-workflow-agents/' | relative_url }}).
+
 ### Diagnosing common problems
 
 **The agent loops forever (never returns `final_message`):**

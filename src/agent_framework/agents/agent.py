@@ -62,6 +62,17 @@ from .subagent_start_event import SubagentStartEvent
 from .tool_end_event import ToolEndEvent
 from .tool_hook_decision import ToolHookDecision
 from .tool_start_event import ToolStartEvent
+from .workflow import (
+    ProgrammaticWorkflow,
+    ProgrammaticWorkflowState,
+    WorkflowBranchStep,
+    WorkflowCallSubagentStep,
+    WorkflowCallSubagentsStep,
+    WorkflowRaiseStep,
+    WorkflowReturnStep,
+    coerce_workflow_result,
+    resolve_workflow_value,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -950,132 +961,19 @@ class Agent:
             run.conversation_messages.append({"role": "user", "content": error_text})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
             return None
-        if decision.subagent_id not in self.allowed_child_agents:
-            error_text = (
-                f"{self.agent_id} is not allowed to call subagent {decision.subagent_id}. "
-                f"Legal subagent ids: {sorted(self.allowed_child_agents)}."
-            )
-            run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
-            run.transcript_entries.append(f"<subagent_error>{error_text}</subagent_error>")
-            run.conversation_messages.append({"role": "user", "content": error_text})
-            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
+        if not self._validate_subagent_permission(host, run, decision.subagent_id):
             return None
-
-        subagent_call_id = str(uuid4())
-        event = SubagentStartEvent(
-            invocation=self._hook_invocation(run, caller_id),
-            subagent_call_id=subagent_call_id,
-            subagent_id=decision.subagent_id,
-            subagent_input=dict(decision.parameters),
-            decision=decision,
-        )
-        pre_decision = self._run_pre_subagent_hooks(
-            host=host,
-            run=run,
-            caller_id=caller_id,
-            event=event,
-        )
-        if pre_decision.final_result is not None:
-            return pre_decision.final_result
-        if not pre_decision.continue_run:
-            return AgentResult(status="stopped", message="", prompt=run.rendered_prompt)
-
-        subagent_id = pre_decision.updated_subagent_id or event.subagent_id
-        subagent_input = pre_decision.updated_subagent_input or dict(event.subagent_input)
-        normalize_memory_parameters = getattr(host, "normalize_memory_parameters", None)
-        if callable(normalize_memory_parameters):
-            subagent_input = normalize_memory_parameters(
-                agent_id=self.agent_id,
-                run_id=run.run_id,
-                parameters=subagent_input,
-                child_agent_id=subagent_id,
-            )
-        from agent_framework.agent_event_publisher import agent_events
-
-        agent_events.audit_named_event(
-            run_id=run.run_id,
-            agent_id=self.agent_id,
-            event={
-                "type": "subagent_call",
-                "subagent_id": subagent_id,
-                "parameters": dict(subagent_input),
-            },
-        )
-        run.transcript_entries.append(
-            f"<subagent_call id=\"{subagent_id}\">{_stringify_parameter_value(subagent_input)}</subagent_call>"
-        )
-        run.conversation_messages.append(
-            {
-                "role": "assistant",
-                "content": f"Subagent call {subagent_id}: {_stringify_parameter_value(subagent_input)}",
-            }
-        )
-        _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_call")
         try:
-            result = host.call_subagent(
-                caller=self,
-                callee_id=subagent_id,
-                parameters=subagent_input,
-                parent_run_id=run.run_id,
+            self._execute_single_subagent_flow(
+                host=host,
+                run=run,
+                caller_id=caller_id,
+                subagent_id=decision.subagent_id,
+                subagent_input=dict(decision.parameters),
+                decision=decision,
             )
-        except Exception as exc:
-            agent_events.audit_named_event(
-                run_id=run.run_id,
-                agent_id=self.agent_id,
-                event={
-                    "type": "subagent_error",
-                    "subagent_id": subagent_id,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
-            )
-            if pre_decision.system_message:
-                run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
-            run.prompt_fragments.append(
-                f"<subagent_error id=\"{subagent_id}\">{type(exc).__name__}: {exc}</subagent_error>"
-            )
-            run.transcript_entries.append(
-                f"<subagent_error id=\"{subagent_id}\">{type(exc).__name__}: {exc}</subagent_error>"
-            )
-            run.conversation_messages.append(
-                {"role": "user", "content": f"Subagent error {subagent_id}: {type(exc).__name__}: {exc}"}
-            )
-            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
+        except Exception:
             return None
-        self._run_post_subagent_hooks(
-            host=host,
-            run=run,
-            caller_id=caller_id,
-            event=SubagentEndEvent(
-                invocation=event.invocation,
-                subagent_call_id=subagent_call_id,
-                subagent_id=subagent_id,
-                subagent_input=subagent_input,
-                result=result,
-            ),
-        )
-        if pre_decision.system_message:
-            run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
-        payload = _subagent_result_payload(result.message, result.parameters, result.parameters_injection)
-        agent_events.audit_named_event(
-            run_id=run.run_id,
-            agent_id=self.agent_id,
-            event={
-                "type": "subagent_result",
-                "subagent_id": subagent_id,
-                "result": payload,
-                "status": result.status,
-            },
-        )
-        run.transcript_entries.append(
-            f"<subagent_result id=\"{subagent_id}\">{payload}</subagent_result>"
-        )
-        run.conversation_messages.append(
-            {"role": "user", "content": f"Subagent result {subagent_id}: {payload}"}
-        )
-        run.prompt_fragments.append(
-            f"<subagent_result id=\"{subagent_id}\">{payload}</subagent_result>"
-        )
         return None
 
     def handle_subagent_calls(
@@ -1091,17 +989,310 @@ class Agent:
 
         # Validate every call entry against the allowed child agent list.
         for spec in decision.subagent_calls:
-            if spec.subagent_id not in self.allowed_child_agents:
-                error_text = (
-                    f"{self.agent_id} is not allowed to call subagent {spec.subagent_id!r} "
-                    f"(output_key={spec.output_key!r}). "
-                    f"Legal subagent ids: {sorted(self.allowed_child_agents)}."
-                )
-                run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
-                run.transcript_entries.append(f"<subagent_error>{error_text}</subagent_error>")
-                run.conversation_messages.append({"role": "user", "content": error_text})
-                _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
+            if not self._validate_subagent_permission(
+                host,
+                run,
+                spec.subagent_id,
+                output_key=spec.output_key,
+            ):
                 return None
+
+        try:
+            self._execute_subagent_batch_flow(
+                host=host,
+                run=run,
+                caller_id=caller_id,
+                specs=decision.subagent_calls,
+                mode=decision.batch_mode,
+                timeout_seconds=decision.batch_timeout_seconds,
+            )
+        except Exception:
+            return None
+        return None
+
+    def execute_programmatic_workflow(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        caller_id: str | None,
+        workflow: ProgrammaticWorkflow,
+        initial_parameters: dict[str, Any] | None = None,
+    ) -> AgentResult:
+        """Run a deterministic workflow without entering the model decision loop."""
+        state = ProgrammaticWorkflowState(
+            initial_parameters=dict(initial_parameters or run.parameter_values),
+        )
+        step_id = workflow.entry_step
+        steps_executed = 0
+
+        while True:
+            steps_executed += 1
+            if steps_executed > workflow.max_steps:
+                raise RuntimeError(
+                    f"Programmatic workflow exceeded max_steps={workflow.max_steps} for {self.agent_id}."
+                )
+            if step_id not in workflow.steps:
+                raise KeyError(f"Workflow step {step_id!r} is not defined.")
+            step = workflow.steps[step_id]
+
+            if isinstance(step, WorkflowBranchStep):
+                branch_taken = bool(resolve_workflow_value(step.condition, state))
+                step_id = self._resolve_workflow_next_step(
+                    step.then_step if branch_taken else step.else_step,
+                    state,
+                    current_step_id=step.step_id,
+                )
+                continue
+
+            if isinstance(step, WorkflowCallSubagentStep):
+                resolved_subagent_id = str(resolve_workflow_value(step.subagent_id, state))
+                resolved_parameters = resolve_workflow_value(step.parameters, state)
+                if not isinstance(resolved_parameters, dict):
+                    raise TypeError(
+                        f"Workflow step {step.step_id!r} parameters must resolve to dict, "
+                        f"got {type(resolved_parameters).__name__}."
+                    )
+                result = self._execute_single_subagent_flow(
+                    host=host,
+                    run=run,
+                    caller_id=caller_id,
+                    subagent_id=resolved_subagent_id,
+                    subagent_input=dict(resolved_parameters),
+                    decision=None,
+                )
+                state.step_results[step.step_id] = result
+                state.last_step_id = step.step_id
+                state.last_value = result
+                step_id = self._resolve_workflow_next_step(step.next_step, state, current_step_id=step.step_id)
+                continue
+
+            if isinstance(step, WorkflowCallSubagentsStep):
+                resolved_calls = resolve_workflow_value(step.calls, state)
+                if not isinstance(resolved_calls, tuple):
+                    raise TypeError(
+                        f"Workflow step {step.step_id!r} calls must resolve to tuple[SubagentCallSpec, ...], "
+                        f"got {type(resolved_calls).__name__}."
+                    )
+                result = self._execute_subagent_batch_flow(
+                    host=host,
+                    run=run,
+                    caller_id=caller_id,
+                    specs=resolved_calls,
+                    mode=step.mode,
+                    timeout_seconds=step.timeout_seconds,
+                )
+                state.step_results[step.step_id] = result
+                state.last_step_id = step.step_id
+                state.last_value = result
+                step_id = self._resolve_workflow_next_step(step.next_step, state, current_step_id=step.step_id)
+                continue
+
+            if isinstance(step, WorkflowReturnStep):
+                value = resolve_workflow_value(step.value, state)
+                return coerce_workflow_result(value)
+
+            if isinstance(step, WorkflowRaiseStep):
+                error = resolve_workflow_value(step.error, state)
+                if isinstance(error, BaseException):
+                    raise error
+                raise RuntimeError(str(error))
+
+            raise TypeError(f"Unsupported workflow step type {type(step).__name__}.")
+
+    def _resolve_workflow_next_step(
+        self,
+        next_step: str | Any | None,
+        state: ProgrammaticWorkflowState,
+        *,
+        current_step_id: str,
+    ) -> str:
+        resolved = resolve_workflow_value(next_step, state)
+        if not isinstance(resolved, str) or not resolved:
+            raise ValueError(
+                f"Workflow step {current_step_id!r} must resolve a non-empty next_step."
+            )
+        return resolved
+
+    def _validate_subagent_permission(
+        self,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        subagent_id: str,
+        *,
+        output_key: str | None = None,
+    ) -> bool:
+        if subagent_id in self.allowed_child_agents:
+            return True
+        if output_key is None:
+            error_text = (
+                f"{self.agent_id} is not allowed to call subagent {subagent_id}. "
+                f"Legal subagent ids: {sorted(self.allowed_child_agents)}."
+            )
+        else:
+            error_text = (
+                f"{self.agent_id} is not allowed to call subagent {subagent_id!r} "
+                f"(output_key={output_key!r}). "
+                f"Legal subagent ids: {sorted(self.allowed_child_agents)}."
+            )
+        run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
+        run.transcript_entries.append(f"<subagent_error>{error_text}</subagent_error>")
+        run.conversation_messages.append({"role": "user", "content": error_text})
+        _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
+        return False
+
+    def _execute_single_subagent_flow(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        caller_id: str | None,
+        subagent_id: str,
+        subagent_input: dict[str, Any],
+        decision: AgentDecision | None,
+    ) -> AgentResult:
+        subagent_call_id = str(uuid4())
+        event = SubagentStartEvent(
+            invocation=self._hook_invocation(run, caller_id),
+            subagent_call_id=subagent_call_id,
+            subagent_id=subagent_id,
+            subagent_input=dict(subagent_input),
+            decision=decision,
+        )
+        pre_decision = self._run_pre_subagent_hooks(
+            host=host,
+            run=run,
+            caller_id=caller_id,
+            event=event,
+        )
+        if pre_decision.final_result is not None:
+            return pre_decision.final_result
+        if not pre_decision.continue_run:
+            return AgentResult(status="stopped", message="", prompt=run.rendered_prompt)
+
+        effective_subagent_id = pre_decision.updated_subagent_id or event.subagent_id
+        effective_subagent_input = pre_decision.updated_subagent_input or dict(event.subagent_input)
+        if not self._validate_subagent_permission(host, run, effective_subagent_id):
+            return AgentResult(status="failed", message=f"unauthorized subagent {effective_subagent_id}")
+        normalize_memory_parameters = getattr(host, "normalize_memory_parameters", None)
+        if callable(normalize_memory_parameters):
+            effective_subagent_input = normalize_memory_parameters(
+                agent_id=self.agent_id,
+                run_id=run.run_id,
+                parameters=effective_subagent_input,
+                child_agent_id=effective_subagent_id,
+            )
+        from agent_framework.agent_event_publisher import agent_events
+
+        agent_events.audit_named_event(
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={
+                "type": "subagent_call",
+                "subagent_id": effective_subagent_id,
+                "parameters": dict(effective_subagent_input),
+            },
+        )
+        run.transcript_entries.append(
+            f"<subagent_call id=\"{effective_subagent_id}\">{_stringify_parameter_value(effective_subagent_input)}</subagent_call>"
+        )
+        run.conversation_messages.append(
+            {
+                "role": "assistant",
+                "content": f"Subagent call {effective_subagent_id}: {_stringify_parameter_value(effective_subagent_input)}",
+            }
+        )
+        _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_call")
+        try:
+            result = host.call_subagent(
+                caller=self,
+                callee_id=effective_subagent_id,
+                parameters=effective_subagent_input,
+                parent_run_id=run.run_id,
+            )
+        except Exception as exc:
+            agent_events.audit_named_event(
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                event={
+                    "type": "subagent_error",
+                    "subagent_id": effective_subagent_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            if pre_decision.system_message:
+                run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
+            run.prompt_fragments.append(
+                f"<subagent_error id=\"{effective_subagent_id}\">{type(exc).__name__}: {exc}</subagent_error>"
+            )
+            run.transcript_entries.append(
+                f"<subagent_error id=\"{effective_subagent_id}\">{type(exc).__name__}: {exc}</subagent_error>"
+            )
+            run.conversation_messages.append(
+                {
+                    "role": "user",
+                    "content": f"Subagent error {effective_subagent_id}: {type(exc).__name__}: {exc}",
+                }
+            )
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
+            raise
+        self._run_post_subagent_hooks(
+            host=host,
+            run=run,
+            caller_id=caller_id,
+            event=SubagentEndEvent(
+                invocation=event.invocation,
+                subagent_call_id=subagent_call_id,
+                subagent_id=effective_subagent_id,
+                subagent_input=effective_subagent_input,
+                result=result,
+            ),
+        )
+        if pre_decision.system_message:
+            run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
+        payload = _subagent_result_payload(result.message, result.parameters, result.parameters_injection)
+        agent_events.audit_named_event(
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={
+                "type": "subagent_result",
+                "subagent_id": effective_subagent_id,
+                "result": payload,
+                "status": result.status,
+            },
+        )
+        run.transcript_entries.append(
+            f"<subagent_result id=\"{effective_subagent_id}\">{payload}</subagent_result>"
+        )
+        run.conversation_messages.append(
+            {"role": "user", "content": f"Subagent result {effective_subagent_id}: {payload}"}
+        )
+        run.prompt_fragments.append(
+            f"<subagent_result id=\"{effective_subagent_id}\">{payload}</subagent_result>"
+        )
+        return result
+
+    def _execute_subagent_batch_flow(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        caller_id: str | None,
+        specs: tuple[SubagentCallSpec, ...],
+        mode: str,
+        timeout_seconds: float | None,
+    ) -> list[Any]:
+        from agent_framework.agent_event_publisher import agent_events
+
+        for spec in specs:
+            if not self._validate_subagent_permission(
+                host,
+                run,
+                spec.subagent_id,
+                output_key=spec.output_key,
+            ):
+                raise RuntimeError(f"unauthorized subagent {spec.subagent_id}")
 
         batch_id = str(uuid4())
         agent_events.audit_named_event(
@@ -1110,9 +1301,9 @@ class Agent:
             event={
                 "type": "subagent_batch_started",
                 "batch_id": batch_id,
-                "mode": decision.batch_mode,
-                "count": len(decision.subagent_calls),
-                "calls": [{"subagent_id": s.subagent_id, "output_key": s.output_key} for s in decision.subagent_calls],
+                "mode": mode,
+                "count": len(specs),
+                "calls": [{"subagent_id": s.subagent_id, "output_key": s.output_key} for s in specs],
             },
         )
 
@@ -1122,10 +1313,10 @@ class Agent:
             run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
-            return None
+            raise RuntimeError(error_text)
 
         normalize_memory_parameters = getattr(host, "normalize_memory_parameters", None)
-        normalized_specs = decision.subagent_calls
+        normalized_specs = specs
         if callable(normalize_memory_parameters):
             normalized_specs = tuple(
                 SubagentCallSpec(
@@ -1138,15 +1329,15 @@ class Agent:
                     ),
                     output_key=spec.output_key,
                 )
-                for spec in decision.subagent_calls
+                for spec in specs
             )
 
         try:
             results = call_batch_fn(
                 caller=self,
                 specs=normalized_specs,
-                mode=decision.batch_mode,
-                timeout_seconds=decision.batch_timeout_seconds,
+                mode=mode,
+                timeout_seconds=timeout_seconds,
                 parent_run_id=run.run_id,
             )
         except Exception as exc:
@@ -1164,7 +1355,7 @@ class Agent:
                     "error": str(exc),
                 },
             )
-            return None
+            raise
 
         statuses = [r.status for r in results]
         agent_events.audit_named_event(
@@ -1181,7 +1372,7 @@ class Agent:
             },
         )
         self._emit_subagent_batch_results(host, run, results)
-        return None
+        return results
 
     def _emit_subagent_batch_results(
         self,

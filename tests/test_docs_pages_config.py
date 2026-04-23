@@ -61,12 +61,19 @@ def test_docs_relative_url_targets_resolve_to_existing_routes() -> None:
 def test_usage_accounting_docs_are_present() -> None:
     guide = (ROOT / "docs" / "guides" / "using-agent-framework.md").read_text(encoding="utf-8")
     dev_ref = (PAGES_ROOT / "reference" / "developer-documentation.md").read_text(encoding="utf-8")
+    workflow_ref = (PAGES_ROOT / "reference" / "programmatic-workflow-agents.md").read_text(encoding="utf-8")
 
     assert "runtime.agent_finished.usage_self" in guide
     assert "runtime.session_finished.usage_session_totals" in guide
     assert "output_cached_tokens" in guide
     assert "LLM Usage Accounting" in dev_ref
     assert "usage_inclusive" in dev_ref
+    assert "execute_programmatic_workflow" in guide
+    assert "/reference/programmatic-workflow-agents/" in guide
+    assert "Programmatic Workflow Execution" in dev_ref
+    assert "/reference/programmatic-workflow-agents/" in dev_ref
+    assert "ProgrammaticWorkflowState" in workflow_ref
+    assert "WorkflowCallSubagentsStep" in workflow_ref
 
 
 def _collect_routes() -> set[str]:

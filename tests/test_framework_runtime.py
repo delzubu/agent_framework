@@ -294,6 +294,147 @@ def test_host_runtime_usage_totals_include_subagent_usage(tmp_path: Path) -> Non
     assert parent_audit.payload["usage_inclusive"]["total_tokens"] == 31
 
 
+def test_programmatic_single_subagent_workflow_matches_native_trace_contract(tmp_path: Path) -> None:
+    from agent_framework.agents.workflow import ProgrammaticWorkflow, WorkflowCallSubagentStep, WorkflowReturnStep
+
+    class ProgrammaticBehavior(AgentBehavior):
+        def __init__(self) -> None:
+            self.last_run = None
+
+        def attach(self, agent: Agent) -> None:
+            return None
+
+        def before_run(self, agent, host, *, run, caller_id):
+            self.last_run = run
+            workflow = ProgrammaticWorkflow(
+                entry_step="delegate",
+                steps={
+                    "delegate": WorkflowCallSubagentStep(
+                        step_id="delegate",
+                        subagent_id="parser",
+                        parameters={"topic": "go"},
+                        next_step="finish",
+                    ),
+                    "finish": WorkflowReturnStep(
+                        step_id="finish",
+                        value=lambda state: AgentResult(
+                            status="completed",
+                            message=state.require_step_result("delegate").message,
+                        ),
+                    ),
+                },
+            )
+            result = agent.execute_programmatic_workflow(
+                host=host,
+                run=run,
+                caller_id=caller_id,
+                workflow=workflow,
+            )
+            return AgentHookDecision(final_result=result)
+
+    host, _ = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="parser",
+        decisions=[{"kind": "final_message", "message": "child done"}],
+    )
+    recorder = _TraceRecorder()
+    host.runtime_tracer = CompositeRuntimeTracer(subscribers=[recorder])
+    parent = host.get_agent("orchestrator")
+    behavior = ProgrammaticBehavior()
+    parent.behaviors = (behavior,)
+
+    result = host.run_root(initial_instruction="go")
+
+    assert result.message == "child done"
+    parent_run_id = next(run_id for run_id, reg in host._run_registry.items() if reg.agent_id == "orchestrator")
+    named = [
+        e.payload["event"]["type"]
+        for e in recorder.events
+        if e.kind == "runtime.audit.named_event" and e.context.run_id == parent_run_id
+    ]
+    assert "subagent_call" in named
+    assert "subagent_result" in named
+    assert behavior.last_run is not None
+    assert "before_subagent:parser" in behavior.last_run.history
+    assert "after_subagent:parser" in behavior.last_run.history
+    assert any("<subagent_call id=\"parser\">" in item for item in behavior.last_run.transcript_entries)
+    assert any("<subagent_result id=\"parser\">" in item for item in behavior.last_run.prompt_fragments)
+
+
+def test_programmatic_parallel_workflow_matches_native_batch_trace_contract(tmp_path: Path) -> None:
+    from agent_framework.agents import SubagentCallSpec
+    from agent_framework.agents.workflow import ProgrammaticWorkflow, WorkflowCallSubagentsStep, WorkflowReturnStep
+
+    class ProgrammaticBatchBehavior(AgentBehavior):
+        def __init__(self) -> None:
+            self.last_run = None
+
+        def attach(self, agent: Agent) -> None:
+            return None
+
+        def before_run(self, agent, host, *, run, caller_id):
+            self.last_run = run
+            workflow = ProgrammaticWorkflow(
+                entry_step="delegate",
+                steps={
+                    "delegate": WorkflowCallSubagentsStep(
+                        step_id="delegate",
+                        calls=(
+                            SubagentCallSpec(subagent_id="parser", parameters={"topic": "a"}, output_key="first"),
+                            SubagentCallSpec(subagent_id="parser", parameters={"topic": "b"}, output_key="second"),
+                        ),
+                        mode="parallel",
+                        next_step="finish",
+                    ),
+                    "finish": WorkflowReturnStep(
+                        step_id="finish",
+                        value=lambda state: AgentResult(
+                            status="completed",
+                            message=str(len(state.require_step_result("delegate"))),
+                        ),
+                    ),
+                },
+            )
+            result = agent.execute_programmatic_workflow(
+                host=host,
+                run=run,
+                caller_id=caller_id,
+                workflow=workflow,
+            )
+            return AgentHookDecision(final_result=result)
+
+    host, _ = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="parser",
+        decisions=[
+            {"kind": "final_message", "message": "child one"},
+            {"kind": "final_message", "message": "child two"},
+        ],
+    )
+    recorder = _TraceRecorder()
+    host.runtime_tracer = CompositeRuntimeTracer(subscribers=[recorder])
+    parent = host.get_agent("orchestrator")
+    behavior = ProgrammaticBatchBehavior()
+    parent.behaviors = (behavior,)
+
+    result = host.run_root(initial_instruction="go")
+
+    assert result.message == "2"
+    parent_run_id = next(run_id for run_id, reg in host._run_registry.items() if reg.agent_id == "orchestrator")
+    named_events = [
+        e.payload["event"]
+        for e in recorder.events
+        if e.kind == "runtime.audit.named_event" and e.context.run_id == parent_run_id
+    ]
+    assert any(evt["type"] == "subagent_batch_started" for evt in named_events)
+    assert any(evt["type"] == "subagent_batch_finished" for evt in named_events)
+    assert behavior.last_run is not None
+    assert any("<subagent_results>" in item for item in behavior.last_run.transcript_entries)
+    assert any(msg["content"].startswith("<subagent_results>") for msg in behavior.last_run.conversation_messages)
+
+
 def test_agent_decision_preserves_callback_to_caller_kind() -> None:
     from agent_framework.agents.agent_decision import AgentDecision
 

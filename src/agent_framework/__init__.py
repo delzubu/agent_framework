@@ -18,6 +18,14 @@ from agent_framework.agent import (
     ToolEndEvent,
     ToolHookDecision,
     ToolStartEvent,
+    ProgrammaticWorkflow,
+    ProgrammaticWorkflowState,
+    ProgrammaticWorkflowStep,
+    WorkflowBranchStep,
+    WorkflowCallSubagentStep,
+    WorkflowCallSubagentsStep,
+    WorkflowRaiseStep,
+    WorkflowReturnStep,
 )
 from agent_framework.config import HostConfig, load_host_config
 from agent_framework.conversation import (
@@ -109,6 +117,14 @@ __all__ = [
     "ToolEndEvent",
     "ToolHookDecision",
     "ToolStartEvent",
+    "ProgrammaticWorkflow",
+    "ProgrammaticWorkflowState",
+    "ProgrammaticWorkflowStep",
+    "WorkflowBranchStep",
+    "WorkflowCallSubagentStep",
+    "WorkflowCallSubagentsStep",
+    "WorkflowRaiseStep",
+    "WorkflowReturnStep",
     # Configuration
     "HostConfig",
     "load_host_config",

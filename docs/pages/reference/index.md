@@ -15,6 +15,7 @@ Reference pages should be stable, precise, and easy to scan.
 - [CLI Reference]({{ '/reference/cli-reference/' | relative_url }})
 - [Architecture Overview]({{ '/reference/architecture/overview/' | relative_url }})
 - [Developer Documentation]({{ '/reference/developer-documentation/' | relative_url }})
+- [Programmatic Workflow Agents]({{ '/reference/programmatic-workflow-agents/' | relative_url }})
 - [Framework Comparison]({{ '/reference/framework-comparison/' | relative_url }})
 - [Agent Markdown Format]({{ '/reference/agent-markdown-format/' | relative_url }})
 - [Tool Markdown Format]({{ '/reference/tool-markdown-format/' | relative_url }})

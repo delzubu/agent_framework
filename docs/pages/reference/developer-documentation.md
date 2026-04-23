@@ -52,8 +52,41 @@ Runtime extension points:
 
 These validators are code-level extension points, not config-driven plugins.
 
+## Programmatic Workflow Execution
+
+The framework now supports deterministic, code-driven orchestration without entering the parent agent's LLM decision loop.
+
+The public surface is agent-owned:
+
+- `Agent.execute_programmatic_workflow(...)`
+- `ProgrammaticWorkflow`
+- `WorkflowCallSubagentStep`
+- `WorkflowCallSubagentsStep`
+- `WorkflowBranchStep`
+- `WorkflowReturnStep`
+- `WorkflowRaiseStep`
+
+The important design point is parity with native orchestration.  Programmatic workflow steps reuse the same parent-owned subagent path as `call_subagent` and `call_subagents`, so they still produce:
+
+- parent-side `runtime.audit.named_event` records such as `subagent_call`, `subagent_result`, `subagent_batch_started`, and `subagent_batch_finished`
+- parent hook history around single-child calls
+- transcript updates like `<subagent_call>`, `<subagent_result>`, and `<subagent_results>`
+- the same callback routing and batch resume behavior already implemented in `host.call_subagent(...)` and `host.call_subagent_batch(...)`
+
+The first iteration is intentionally small and extensible:
+
+- branching is Python-driven, using callables against `ProgrammaticWorkflowState`
+- workflow return values are normalized into `AgentResult`
+- step outputs are stored in `ProgrammaticWorkflowState.step_results`
+- there is no separate expression language or persistence format yet
+
+This makes `AgentBehavior.before_run(...)` a supported place to run deterministic controller logic while still preserving the framework's native trace and callback semantics.
+
+For the full developer guide, examples, and authoring guidance, see [Programmatic Workflow Agents]({{ '/reference/programmatic-workflow-agents/' | relative_url }}).
+
 ## Next Steps
 
 - [Architecture Overview]({{ '/reference/architecture/overview/' | relative_url }})
+- [Programmatic Workflow Agents]({{ '/reference/programmatic-workflow-agents/' | relative_url }})
 - [Handling Callbacks]({{ '/build/handling-callbacks/' | relative_url }})
 - [Development Setup]({{ '/community/development-setup/' | relative_url }})

@@ -161,6 +161,8 @@ Common cases:
 
 The main extension seam is `AgentBehavior` in `src/agent_framework/agents/agent_behavior.py`.
 
+If the behavior is acting as a deterministic controller that should orchestrate child agents without a parent LLM turn, stop here and also load `references/workflow-agents.md`. That reference covers `Agent.execute_programmatic_workflow(...)`, workflow step types, and the supported `before_run(...)` pattern.
+
 Lifecycle:
 
 - `before_run(...) -> AgentHookDecision | None`

@@ -1,7 +1,7 @@
 # Architecture Overview
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [ADR: Model context & drivers](./adr-model-context-and-drivers.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Memory System](./memory-system.md) · [Extension Points](./extension-points.md) · [Tracing & Evaluation](./tracing-evaluation.md) · [Interface Specifications](./interfaces.md) · [Agent Evaluator & Web Runtime](./agent-evaluator-web-runtime.md) · User guides: [Using the agent framework](../guides/using-agent-framework.md) · [Using the agent evaluator](../guides/using-agent-evaluator.md) · [Using Memory](../guides/using-memory.md)
+> See also: [ADR: Model context & drivers](./adr-model-context-and-drivers.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Memory System](./memory-system.md) · [Extension Points](./extension-points.md) · [Tracing & Evaluation](./tracing-evaluation.md) · [Interface Specifications](./interfaces.md) · [Agent Evaluator & Web Runtime](./agent-evaluator-web-runtime.md) · User guides: [Using the agent framework](../guides/using-agent-framework.md) · [Using the agent evaluator](../guides/using-agent-evaluator.md) · [Using Memory](../guides/using-memory.md) · Public reference: [Programmatic Workflow Agents](../pages/reference/programmatic-workflow-agents.md)
 
 ---
 
@@ -56,6 +56,19 @@ Eight `SequentialHook` instances on `Agent` (pre/post for agent, tool, subagent,
 ### 2.6 Hierarchical Agent Orchestration
 
 Agents invoke other agents as subagents via the host. The call tree is explicit, not emergent: each agent has a declared `allowed_child_agents` allowlist, and `CallContext` objects track each call edge with correlation IDs. Subagents can be invoked synchronously (`call_subagent`) or asynchronously via a shared thread pool (`call_subagent_async`).
+
+### 2.6c Programmatic workflow orchestration
+
+Not all parent orchestration should consume an LLM turn. The runtime now exposes an agent-owned deterministic workflow surface through `Agent.execute_programmatic_workflow(...)` and the `ProgrammaticWorkflow*` step types.
+
+This is intentionally not a host shortcut. The workflow runner reuses the same parent-side subagent orchestration internals that back model-driven `call_subagent` and `call_subagents` decisions. That preserves:
+
+- parent hook execution around subagent calls
+- parent transcript and prompt-fragment updates
+- audit events for single-child and batch-child orchestration
+- callback routing and blocked-batch resume behavior already implemented in the host
+
+Architecturally, this keeps deterministic controller logic at the agent layer while avoiding a second, divergent orchestration stack in `host.py`.
 
 ### 2.6b Skills as a Third Capability Pillar
 
