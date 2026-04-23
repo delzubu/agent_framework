@@ -34,6 +34,8 @@ const evalLlmInlineDetail = document.getElementById("eval-llm-inline-detail");
 const evalCodeInlineDetail = document.getElementById("eval-code-inline-detail");
 const batchSummaryPanel = document.getElementById("batch-summary-panel");
 const batchSummaryTableBody = document.getElementById("batch-summary-table-body");
+const runUsageSummary = document.getElementById("run-usage-summary");
+const traceUsagePanel = document.getElementById("trace-usage-panel");
 const batchAvgScoreBar = document.getElementById("batch-avg-score-bar");
 const batchAvgScoreLabel = document.getElementById("batch-avg-score-label");
 const evaluationDetailModal = document.getElementById("evaluation-detail-modal");
@@ -68,6 +70,8 @@ let lastEvaluationPayload = null;
 
 /** Last agent `result` payload from the server. @type {Record<string, unknown> | null} */
 let lastAgentResultPayload = null;
+/** @type {Record<string, unknown> | null} */
+let lastUsageSummary = null;
 
 /**
  * Snapshots from the last run (first LLM request).
@@ -147,6 +151,91 @@ wireEvaluationDetailModal();
 function scoreToHue(score) {
   const s = Math.min(10, Math.max(0, Number(score)));
   return (s / 10) * 120;
+}
+
+function normalizeUsageTotals(totals) {
+  const t = totals && typeof totals === "object" ? totals : {};
+  return {
+    input_tokens: Number(t.input_tokens ?? 0) || 0,
+    input_cached_tokens: Number(t.input_cached_tokens ?? 0) || 0,
+    output_tokens: Number(t.output_tokens ?? 0) || 0,
+    output_cached_tokens: Number(t.output_cached_tokens ?? 0) || 0,
+    total_tokens: Number(t.total_tokens ?? 0) || 0,
+  };
+}
+
+function renderUsageTotals(target, totals, opts = {}) {
+  if (!target) return;
+  const label = typeof opts.label === "string" ? opts.label : "";
+  const t = normalizeUsageTotals(totals);
+  target.innerHTML = "";
+  if (label) {
+    const heading = document.createElement("div");
+    heading.className = "usage-summary-heading";
+    heading.textContent = label;
+    target.appendChild(heading);
+  }
+  const grid = document.createElement("div");
+  grid.className = "usage-summary-grid";
+  const rows = [
+    ["Input", t.input_tokens],
+    ["Input cached", t.input_cached_tokens],
+    ["Output", t.output_tokens],
+    ["Output cached", t.output_cached_tokens],
+    ["Total", t.total_tokens],
+  ];
+  for (const [name, value] of rows) {
+    const card = document.createElement("div");
+    card.className = "usage-summary-card";
+    const k = document.createElement("span");
+    k.className = "usage-summary-key";
+    k.textContent = String(name);
+    const v = document.createElement("strong");
+    v.className = "usage-summary-value";
+    v.textContent = String(value);
+    card.appendChild(k);
+    card.appendChild(v);
+    grid.appendChild(card);
+  }
+  target.appendChild(grid);
+}
+
+function renderSessionUsageSummary(summary) {
+  if (!runUsageSummary) return;
+  if (!summary || typeof summary !== "object") {
+    runUsageSummary.hidden = true;
+    runUsageSummary.innerHTML = "";
+    return;
+  }
+  renderUsageTotals(runUsageSummary, summary.session_totals, { label: "Session usage" });
+  runUsageSummary.hidden = false;
+}
+
+function renderTraceUsagePanel(summary, selectedRunId = null) {
+  if (!traceUsagePanel) return;
+  if (!summary || typeof summary !== "object") {
+    traceUsagePanel.hidden = true;
+    traceUsagePanel.innerHTML = "";
+    return;
+  }
+  traceUsagePanel.innerHTML = "";
+  const runMap = summary.runs && typeof summary.runs === "object" ? summary.runs : {};
+  const runEntry = selectedRunId && runMap[selectedRunId] ? runMap[selectedRunId] : null;
+  if (runEntry) {
+    const title = document.createElement("div");
+    title.className = "usage-panel-title";
+    title.textContent = `${String(runEntry.agent_id || "agent")} usage`;
+    traceUsagePanel.appendChild(title);
+    const selfWrap = document.createElement("div");
+    renderUsageTotals(selfWrap, runEntry.self_totals, { label: "Self" });
+    traceUsagePanel.appendChild(selfWrap);
+    const inclWrap = document.createElement("div");
+    renderUsageTotals(inclWrap, runEntry.inclusive_totals, { label: "Inclusive" });
+    traceUsagePanel.appendChild(inclWrap);
+  } else {
+    renderUsageTotals(traceUsagePanel, summary.session_totals, { label: "Session usage" });
+  }
+  traceUsagePanel.hidden = false;
 }
 
 /**
@@ -705,6 +794,8 @@ function displayBatchSummary(rows) {
 
     const scoreTd = document.createElement("td");
     scoreTd.className = "batch-summary-td-score";
+    const usageTd = document.createElement("td");
+    usageTd.className = "batch-summary-td-usage";
 
     let detailPayload = r.detail != null ? r.detail : null;
     if (r.error && detailPayload == null) {
@@ -725,6 +816,11 @@ function displayBatchSummary(rows) {
       scoreTd.textContent = "—";
       scoreTd.classList.add("batch-summary-score--na");
     }
+    const usageTotals =
+      r.detail && typeof r.detail === "object" && r.detail.usage_summary && typeof r.detail.usage_summary === "object"
+        ? normalizeUsageTotals(r.detail.usage_summary.session_totals)
+        : null;
+    usageTd.textContent = usageTotals ? String(usageTotals.total_tokens) : "—";
 
     tr.tabIndex = 0;
     tr.setAttribute("role", "button");
@@ -747,6 +843,7 @@ function displayBatchSummary(rows) {
 
     tr.appendChild(titleTd);
     tr.appendChild(scoreTd);
+    tr.appendChild(usageTd);
     batchSummaryTableBody.appendChild(tr);
   }
 
@@ -1700,6 +1797,7 @@ function onAgentFinished(event) {
     fr.lastStatus = String(st);
   }
   applyFrameOutcome(fr.details, fr, fr.lastStatus || st || "completed");
+  renderTraceUsagePanel(lastUsageSummary, rid);
 }
 
 function buildTraceDetails(event) {
@@ -1761,12 +1859,18 @@ function buildFlowNode(runId, depth) {
   const pill = document.createElement("button");
   pill.type = "button";
   pill.className = `flow-pill${fr.lastStatus === "completed" || fr.lastStatus === null ? " flow-pill--success" : fr.lastStatus === "failed" ? " flow-pill--error" : " flow-pill--neutral"}`;
-  pill.textContent = fr.agentName;
+  let pillLabel = fr.agentName;
+  if (lastUsageSummary && lastUsageSummary.runs && lastUsageSummary.runs[runId]) {
+    const totals = normalizeUsageTotals(lastUsageSummary.runs[runId].inclusive_totals);
+    pillLabel += ` (${totals.total_tokens})`;
+  }
+  pill.textContent = pillLabel;
   pill.title = `run: ${runId}`;
   pill.addEventListener("click", () => {
     fr.details.scrollIntoView({ behavior: "smooth", block: "nearest" });
     fr.details.open = true;
     fr.details.classList.add("flow-highlight");
+    renderTraceUsagePanel(lastUsageSummary, runId);
     setTimeout(() => fr.details.classList.remove("flow-highlight"), 1500);
   });
   node.appendChild(pill);
@@ -1908,6 +2012,12 @@ function onSocketMessage(ev) {
         /** @type {Record<string, unknown>} */ (msg.prompt_snapshots),
       );
     }
+    lastUsageSummary =
+      msg.usage_summary && typeof msg.usage_summary === "object"
+        ? /** @type {Record<string, unknown>} */ (msg.usage_summary)
+        : null;
+    renderSessionUsageSummary(lastUsageSummary);
+    renderTraceUsagePanel(lastUsageSummary);
     updateEvaluateUi();
     void refreshAgentPromptView();
 
@@ -1937,6 +2047,11 @@ function onSocketMessage(ev) {
     removeTypingPlaceholder();
     agentRunInProgress = false;
     refreshComposerState();
+    if (msg.usage_summary && typeof msg.usage_summary === "object") {
+      lastUsageSummary = /** @type {Record<string, unknown>} */ (msg.usage_summary);
+    }
+    renderSessionUsageSummary(lastUsageSummary);
+    renderTraceUsagePanel(lastUsageSummary);
 
     if (pendingAgentRun) {
       const pr = pendingAgentRun;
@@ -2217,6 +2332,9 @@ async function sendChatOrRun() {
   const promptText = promptInput ? promptInput.value : "";
   clearStoredAgentResult();
   resetEvaluationPanel();
+  lastUsageSummary = null;
+  renderSessionUsageSummary(null);
+  renderTraceUsagePanel(null);
   clearTraceUi();
   appendConversationBubble("user", promptText || "(empty prompt)");
   agentRunInProgress = true;

@@ -529,6 +529,149 @@ def test_ws_run_handler_persists_last_run_result(monkeypatch: pytest.MonkeyPatch
     assert rec.last_run_result == fake_payload
 
 
+def test_ws_run_handler_returns_usage_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_framework_evaluator.session_manager import session_manager
+
+    fake_payload = {"status": "completed", "message": "hello"}
+    fake_summary = {
+        "session_totals": {
+            "input_tokens": 10,
+            "input_cached_tokens": 2,
+            "output_tokens": 5,
+            "output_cached_tokens": 0,
+            "total_tokens": 15,
+        },
+        "agents": {},
+        "runs": {},
+    }
+
+    def fake_run_once(self, **_: object) -> dict[str, object]:
+        return fake_payload
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+    rec = session_manager.get(sid)
+    assert rec is not None
+    rec.usage_tracker = type("FakeUsageTracker", (), {"reset": lambda self: None, "snapshot": lambda self: fake_summary})()
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.send_json({"type": "run", "agent_id": "root", "prompt": "test prompt", "case_run_mode": "standard"})
+        result_msg = None
+        for _ in range(20):
+            msg = ws.receive_json()
+            if msg.get("type") == "result":
+                result_msg = msg
+                break
+
+    assert result_msg is not None
+    assert result_msg["usage_summary"]["session_totals"]["total_tokens"] == 15
+
+
+def test_ws_run_handler_returns_usage_summary_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_framework_evaluator.session_manager import session_manager
+
+    fake_summary = {
+        "session_totals": {
+            "input_tokens": 10,
+            "input_cached_tokens": 2,
+            "output_tokens": 5,
+            "output_cached_tokens": 0,
+            "total_tokens": 15,
+        },
+        "agents": {
+            "agent_reviewer": {
+                "agent_id": "agent_reviewer",
+                "run_ids": ["run-1"],
+                "self_totals": {
+                    "input_tokens": 4,
+                    "input_cached_tokens": 1,
+                    "output_tokens": 2,
+                    "output_cached_tokens": 0,
+                    "total_tokens": 6,
+                },
+                "inclusive_totals": {
+                    "input_tokens": 10,
+                    "input_cached_tokens": 2,
+                    "output_tokens": 5,
+                    "output_cached_tokens": 0,
+                    "total_tokens": 15,
+                },
+            }
+        },
+        "runs": {
+            "run-1": {
+                "agent_id": "agent_reviewer",
+                "run_id": "run-1",
+                "parent_run_id": None,
+                "self_totals": {
+                    "input_tokens": 4,
+                    "input_cached_tokens": 1,
+                    "output_tokens": 2,
+                    "output_cached_tokens": 0,
+                    "total_tokens": 6,
+                },
+                "inclusive_totals": {
+                    "input_tokens": 10,
+                    "input_cached_tokens": 2,
+                    "output_tokens": 5,
+                    "output_cached_tokens": 0,
+                    "total_tokens": 15,
+                },
+                "llm_calls": [],
+            }
+        },
+    }
+
+    def fake_run_once(self, **_: object) -> dict[str, object]:
+        self._last_usage_summary = fake_summary
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+    rec = session_manager.get(sid)
+    assert rec is not None
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.send_json({"type": "run", "agent_id": "root", "prompt": "test prompt", "case_run_mode": "standard"})
+        error_msg = None
+        for _ in range(20):
+            msg = ws.receive_json()
+            if msg.get("type") == "error":
+                error_msg = msg
+                break
+
+    assert error_msg is not None
+    assert error_msg["usage_summary"]["session_totals"]["total_tokens"] == 15
+    assert error_msg["usage_summary"]["runs"]["run-1"]["inclusive_totals"]["total_tokens"] == 15
+    assert rec.last_usage_summary == fake_summary
+
+
+def test_api_usage_summary_returns_last_summary() -> None:
+    from agent_framework_evaluator.session_manager import session_manager
+
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+    rec = session_manager.get(sid)
+    assert rec is not None
+    rec.last_usage_summary = {
+        "session_totals": {
+            "input_tokens": 1,
+            "input_cached_tokens": 0,
+            "output_tokens": 2,
+            "output_cached_tokens": 0,
+            "total_tokens": 3,
+        },
+        "agents": {},
+        "runs": {},
+    }
+
+    r = client.get(f"/api/sessions/{sid}/usage-summary")
+    assert r.status_code == 200
+    assert r.json()["session_totals"]["total_tokens"] == 3
+
+
 def test_ws_run_handler_applies_no_callbacks_postfix(monkeypatch: pytest.MonkeyPatch) -> None:
     """WebSocket 'run' handler appends CASE_NO_CALLBACKS_POSTFIX when case_run_mode=no_callbacks."""
     from agent_framework_evaluator.evaluation import CASE_NO_CALLBACKS_POSTFIX
@@ -860,6 +1003,31 @@ def test_cli_run_supports_prompt_file(tmp_path: Path, monkeypatch) -> None:
     assert captured.get("prompt") == "hello"
 
 
+def test_cli_run_outputs_usage_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    def fake_run_once(self, **kwargs):
+        self._last_usage_summary = {
+            "session_totals": {
+                "input_tokens": 10,
+                "input_cached_tokens": 2,
+                "output_tokens": 5,
+                "output_cached_tokens": 0,
+                "total_tokens": 15,
+            },
+            "agents": {},
+            "runs": {},
+        }
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+
+    code = main(["run", "--agent", "root", "--prompt", "hello"])
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["usage_summary"]["session_totals"]["total_tokens"] == 15
+
+
 def test_cli_run_defaults_env_to_current_directory_dotenv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -930,6 +1098,17 @@ def _make_fake_run_once(message: str = "result-text"):
     """Return a fake SessionRunner.run_once that always returns {message: message}."""
 
     def fake(self, **kwargs):
+        self._last_usage_summary = {
+            "session_totals": {
+                "input_tokens": 6,
+                "input_cached_tokens": 1,
+                "output_tokens": 3,
+                "output_cached_tokens": 0,
+                "total_tokens": 9,
+            },
+            "agents": {},
+            "runs": {},
+        }
         return {"status": "completed", "message": message}
 
     return fake
@@ -980,6 +1159,8 @@ def test_cli_evaluate_case_file_writes_output(
     data = json.loads(out_path.read_text(encoding="utf-8"))
     assert "average_score" in data
     assert "run_result" in data
+    assert "usage_summary" in data
+    assert "session_usage_totals" in data
 
 
 def test_cli_evaluate_initializer_single_case(
@@ -1028,6 +1209,7 @@ def test_cli_evaluate_batch_summary(
     assert code == 0
     out = capsys.readouterr().out
     assert "alpha" in out or "beta" in out
+    assert "tokens=" in out
 
 
 def test_cli_evaluate_batch_returns_nonzero_when_all_cases_error(

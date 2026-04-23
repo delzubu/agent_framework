@@ -77,6 +77,52 @@ body {
   flex-shrink: 0;
 }
 
+.trace-usage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.usage-panel-title,
+.usage-summary-heading {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.usage-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.usage-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(26, 35, 50, 0.7);
+}
+
+.usage-summary-key {
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.usage-summary-value {
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
 .left-rail-hint {
   margin: 0 0 0.5rem;
   font-size: 0.78rem;
@@ -1273,6 +1319,12 @@ body {
   min-height: 0;
 }
 
+.run-usage-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
 .batch-summary-header {
   display: flex;
   align-items: center;
@@ -1342,6 +1394,11 @@ body {
   width: 5rem;
 }
 
+.batch-summary-th-usage {
+  text-align: right;
+  width: 6rem;
+}
+
 .batch-summary-table-row {
   cursor: pointer;
   transition: background 0.1s ease;
@@ -1374,6 +1431,12 @@ body {
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
+}
+
+.batch-summary-td-usage {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
 }
 
 .batch-summary-score--error {
@@ -1524,6 +1587,7 @@ body {
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .flow-pill:hover { border-color: var(--accent); background: rgba(91, 192, 222, 0.1); }

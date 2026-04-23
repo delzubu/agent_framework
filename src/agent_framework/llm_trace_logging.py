@@ -16,6 +16,18 @@ _PAYLOAD_COLOR = "\033[97m"
 _RESET = "\033[0m"
 
 
+def _usage_payload(value: Any) -> dict[str, Any] | None:
+    """Convert normalized usage values to plain dicts for trace payloads."""
+    if value is None:
+        return None
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return to_dict()
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
 def build_llm_trace_event(trace: Any, *, kind: str, level: str = "info") -> TraceEvent:
     payload: dict[str, Any] = {
         "run_id": getattr(trace, "run_id", None),
@@ -31,6 +43,10 @@ def build_llm_trace_event(trace: Any, *, kind: str, level: str = "info") -> Trac
         payload["raw_text"] = trace.raw_text
     if hasattr(trace, "parsed_payload"):
         payload["parsed_payload"] = trace.parsed_payload
+    if hasattr(trace, "usage"):
+        payload["usage"] = _usage_payload(trace.usage)
+    if hasattr(trace, "raw_usage"):
+        payload["raw_usage"] = trace.raw_usage
     agent_label = trace.agent_id or "host"
     run_id = getattr(trace, "run_id", None)
     return make_trace_event(
@@ -81,6 +97,9 @@ def wire_llm_traces_to_runtime_tracer(host: Any) -> None:
     def on_response(event: ProviderResponseTrace) -> None:
         if callable(existing_response):
             existing_response(event)
+        record_usage = getattr(host, "record_runtime_llm_usage", None)
+        if callable(record_usage):
+            record_usage(run_id=event.run_id, usage=event.usage)
         kind, level = _llm_response_trace_kind_level(event)
         runtime_tracer.publish(build_llm_trace_event(event, kind=kind, level=level))
 
@@ -143,6 +162,8 @@ class LlmTraceLogger:
             "model_name": event.model_name,
             "raw_text": event.raw_text,
             "payload": event.parsed_payload,
+            "usage": _usage_payload(event.usage),
+            "raw_usage": event.raw_usage,
         }
         self._emit("POST MODEL", event.agent_id, payload)
 

@@ -107,11 +107,20 @@ class RuntimeTraceBehavior(AgentBehavior):
     ) -> AgentEndHookDecision | AgentResult | None:
         h = self._tracing_host()
         if h is not None:
+            usage_summary = {"usage_self": {}, "usage_inclusive": {}}
+            finish_runtime_usage = getattr(h, "finish_runtime_usage", None)
+            if callable(finish_runtime_usage):
+                usage_summary = finish_runtime_usage(run_id=run.run_id)
             h.publish_trace_event(
                 kind="runtime.agent_finished",
                 title=f"Agent {agent.agent_id} finished",
                 span_id=run.run_id,
-                payload={"status": result.status, "caller_id": caller_id},
+                payload={
+                    "status": result.status,
+                    "caller_id": caller_id,
+                    "usage_self": usage_summary.get("usage_self", {}),
+                    "usage_inclusive": usage_summary.get("usage_inclusive", {}),
+                },
                 context=_merge_context(h, run_id=run.run_id, agent_id=agent.agent_id, caller_id=caller_id),
             )
         self._host = None
