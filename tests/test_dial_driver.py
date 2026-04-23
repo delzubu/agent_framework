@@ -45,7 +45,13 @@ def _make_response_payload(content: str, finish_reason: str = "stop") -> dict:
                 "finish_reason": finish_reason,
             }
         ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": {"cached_tokens": 3},
+            "completion_tokens_details": {"cached_tokens": 0},
+        },
     }
 
 
@@ -168,7 +174,21 @@ class TestDecideSuccess:
 
         assert result.raw_text == "Hello world"
         assert result.finish_reason == "stop"
-        assert result.usage == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        assert result.usage is not None
+        assert result.usage.to_dict() == {
+            "input_tokens": 10,
+            "input_cached_tokens": 3,
+            "output_tokens": 5,
+            "output_cached_tokens": 0,
+            "total_tokens": 15,
+        }
+        assert result.raw_usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": {"cached_tokens": 3},
+            "completion_tokens_details": {"cached_tokens": 0},
+        }
         body = mock_client.post.call_args.kwargs["json"]
         assert "response_format" not in body
 
@@ -435,6 +455,21 @@ class TestDecideErrors:
         assert len(seen) == 1
         assert seen[0].parsed_payload is None
         assert seen[0].raw_text == mock_resp.text
+        assert seen[0].usage is not None
+        assert seen[0].usage.to_dict() == {
+            "input_tokens": 10,
+            "input_cached_tokens": 3,
+            "output_tokens": 5,
+            "output_cached_tokens": 0,
+            "total_tokens": 15,
+        }
+        assert seen[0].raw_usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": {"cached_tokens": 3},
+            "completion_tokens_details": {"cached_tokens": 0},
+        }
 
     @pytest.mark.asyncio
     async def test_transport_error_raises_502(self):

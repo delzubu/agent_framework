@@ -15,7 +15,10 @@ from agent_framework.agent import (
 from agent_framework.agents.agent import CallbackRoutingPolicy
 from agent_framework.config import load_host_config
 from agent_framework.host import AgentHost
+from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
 from agent_framework.model import ModelContext, ModelResponse
+from agent_framework.model import LlmUsage
+from agent_framework.tracing import CompositeRuntimeTracer
 
 
 
@@ -32,6 +35,44 @@ class FakeModelDriver:
     def decide(self, *, agent_id, provider_name, model_names, temperature, context: ModelContext):
         payload = self._payloads.pop(0)
         return ModelResponse(payload=payload, raw_text=str(payload))
+
+
+class FakeUsageDriver(FakeModelDriver):
+    def __init__(self, payloads, usages):
+        super().__init__(payloads)
+        self._usages = list(usages)
+
+    def decide(self, *, agent_id, provider_name, model_names, temperature, context: ModelContext):
+        response = super().decide(
+            agent_id=agent_id,
+            provider_name=provider_name,
+            model_names=model_names,
+            temperature=temperature,
+            context=context,
+        )
+        response_usage = self._usages.pop(0)
+        event = type(
+            "RespTrace",
+            (),
+            {
+                "agent_id": agent_id,
+                "provider_name": provider_name,
+                "model_name": model_names[0],
+                "raw_text": response.raw_text,
+                "parsed_payload": dict(response.payload),
+                "usage": response_usage,
+                "raw_usage": response_usage.to_dict(),
+                "run_id": context.run_id,
+            },
+        )()
+        if callable(self.on_response_trace):
+            self.on_response_trace(event)
+        return ModelResponse(
+            payload=response.payload,
+            raw_text=response.raw_text,
+            usage=response_usage,
+            raw_usage=response_usage.to_dict(),
+        )
 
 
 def write_env(path: Path, root_agent: str = 'root') -> None:
@@ -188,6 +229,49 @@ You are the root narrator.
     )
     result = host.run_root(initial_instruction='test instruction')
     assert result.message == 'ok'
+
+
+def test_host_runtime_usage_totals_include_subagent_usage(tmp_path: Path) -> None:
+    host, _ = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="parser",
+        decisions=[
+            {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
+            {"kind": "final_message", "message": "child done"},
+            {"kind": "final_message", "message": "parent done"},
+        ],
+    )
+    usage_driver = FakeUsageDriver(
+        payloads=[
+            {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
+            {"kind": "final_message", "message": "child done"},
+            {"kind": "final_message", "message": "parent done"},
+        ],
+        usages=[
+            LlmUsage(input_tokens=10, input_cached_tokens=2, output_tokens=5, total_tokens=15),
+            LlmUsage(input_tokens=7, input_cached_tokens=1, output_tokens=3, total_tokens=10),
+            LlmUsage(input_tokens=4, input_cached_tokens=0, output_tokens=2, total_tokens=6),
+        ],
+    )
+    host.model_driver = usage_driver
+    host.runtime_tracer = CompositeRuntimeTracer()
+    host._llm_traces_wired = False
+    wire_llm_traces_to_runtime_tracer(host)
+    host.run_root(initial_instruction="go")
+
+    parent_run_id = next(run_id for run_id, reg in host._run_registry.items() if reg.agent_id == "orchestrator")
+    child_run_id = next(run_id for run_id, reg in host._run_registry.items() if reg.agent_id == "parser")
+
+    parent_usage = host.finish_runtime_usage(run_id=parent_run_id)
+    child_usage = host.finish_runtime_usage(run_id=child_run_id)
+    session_totals = host.session_usage_totals()
+
+    assert child_usage["usage_self"]["total_tokens"] == 10
+    assert child_usage["usage_inclusive"]["total_tokens"] == 10
+    assert parent_usage["usage_self"]["total_tokens"] == 21
+    assert parent_usage["usage_inclusive"]["total_tokens"] == 31
+    assert session_totals["total_tokens"] == 31
 
 
 def test_agent_decision_preserves_callback_to_caller_kind() -> None:

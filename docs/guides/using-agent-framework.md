@@ -1614,8 +1614,38 @@ Run your agent in the UI.  Open the Spans pane.  Set the log level to `debug`.  
 - Sub-agent calls nested under the parent agent
 - LLM request and response events (with the full message list if you expand them)
 - Evaluator trace events when you click Evaluate
+- Normalized token usage summaries for the session and for each completed agent run
 
 This is much faster than reading JSONL files.  See [Using the agent evaluator](using-agent-evaluator.md) for the full UI guide.
+
+### Understanding evaluator token usage
+
+LLM usage is normalized at the provider boundary before it enters the runtime trace.  OpenAI Responses and DIAL chat completions use different native field names, but the framework converts both into the same shape:
+
+```json
+{
+  "input_tokens": 120,
+  "input_cached_tokens": 80,
+  "output_tokens": 32,
+  "output_cached_tokens": 0,
+  "total_tokens": 152
+}
+```
+
+The evaluator treats trace events as the source of truth.  Per-call evidence comes from `llm.response`, while the UI and CLI prefer the already-aggregated totals published by the runtime:
+
+- `runtime.agent_finished.usage_self`: tokens used directly by that agent run
+- `runtime.agent_finished.usage_inclusive`: that run plus all descendant sub-agent runs
+- `runtime.session_finished.usage_session_totals`: totals for the whole session, available immediately after execution
+
+`output_cached_tokens` is currently `0` for OpenAI Responses and DIAL unless a provider later exposes a real output-cache metric.  The framework does not infer unsupported provider metrics.
+
+In the evaluator:
+
+- the Run summary shows session totals immediately after a run
+- the trace-side usage panel can show either session totals or the selected run's totals
+- the Flow tab shows compact inclusive totals next to each agent node
+- CLI `run` / `evaluate` output includes the same normalized session usage summary
 
 ### Diagnosing common problems
 

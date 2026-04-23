@@ -58,6 +58,17 @@ def test_docs_relative_url_targets_resolve_to_existing_routes() -> None:
     assert not missing, "Broken docs routes:\n" + "\n".join(sorted(missing))
 
 
+def test_usage_accounting_docs_are_present() -> None:
+    guide = (ROOT / "docs" / "guides" / "using-agent-framework.md").read_text(encoding="utf-8")
+    dev_ref = (PAGES_ROOT / "reference" / "developer-documentation.md").read_text(encoding="utf-8")
+
+    assert "runtime.agent_finished.usage_self" in guide
+    assert "runtime.session_finished.usage_session_totals" in guide
+    assert "output_cached_tokens" in guide
+    assert "LLM Usage Accounting" in dev_ref
+    assert "usage_inclusive" in dev_ref
+
+
 def _collect_routes() -> set[str]:
     routes = {"/"}
     for path in PAGES_ROOT.rglob("*.md"):

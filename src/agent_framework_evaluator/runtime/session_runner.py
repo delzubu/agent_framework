@@ -14,9 +14,20 @@ from agent_framework.tracing_bridge import active_tracer_scope
 
 from agent_framework_evaluator.models import SessionContext
 from agent_framework_evaluator.runtime.setup_loader import load_setup_module
+from agent_framework_evaluator.usage import EvaluatorUsageTracker
 
 HostFactory = Callable[..., Any]
 _LOGGER = logging.getLogger(__name__)
+
+
+class _UsageTraceSubscriber:
+    """Adapter so the evaluator usage tracker can subscribe to runtime events."""
+
+    def __init__(self, tracker: EvaluatorUsageTracker) -> None:
+        self._tracker = tracker
+
+    def consume(self, event: Any) -> None:
+        self._tracker.consume_trace_event(event)
 
 
 def _agent_result_payload(result: AgentResult) -> dict[str, object]:
@@ -70,6 +81,7 @@ class SessionRunner:
         self._last_setup_module: Any | None = None
         self._last_session_context: SessionContext | None = None
         self._suite_teardown_done: bool = False
+        self._last_usage_summary: dict[str, Any] | None = None
 
     def _new_session_id(self) -> str:
         return str(uuid4())
@@ -99,6 +111,26 @@ class SessionRunner:
                 host.runtime_tracer.subscribe(receive_sub)
         return host
 
+    def _build_usage_summary(
+        self,
+        *,
+        local_usage_tracker: EvaluatorUsageTracker | None,
+        session_usage_totals: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary = (
+            local_usage_tracker.snapshot()
+            if local_usage_tracker is not None
+            else {
+                "session_totals": {},
+                "agents": {},
+                "runs": {},
+            }
+        )
+        summary["session_totals"] = dict(session_usage_totals)
+        summary.setdefault("agents", {})
+        summary.setdefault("runs", {})
+        return summary
+
     def run_once(
         self,
         *,
@@ -125,6 +157,15 @@ class SessionRunner:
         )
         self._suite_teardown_done = False
         sid = session_id or self._new_session_id()
+        local_usage_tracker: EvaluatorUsageTracker | None = None
+        effective_runtime_tracer = runtime_tracer
+        if effective_runtime_tracer is None:
+            from agent_framework.tracing import CompositeRuntimeTracer
+
+            local_usage_tracker = EvaluatorUsageTracker()
+            effective_runtime_tracer = CompositeRuntimeTracer(
+                subscribers=[_UsageTraceSubscriber(local_usage_tracker)]
+            )
         resolved_agent_id = normalize_agent_id(agent_id)
         session_context = SessionContext(
             session_id=sid,
@@ -169,9 +210,9 @@ class SessionRunner:
         host = self._create_host(
             session_context,
             user_comm=user_comm,
-            runtime_tracer=runtime_tracer,
+            runtime_tracer=effective_runtime_tracer,
         )
-        if runtime_tracer is not None:
+        if effective_runtime_tracer is not None:
             from agent_framework.agent_event_publisher import agent_events
             from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
 
@@ -182,8 +223,10 @@ class SessionRunner:
             _wire_one_shot_capture(host, on_first_llm_call)
         prev_overlay = host.trace_context_overlay
         host.trace_context_overlay = TraceContext(session_id=sid)
+        result: AgentResult | None = None
+        run_error: BaseException | None = None
         try:
-            with active_tracer_scope(runtime_tracer, host.trace_context_overlay):
+            with active_tracer_scope(effective_runtime_tracer, host.trace_context_overlay):
                 _LOGGER.debug(
                     "SessionRunner.run_once active entry",
                     extra={
@@ -226,7 +269,8 @@ class SessionRunner:
                     _LOGGER.debug("test_teardown entry")
                     setup_module.test_teardown({"prompt": prompt}, session_context)
                     _LOGGER.debug("test_teardown exit")
-        except Exception:
+        except Exception as exc:
+            run_error = exc
             _LOGGER.error(
                 "SessionRunner.run_once failed",
                 exc_info=True,
@@ -241,12 +285,19 @@ class SessionRunner:
                 },
             )
             _LOGGER.debug("SessionRunner.run_once failure stack", exc_info=True)
-            raise
         finally:
             host.trace_context_overlay = prev_overlay
-        payload = _agent_result_payload(result)
-        if runtime_tracer is not None:
-            runtime_tracer.publish(
+        session_usage_totals: dict[str, Any] = {}
+        session_usage_totals_fn = getattr(host, "session_usage_totals", None)
+        if callable(session_usage_totals_fn):
+            session_usage_totals = dict(session_usage_totals_fn())
+        self._last_usage_summary = self._build_usage_summary(
+            local_usage_tracker=local_usage_tracker,
+            session_usage_totals=session_usage_totals,
+        )
+        status = result.status if result is not None else "failed"
+        if effective_runtime_tracer is not None:
+            effective_runtime_tracer.publish(
                 make_trace_event(
                     channel="runtime",
                     level="info",
@@ -257,10 +308,17 @@ class SessionRunner:
                         session_id=session_context.session_id,
                         agent_id=resolved_agent_id,
                     ),
-                    payload={"status": result.status},
+                    payload={
+                        "status": status,
+                        "usage_session_totals": session_usage_totals,
+                    },
                 )
             )
-        with active_tracer_scope(runtime_tracer, TraceContext(session_id=sid)):
+            self._last_usage_summary = self._build_usage_summary(
+                local_usage_tracker=local_usage_tracker,
+                session_usage_totals=session_usage_totals,
+            )
+        with active_tracer_scope(effective_runtime_tracer, TraceContext(session_id=sid)):
             _LOGGER.info(
                 "session finished",
                 extra={
@@ -269,23 +327,29 @@ class SessionRunner:
                     "trace_payload": {
                         "session_id": sid,
                         "agent_id": resolved_agent_id,
-                        "status": result.status,
+                        "status": status,
+                        "usage_session_totals": session_usage_totals,
                     },
                 },
             )
-            _LOGGER.debug(
-                "SessionRunner.run_once exit",
-                extra={
-                    "trace_kind": "runtime.session_runner.exit",
-                    "trace_title": "SessionRunner.run_once exit",
-                    "trace_payload": {
-                        "session_id": sid,
-                        "agent_id": resolved_agent_id,
-                        "result": payload,
+            if result is not None:
+                payload = _agent_result_payload(result)
+                _LOGGER.debug(
+                    "SessionRunner.run_once exit",
+                    extra={
+                        "trace_kind": "runtime.session_runner.exit",
+                        "trace_title": "SessionRunner.run_once exit",
+                        "trace_payload": {
+                            "session_id": sid,
+                            "agent_id": resolved_agent_id,
+                            "result": payload,
+                        },
                     },
-                },
-            )
-        return payload
+                )
+        if run_error is not None:
+            raise run_error
+        assert result is not None
+        return _agent_result_payload(result)
 
     def suite_teardown_if_any(self) -> None:
         """Invoke ``suite_teardown`` on the last loaded setup module, if present."""

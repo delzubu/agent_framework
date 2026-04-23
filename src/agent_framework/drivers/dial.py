@@ -39,6 +39,7 @@ from agent_framework.model import (
     ProviderRequestTrace,
     ProviderResponseTrace,
     _FallbackMixin,
+    normalize_chat_completions_usage,
     parse_json_object_model_output,
     resolved_response_format_dict,
 )
@@ -278,6 +279,8 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
                     "status_code": exc.status_code,
                     "message": str(exc),
                 },
+                usage=None,
+                raw_usage=None,
                 run_id=context.run_id,
             )
         )
@@ -347,6 +350,10 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
 
             assert response is not None
             response_data, raw_response_text = response
+            response_raw_usage = response_data.get("usage")
+            if not isinstance(response_raw_usage, dict):
+                response_raw_usage = None
+            response_usage = normalize_chat_completions_usage(response_raw_usage)
             try:
                 result = self._parse_response(response_data, context)
             except Exception:
@@ -358,6 +365,8 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
                             model_name=model,
                             raw_text=raw_response_text,
                             parsed_payload=None,
+                            usage=response_usage,
+                            raw_usage=response_raw_usage,
                             run_id=context.run_id,
                         )
                     )
@@ -371,6 +380,8 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
                         model_name=model,
                         raw_text=raw_response_text,
                         parsed_payload=dict(result.payload) if result.payload else None,
+                        usage=result.usage,
+                        raw_usage=result.raw_usage,
                         run_id=context.run_id,
                     )
                 )
@@ -530,9 +541,9 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
 
         # Usage
         raw_usage = data.get("usage")
-        usage: dict[str, int] | None = None
-        if raw_usage:
-            usage = {k: v for k, v in raw_usage.items() if isinstance(v, int)}
+        if not isinstance(raw_usage, dict):
+            raw_usage = None
+        usage = normalize_chat_completions_usage(raw_usage)
 
         # Build payload
         if tool_calls:
@@ -594,6 +605,7 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
+            raw_usage=raw_usage,
         )
 
 

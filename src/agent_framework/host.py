@@ -79,6 +79,7 @@ from agent_framework.tracing import (
 )
 from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework.user_communication import NullUserCommunication, UserCommunication
+from agent_framework.usage_tracking import RuntimeUsageTracker
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -180,6 +181,7 @@ class AgentHost:
     _pending_interactions_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _run_registry: dict[str, RunRegistration] = field(default_factory=dict, repr=False)
     _run_registry_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    runtime_usage_tracker: RuntimeUsageTracker = field(default_factory=RuntimeUsageTracker, repr=False)
 
     @property
     def audit_tracer(self) -> InMemoryAuditTracer | None:
@@ -1503,6 +1505,34 @@ class AgentHost:
                 caller_id=caller_id,
                 parent_run_id=parent_run_id,
             )
+        self.runtime_usage_tracker.record_run_started(
+            run_id=run_id,
+            agent_id=agent_id,
+            parent_run_id=parent_run_id,
+        )
+
+    def record_runtime_llm_usage(self, *, run_id: str | None, usage: Any) -> None:
+        """Feed normalized LLM usage into the per-session runtime tracker."""
+        if not run_id:
+            return
+        self.runtime_usage_tracker.record_llm_usage(run_id=run_id, usage=usage)
+
+    def finish_runtime_usage(self, *, run_id: str | None) -> dict[str, dict[str, int]]:
+        """Return canonical self and inclusive usage totals for a completed run."""
+        if not run_id:
+            empty = {
+                "input_tokens": 0,
+                "input_cached_tokens": 0,
+                "output_tokens": 0,
+                "output_cached_tokens": 0,
+                "total_tokens": 0,
+            }
+            return {"usage_self": dict(empty), "usage_inclusive": dict(empty)}
+        return self.runtime_usage_tracker.finish_run(run_id=run_id)
+
+    def session_usage_totals(self) -> dict[str, int]:
+        """Return session-wide normalized usage totals."""
+        return self.runtime_usage_tracker.session_totals()
 
     def get_run_registration(self, run_id: str | None) -> RunRegistration | None:
         """Return the stored run lineage record, if any."""

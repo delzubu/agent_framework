@@ -16,6 +16,7 @@ from agent_framework.model import (
     ProviderRequestTrace,
     ProviderResponseTrace,
     _FallbackMixin,
+    normalize_openai_usage,
     openai_responses_text_format_field,
     parse_json_object_model_output,
     resolved_response_format_dict,
@@ -68,6 +69,42 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
         if hasattr(response, "to_dict"):
             return json.dumps(response.to_dict(), indent=2, ensure_ascii=False)
         return getattr(response, "output_text", "") or str(response)
+
+    @staticmethod
+    def _usage_payload(value: Any) -> dict[str, Any] | None:
+        """Return a plain JSON-serializable usage dict from an SDK usage object."""
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return dict(value)
+        if hasattr(value, "model_dump"):
+            dumped = value.model_dump()
+            return dumped if isinstance(dumped, dict) else None
+        if hasattr(value, "to_dict"):
+            dumped = value.to_dict()
+            return dumped if isinstance(dumped, dict) else None
+        payload: dict[str, Any] = {}
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "input_tokens_details",
+            "output_tokens_details",
+        ):
+            field_value = getattr(value, name, None)
+            if field_value is None:
+                continue
+            if isinstance(field_value, dict):
+                payload[name] = dict(field_value)
+            elif hasattr(field_value, "model_dump"):
+                dumped = field_value.model_dump()
+                payload[name] = dumped if isinstance(dumped, dict) else field_value
+            elif hasattr(field_value, "to_dict"):
+                dumped = field_value.to_dict()
+                payload[name] = dumped if isinstance(dumped, dict) else field_value
+            else:
+                payload[name] = field_value
+        return payload or None
 
     def decide(
         self,
@@ -126,6 +163,8 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
             response = client.responses.create(**create_kwargs)
             raw_response_text = self._raw_response_text(response)
             raw_text = response.output_text.strip()
+            raw_usage = self._usage_payload(getattr(response, "usage", None))
+            usage = normalize_openai_usage(getattr(response, "usage", None))
             parsed_payload: dict[str, object] | None = None
             normalized_text = raw_text
             if context.response_mode == "text":
@@ -145,6 +184,8 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
                                 model_name=model_name,
                                 raw_text=raw_response_text,
                                 parsed_payload=None,
+                                usage=usage,
+                                raw_usage=raw_usage,
                                 run_id=context.run_id,
                             )
                         )
@@ -157,10 +198,17 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
                         model_name=model_name,
                         raw_text=raw_response_text,
                         parsed_payload=parsed_payload,
+                        usage=usage,
+                        raw_usage=raw_usage,
                         run_id=context.run_id,
                     )
                 )
-            return ModelResponse(payload=parsed_payload, raw_text=normalized_text)
+            return ModelResponse(
+                payload=parsed_payload,
+                raw_text=normalized_text,
+                usage=usage,
+                raw_usage=raw_usage,
+            )
 
         return self._fallback_decide(model_names, _try_model)
 

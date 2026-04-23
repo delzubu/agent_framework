@@ -10,6 +10,7 @@ from agent_framework.web_communication import WebUserCommunication
 
 from agent_framework_evaluator.runtime.debug_subscriber import DebuggerSubscriber
 from agent_framework_evaluator.runtime.session_runner import SessionRunner
+from agent_framework_evaluator.usage import EvaluatorUsageTracker
 
 
 @dataclass(slots=True)
@@ -22,6 +23,8 @@ class SessionRecord:
     runner: SessionRunner
     last_run_prompts: dict[str, Any] | None = None
     last_run_result: dict[str, Any] | None = None
+    last_usage_summary: dict[str, Any] | None = None
+    usage_tracker: EvaluatorUsageTracker | None = None
     #: From WebSocket ``run`` message: ``standard`` (auto-answer confirmations/permissions) vs
     #: ``no_callbacks`` (only auto-answer text prompts; user handles confirm/permission).
     case_run_mode: str = "standard"
@@ -46,6 +49,7 @@ class SessionManager:
             debugger=debugger,
             env_path=env_path,
             runner=runner,
+            usage_tracker=EvaluatorUsageTracker(),
         )
         self._sessions[session_id] = rec
         return rec

@@ -211,12 +211,24 @@ def _evaluation_trace_scope(rec: Any, session_id: str):
 class _AsyncQueueSubscriber:
     """Forward trace events from a sync worker thread into an asyncio queue."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue[Any]) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        queue: asyncio.Queue[Any],
+        *,
+        usage_tracker: Any | None = None,
+    ) -> None:
         self._loop = loop
         self._queue = queue
+        self._usage_tracker = usage_tracker
 
     def consume(self, event: Any) -> None:
         data = asdict(event)
+        if self._usage_tracker is not None:
+            try:
+                self._usage_tracker.consume_trace_event(data)
+            except Exception:
+                pass
 
         def put() -> None:
             try:
@@ -250,6 +262,15 @@ def _error_payload_for_evaluator(exc: BaseException) -> dict[str, Any]:
         "error_type": type(exc).__name__,
         "message": str(exc),
     }
+
+
+def _current_usage_summary(rec: Any) -> dict[str, Any] | None:
+    summary = getattr(rec.runner, "_last_usage_summary", None)
+    if isinstance(summary, dict):
+        return summary
+    if rec.usage_tracker is not None:
+        return rec.usage_tracker.snapshot()
+    return None
 
 
 def _publish_evaluator_run_failure(tracer: Any, session_id: str, exc: BaseException) -> None:
@@ -562,6 +583,17 @@ def create_app() -> FastAPI:
             "user_messages": [str(x) for x in um],
         }
 
+    @app.get("/api/sessions/{session_id}/usage-summary")
+    def usage_summary(session_id: str) -> dict[str, Any]:
+        rec = session_manager.get(session_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        if rec.last_usage_summary is not None:
+            return rec.last_usage_summary
+        if rec.usage_tracker is not None:
+            return rec.usage_tracker.snapshot()
+        return {"session_totals": {}, "agents": {}, "runs": {}}
+
     @app.get("/api/initializers")
     def list_initializers(env_path: str = ".env") -> dict[str, Any]:
         env_file = resolve_env_path(env_path)
@@ -669,8 +701,13 @@ def create_app() -> FastAPI:
                     )
 
                 try:
+                    if rec.usage_tracker is not None:
+                        rec.usage_tracker.reset()
                     run_result = await loop.run_in_executor(_executor, run_case)
                     rec.last_run_result = run_result
+                    rec.last_usage_summary = (
+                        rec.usage_tracker.snapshot() if rec.usage_tracker is not None else None
+                    )
                     agent_msg = select_agent_result_field(run_result, result_field)
                     if agent_msg is None:
                         raise ValueError(f"result_field '{result_field}' not present in agent result")
@@ -705,12 +742,14 @@ def create_app() -> FastAPI:
                         "llm_result": llm,
                         "code_results": code_results,
                         "average_score": average,
+                        "usage_summary": rec.last_usage_summary,
                     }) + "\n"
                 except Exception as exc:
                     yield json.dumps({
                         "case_index": idx,
                         "title": case.get("title", f"Case {idx}"),
                         "error": str(exc),
+                        "usage_summary": _current_usage_summary(rec),
                     }) + "\n"
 
         return StreamingResponse(stream(), media_type="application/x-ndjson")
@@ -725,7 +764,7 @@ def create_app() -> FastAPI:
 
         loop = asyncio.get_running_loop()
         trace_queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=2000)
-        bridge = _AsyncQueueSubscriber(loop, trace_queue)
+        bridge = _AsyncQueueSubscriber(loop, trace_queue, usage_tracker=rec.usage_tracker)
         rec.tracer.subscribe(bridge)
         stop = asyncio.Event()
 
@@ -799,6 +838,9 @@ def create_app() -> FastAPI:
                         "user_messages": [],
                     }
                     rec.last_run_result = None
+                    rec.last_usage_summary = None
+                    if rec.usage_tracker is not None:
+                        rec.usage_tracker.reset()
 
                     def on_first_llm_call(trace: Any) -> None:
                         payload = getattr(trace, "input_payload", None)
@@ -822,10 +864,17 @@ def create_app() -> FastAPI:
                     try:
                         result = await asyncio.get_running_loop().run_in_executor(_executor, work)
                         rec.last_run_result = result
+                        rec.last_usage_summary = (
+                            rec.usage_tracker.snapshot() if rec.usage_tracker is not None else None
+                        )
                     except Exception as exc:
+                        rec.last_usage_summary = _current_usage_summary(rec)
                         _publish_evaluator_run_failure(rec.tracer, session_id, exc)
+                        payload = _error_payload_for_evaluator(exc)
+                        if rec.last_usage_summary is not None:
+                            payload["usage_summary"] = rec.last_usage_summary
                         await websocket.send_text(
-                            json.dumps(_error_payload_for_evaluator(exc), ensure_ascii=False)
+                            json.dumps(payload, ensure_ascii=False)
                         )
                         continue
                     try:
@@ -843,6 +892,7 @@ def create_app() -> FastAPI:
                                         "instruction_entered": "",
                                         "user_messages": [],
                                     },
+                                    "usage_summary": rec.last_usage_summary,
                                 },
                                 ensure_ascii=False,
                             )

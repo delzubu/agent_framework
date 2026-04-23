@@ -95,6 +95,7 @@
               <div class="batch-summary-header">
                 <span class="batch-summary-title">Run summary</span>
               </div>
+              <div id="run-usage-summary" class="run-usage-summary" hidden></div>
               <div class="batch-summary-overall">
                 <span class="batch-summary-overall-label">Overall score</span>
                 <div class="batch-summary-avg-wrap">
@@ -108,6 +109,7 @@
                     <tr>
                       <th scope="col">Test case</th>
                       <th scope="col" class="batch-summary-th-score">Score</th>
+                      <th scope="col" class="batch-summary-th-usage">Usage</th>
                     </tr>
                   </thead>
                   <tbody id="batch-summary-table-body"></tbody>
@@ -154,6 +156,7 @@
     </main>
     <aside id="trace-pane">
       <h2 class="trace-pane-title">Trace</h2>
+      <section id="trace-usage-panel" class="trace-usage-panel" hidden></section>
       <div id="trace-controls" class="trace-controls">
         <div class="channel-toggles" id="channel-toggles">
           <label><input type="checkbox" id="ch-runtime" data-channel="runtime" checked> runtime</label>

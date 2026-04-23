@@ -86,12 +86,90 @@ class TestGetDriverCapabilities:
 
 
 class TestOpenAiDriverTracing:
+    def test_decide_normalizes_usage_and_preserves_raw_usage(self):
+        driver = OpenAiModelDriver(api_key="x")
+
+        class FakeUsageDetails:
+            def __init__(self, cached_tokens):
+                self.cached_tokens = cached_tokens
+
+            def model_dump(self):
+                return {"cached_tokens": self.cached_tokens}
+
+        class FakeUsage:
+            input_tokens = 120
+            output_tokens = 45
+            total_tokens = 165
+            input_tokens_details = FakeUsageDetails(80)
+            output_tokens_details = FakeUsageDetails(0)
+
+            def model_dump(self):
+                return {
+                    "input_tokens": self.input_tokens,
+                    "output_tokens": self.output_tokens,
+                    "total_tokens": self.total_tokens,
+                    "input_tokens_details": {"cached_tokens": 80},
+                    "output_tokens_details": {"cached_tokens": 0},
+                }
+
+        class FakeResponse:
+            output_text = '{"kind":"final_message","message":"ok"}'
+            usage = FakeUsage()
+
+            def model_dump_json(self, indent=2):
+                return '{"id":"resp_1","output_text":"{\\"kind\\":\\"final_message\\",\\"message\\":\\"ok\\"}"}'
+
+        class FakeClient:
+            def __init__(self):
+                self.responses = SimpleNamespace(create=lambda **kwargs: FakeResponse())
+
+        driver._client = FakeClient()
+        ctx = ModelContext(
+            system_prompt="",
+            user_prompt="hi",
+            messages=({"role": "user", "content": "hi"},),
+        )
+
+        result = driver.decide(
+            agent_id="a1",
+            provider_name="openai",
+            model_names=("gpt-4o-mini",),
+            temperature=0.0,
+            context=ctx,
+        )
+
+        assert result.usage is not None
+        assert result.usage.to_dict() == {
+            "input_tokens": 120,
+            "input_cached_tokens": 80,
+            "output_tokens": 45,
+            "output_cached_tokens": 0,
+            "total_tokens": 165,
+        }
+        assert result.raw_usage == {
+            "input_tokens": 120,
+            "output_tokens": 45,
+            "total_tokens": 165,
+            "input_tokens_details": {"cached_tokens": 80},
+            "output_tokens_details": {"cached_tokens": 0},
+        }
+
     def test_parse_error_emits_raw_response_trace_before_raise(self):
         driver = OpenAiModelDriver(api_key="x")
         seen = []
 
+        class FakeUsage:
+            def model_dump(self):
+                return {
+                    "input_tokens": 12,
+                    "output_tokens": 0,
+                    "total_tokens": 12,
+                    "input_tokens_details": {"cached_tokens": 4},
+                }
+
         class FakeResponse:
             output_text = "not json"
+            usage = FakeUsage()
 
             def model_dump_json(self, indent=2):
                 return '{"id":"resp_1","output_text":"not json"}'
@@ -120,6 +198,20 @@ class TestOpenAiDriverTracing:
         assert len(seen) == 1
         assert seen[0].parsed_payload is None
         assert seen[0].raw_text == '{"id":"resp_1","output_text":"not json"}'
+        assert seen[0].usage is not None
+        assert seen[0].usage.to_dict() == {
+            "input_tokens": 12,
+            "input_cached_tokens": 4,
+            "output_tokens": 0,
+            "output_cached_tokens": 0,
+            "total_tokens": 12,
+        }
+        assert seen[0].raw_usage == {
+            "input_tokens": 12,
+            "output_tokens": 0,
+            "total_tokens": 12,
+            "input_tokens_details": {"cached_tokens": 4},
+        }
 
 
 # ---------------------------------------------------------------------------

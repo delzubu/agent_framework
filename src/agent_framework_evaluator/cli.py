@@ -168,11 +168,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
             setup_path=Path(args.setup) if args.setup else None,
             runtime_tracer=merged_tracer,
         )
+        usage_summary = getattr(runner, "_last_usage_summary", None)
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    payload = {"status": result["status"], "message": result["message"]}
+    payload = {
+        "status": result["status"],
+        "message": result["message"],
+        "usage_summary": usage_summary or {"session_totals": {}, "agents": {}, "runs": {}},
+    }
     text = json.dumps(payload, indent=2, ensure_ascii=False)
     if args.output:
         Path(args.output).write_text(text + "\n", encoding="utf-8")
@@ -215,6 +220,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             prompt=prompt.rstrip() + CASE_NO_CALLBACKS_POSTFIX,
             setup_path=setup_path,
         )
+        usage_summary = getattr(runner, "_last_usage_summary", None)
         selected = select_agent_result_field(run_result, result_field)
         if selected is None:
             print(
@@ -239,6 +245,12 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             "average_score": average,
             "selected_payload": selected,
             "result_field": result_field,
+            "usage_summary": usage_summary or {"session_totals": {}, "agents": {}, "runs": {}},
+            "session_usage_totals": (
+                dict((usage_summary or {}).get("session_totals") or {})
+                if isinstance(usage_summary, dict)
+                else {}
+            ),
         }
 
     if args.case_file:
@@ -336,7 +348,9 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             )
             avg = result["average_score"]
             verdict = "PASS" if float(avg) >= 7.0 else "FAIL"
-            print(f"  score={float(avg):.1f}  {verdict}")
+            totals = result.get("session_usage_totals") or {}
+            tokens = totals.get("total_tokens", "—") if isinstance(totals, dict) else "—"
+            print(f"  score={float(avg):.1f}  tokens={tokens}  {verdict}")
             if args.verbose:
                 print(f"  run_result={json.dumps(result['run_result'], ensure_ascii=False, default=str)}")
             batch_results.append({"case_index": i, "title": title, **result})

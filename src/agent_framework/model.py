@@ -471,6 +471,132 @@ class ModelContext:
     response_format: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LlmUsage:
+    """Normalized cross-provider token accounting for one model response."""
+
+    input_tokens: int = 0
+    input_cached_tokens: int = 0
+    output_tokens: int = 0
+    output_cached_tokens: int = 0
+    total_tokens: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        """Return a JSON-serializable mapping."""
+        return {
+            "input_tokens": self.input_tokens,
+            "input_cached_tokens": self.input_cached_tokens,
+            "output_tokens": self.output_tokens,
+            "output_cached_tokens": self.output_cached_tokens,
+            "total_tokens": self.total_tokens,
+        }
+
+
+def _coerce_usage_int(value: Any) -> int:
+    """Best-effort integer coercion for provider token fields."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_openai_usage(raw: Any) -> LlmUsage | None:
+    """Normalize OpenAI Responses API usage into the shared contract."""
+    if raw is None:
+        return None
+    if isinstance(raw, LlmUsage):
+        return raw
+    if isinstance(raw, dict):
+        payload = dict(raw)
+    elif hasattr(raw, "model_dump"):
+        dumped = raw.model_dump()
+        if not isinstance(dumped, dict):
+            return None
+        payload = dumped
+    elif hasattr(raw, "to_dict"):
+        dumped = raw.to_dict()
+        if not isinstance(dumped, dict):
+            return None
+        payload = dumped
+    else:
+        payload = {}
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "input_tokens_details",
+            "output_tokens_details",
+        ):
+            value = getattr(raw, name, None)
+            if value is not None:
+                payload[name] = value
+    if not payload:
+        return None
+
+    input_details = payload.get("input_tokens_details")
+    input_cached_tokens = (
+        _coerce_usage_int(input_details.get("cached_tokens"))
+        if isinstance(input_details, dict)
+        else _coerce_usage_int(getattr(input_details, "cached_tokens", 0))
+    )
+    input_tokens = _coerce_usage_int(payload.get("input_tokens"))
+    output_tokens = _coerce_usage_int(payload.get("output_tokens"))
+    total_tokens = _coerce_usage_int(payload.get("total_tokens")) or (input_tokens + output_tokens)
+    return LlmUsage(
+        input_tokens=input_tokens,
+        input_cached_tokens=input_cached_tokens,
+        output_tokens=output_tokens,
+        output_cached_tokens=0,
+        total_tokens=total_tokens,
+    )
+
+
+def normalize_chat_completions_usage(raw: Any) -> LlmUsage | None:
+    """Normalize chat-completions usage into the shared contract."""
+    if raw is None:
+        return None
+    if isinstance(raw, LlmUsage):
+        return raw
+    if not isinstance(raw, dict):
+        if hasattr(raw, "model_dump"):
+            dumped = raw.model_dump()
+            if not isinstance(dumped, dict):
+                return None
+            raw = dumped
+        elif hasattr(raw, "to_dict"):
+            dumped = raw.to_dict()
+            if not isinstance(dumped, dict):
+                return None
+            raw = dumped
+        else:
+            raw = {
+                "prompt_tokens": getattr(raw, "prompt_tokens", None),
+                "completion_tokens": getattr(raw, "completion_tokens", None),
+                "total_tokens": getattr(raw, "total_tokens", None),
+                "prompt_tokens_details": getattr(raw, "prompt_tokens_details", None),
+                "completion_tokens_details": getattr(raw, "completion_tokens_details", None),
+            }
+    payload = dict(raw)
+    if not payload:
+        return None
+    input_details = payload.get("prompt_tokens_details")
+    input_cached_tokens = (
+        _coerce_usage_int(input_details.get("cached_tokens"))
+        if isinstance(input_details, dict)
+        else _coerce_usage_int(getattr(input_details, "cached_tokens", 0))
+    )
+    input_tokens = _coerce_usage_int(payload.get("prompt_tokens"))
+    output_tokens = _coerce_usage_int(payload.get("completion_tokens"))
+    total_tokens = _coerce_usage_int(payload.get("total_tokens")) or (input_tokens + output_tokens)
+    return LlmUsage(
+        input_tokens=input_tokens,
+        input_cached_tokens=input_cached_tokens,
+        output_tokens=output_tokens,
+        output_cached_tokens=0,
+        total_tokens=total_tokens,
+    )
+
+
 def resolved_response_format_dict(context: ModelContext) -> dict[str, Any] | None:
     """Return the effective chat-completions-style ``response_format`` dict.
 
@@ -534,15 +660,18 @@ class ModelResponse:
             drivers), or None if not applicable.
         finish_reason: Stop reason reported by the provider (e.g. ``"stop"``,
             ``"tool_calls"``, ``"length"``).
-        usage: Token usage reported by the provider, keyed by
-            ``"prompt_tokens"``, ``"completion_tokens"``, etc.
+        usage: Normalized token usage keyed by ``input_tokens``,
+            ``input_cached_tokens``, ``output_tokens``,
+            ``output_cached_tokens``, and ``total_tokens``.
+        raw_usage: Provider-native usage payload preserved for audit/tracing.
     """
 
     payload: dict[str, object]
     raw_text: str
     tool_calls: tuple[dict[str, Any], ...] | None = None
     finish_reason: str | None = None
-    usage: dict[str, int] | None = None
+    usage: LlmUsage | None = None
+    raw_usage: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,6 +695,8 @@ class ProviderResponseTrace:
     model_name: str
     raw_text: str
     parsed_payload: dict[str, object] | None = None
+    usage: LlmUsage | None = None
+    raw_usage: dict[str, Any] | None = None
     run_id: str | None = None
 
 
@@ -715,9 +846,12 @@ __all__ = [
     "CapabilityParameter",
     "DEFAULT_RESPONSE_MODE",
     "DriverCapabilities",
+    "LlmUsage",
     "ModelContext",
     "ModelDriverBase",
     "merge_runtime_system_into_messages",
+    "normalize_chat_completions_usage",
+    "normalize_openai_usage",
     "openai_responses_text_format_field",
     "ModelDriver",
     "ModelResponse",
