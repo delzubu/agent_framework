@@ -1618,6 +1618,28 @@ Run your agent in the UI.  Open the Spans pane.  Set the log level to `debug`.  
 
 This is much faster than reading JSONL files.  See [Using the agent evaluator](using-agent-evaluator.md) for the full UI guide.
 
+The evaluator can also override the model used by the agent under test without changing `.env` or adjacent agent runtime files.  This is separate from `DEFAULT_EVAL_MODEL`, which still controls the evaluator/scoring LLM.
+
+Two override scopes are supported:
+
+- `root_only` — only the tested/top-level agent uses the selected override model
+- `all_agents` — every agent invoked during that run uses the selected override model
+
+The UI dropdown is populated from `.env` `DEFAULT_MODEL` and remains empty by default.  Initializers can prefill it with `DEFAULT_AGENT_MODEL_OVERRIDE` / `get_default_agent_model_override()` and `DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE` / `get_default_agent_model_override_scope()`.
+
+```bash
+python -m agent_framework_evaluator web \
+  --env .env \
+  --agent-model-override gpt-4.1 \
+  --agent-model-override-scope root_only
+
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --initializer eval/initializers/customer_support_init.py \
+  --agent-model-override gpt-4.1 \
+  --agent-model-override-scope all_agents
+```
+
 ### Understanding evaluator token usage
 
 LLM usage is normalized at the provider boundary before it enters the runtime trace.  OpenAI Responses and DIAL chat completions use different native field names, but the framework converts both into the same shape:

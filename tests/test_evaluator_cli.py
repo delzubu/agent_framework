@@ -32,8 +32,12 @@ def test_evaluator_cli_has_web_and_run_subcommands() -> None:
     assert args.env == "custom/.env"
     assert args.agent == "myagent"
     assert args.initializer == "seed.py"
+    assert args.agent_model_override is None
+    assert args.agent_model_override_scope == "root_only"
     args = parser.parse_args(["run", "--agent", "root", "--prompt", "hi"])
     assert args.command == "run"
+    assert args.agent_model_override is None
+    assert args.agent_model_override_scope == "root_only"
 
 
 def test_create_app_exists() -> None:
@@ -704,6 +708,37 @@ def test_ws_run_handler_applies_no_callbacks_postfix(monkeypatch: pytest.MonkeyP
     assert CASE_NO_CALLBACKS_POSTFIX.strip() in received_prompts[0]
 
 
+def test_ws_run_handler_passes_agent_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_once(self: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.send_json(
+            {
+                "type": "run",
+                "agent_id": "root",
+                "prompt": "original prompt",
+                "case_run_mode": "standard",
+                "agent_model_override": "gpt-4o",
+                "agent_model_override_scope": "all_agents",
+            }
+        )
+        for _ in range(20):
+            msg = ws.receive_json()
+            if msg.get("type") == "result":
+                break
+
+    assert captured["agent_model_override"] == "gpt-4o"
+    assert captured["agent_model_override_scope"] == "all_agents"
+
+
 def test_api_evaluate_batch_applies_case_run_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -907,6 +942,8 @@ def test_api_evaluator_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_ENV_PATH", "/abs/env")
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_AGENT", "agent-x")
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_INITIALIZER", "init.py")
+    monkeypatch.setenv("AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE", "gpt-4o")
+    monkeypatch.setenv("AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE", "all_agents")
     client = TestClient(create_app())
     r = client.get("/api/evaluator-defaults")
     assert r.status_code == 200
@@ -914,6 +951,8 @@ def test_api_evaluator_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert data["env_path"] == "/abs/env"
     assert data["agent"] == "agent-x"
     assert data["initializer"] == "init.py"
+    assert data["agent_model_override"] == "gpt-4o"
+    assert data["agent_model_override_scope"] == "all_agents"
 
 
 def test_web_command_keeps_relative_env_path_for_ui_defaults(
@@ -928,13 +967,35 @@ def test_web_command_keeps_relative_env_path_for_ui_defaults(
     assert os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] == ".env"
 
 
+def test_web_command_sets_agent_model_override_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+
+    code = main(
+        [
+            "web",
+            "--env",
+            ".env",
+            "--agent-model-override",
+            "gpt-4o",
+            "--agent-model-override-scope",
+            "all_agents",
+        ]
+    )
+
+    assert code == 0
+    assert os.environ["AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE"] == "gpt-4o"
+    assert os.environ["AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE"] == "all_agents"
+
+
 def test_api_initializers_and_template(tmp_path) -> None:
     env_f = tmp_path / ".env"
     init_d = tmp_path / "init_here"
     init_d.mkdir()
     (init_d / "seed.py").write_text(
         'PROMPT_TEMPLATE = "hello seed"\nEVALUATOR_CRITERIA = "check output"\n'
-        'DEFAULT_AGENT = "seed-agent"\n',
+        'DEFAULT_AGENT = "seed-agent"\n'
+        'DEFAULT_AGENT_MODEL_OVERRIDE = "gpt-4.1"\n'
+        'DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE = "all_agents"\n',
         encoding="utf-8",
     )
     sub = init_d / "pkg"
@@ -964,6 +1025,8 @@ def test_api_initializers_and_template(tmp_path) -> None:
     assert "evaluator_criteria" in tj
     assert tj["evaluator_criteria"] == "check output"
     assert tj.get("agent") == "seed-agent"
+    assert tj.get("agent_model_override") == "gpt-4.1"
+    assert tj.get("agent_model_override_scope") == "all_agents"
 
     ao = client.get(
         "/api/initializer-template",
@@ -974,6 +1037,7 @@ def test_api_initializers_and_template(tmp_path) -> None:
     assert aoj["agent"] == "solo-agent"
     assert aoj.get("template") == ""
     assert aoj.get("evaluator_criteria") == ""
+    assert aoj.get("agent_model_override") == ""
 
     tn = client.get(
         "/api/initializer-template",
@@ -984,6 +1048,17 @@ def test_api_initializers_and_template(tmp_path) -> None:
     assert tnj["template"] == "nested"
     assert tnj.get("evaluator_criteria") == ""
     assert tnj.get("agent") == "nested-agent"
+
+
+def test_api_evaluator_model_options_reads_default_model_list(tmp_path: Path) -> None:
+    env_f = tmp_path / ".env"
+    env_f.write_text("DEFAULT_MODEL=gpt-4.1,gpt-4o-mini,o3-mini\n", encoding="utf-8")
+    client = TestClient(create_app())
+
+    response = client.get("/api/evaluator-model-options", params={"env_path": str(env_f)})
+
+    assert response.status_code == 200
+    assert response.json()["model_options"] == ["gpt-4.1", "gpt-4o-mini", "o3-mini"]
 
 
 def test_cli_run_supports_prompt_file(tmp_path: Path, monkeypatch) -> None:
@@ -999,6 +1074,34 @@ def test_cli_run_supports_prompt_file(tmp_path: Path, monkeypatch) -> None:
     code = main(["run", "--agent", "root", "--prompt-file", str(prompt_path)])
     assert code == 0
     assert captured.get("prompt") == "hello"
+
+
+def test_cli_run_passes_agent_model_override(tmp_path: Path, monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_run_once(self, **kwargs):
+        captured.update(kwargs)
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+
+    code = main(
+        [
+            "run",
+            "--agent",
+            "root",
+            "--prompt",
+            "hello",
+            "--agent-model-override",
+            "gpt-4o",
+            "--agent-model-override-scope",
+            "all_agents",
+        ]
+    )
+
+    assert code == 0
+    assert captured["agent_model_override"] == "gpt-4o"
+    assert captured["agent_model_override_scope"] == "all_agents"
 
 
 def test_cli_run_outputs_usage_summary(
@@ -1182,6 +1285,52 @@ def test_cli_evaluate_initializer_single_case(
 
     code = main(["evaluate", "--env", str(env_f), "--initializer", "init.py", "--case", "0"])
     assert code == 0
+
+
+def test_cli_evaluate_passes_agent_model_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_f = tmp_path / ".env"
+    env_f.write_text(f"AGENT_EVAL_INITIALIZER_DIR={tmp_path.as_posix()}\n", encoding="utf-8")
+    case_md = _make_case_md(tmp_path, title="c1")
+    init_f = tmp_path / "init.py"
+    init_f.write_text(
+        "from pathlib import Path\n"
+        "from agent_framework_evaluator.case_markdown import MarkdownCaseLoader\n"
+        f"CASES_GLOB = '{case_md.name}'\n"
+        "def get_test_cases():\n"
+        "    return MarkdownCaseLoader(Path(__file__).parent, CASES_GLOB).get_test_cases()\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_once(self, **kwargs):
+        captured.update(kwargs)
+        self._last_usage_summary = {"session_totals": {}, "agents": {}, "runs": {}}
+        return {"status": "completed", "message": "answer"}
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    monkeypatch.setattr("agent_framework_evaluator.evaluation.run_evaluation", _fake_run_evaluation)
+
+    code = main(
+        [
+            "evaluate",
+            "--env",
+            str(env_f),
+            "--initializer",
+            "init.py",
+            "--case",
+            "0",
+            "--agent-model-override",
+            "gpt-4o",
+            "--agent-model-override-scope",
+            "root_only",
+        ]
+    )
+
+    assert code == 0
+    assert captured["agent_model_override"] == "gpt-4o"
+    assert captured["agent_model_override_scope"] == "root_only"
 
 
 def test_cli_evaluate_batch_summary(

@@ -1001,6 +1001,144 @@ Say hi
         host.run_agent("root", initial_instruction="hello")
 
 
+def test_host_root_model_override_only_affects_tested_agent_run(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    with env_path.open("a", encoding="utf-8") as fh:
+        fh.write("\nAGENT_MODELS=root=env-root-model|child=env-child-model\n")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "root.md").write_text(
+        """---
+id: root
+role: tester
+subagents:
+  - child
+---
+You are a tester.
+---
+Say hi
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "child.md").write_text(
+        """---
+id: child
+role: child
+---
+You are a child.
+---
+Work
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "root.json").write_text('{"model": "root-sidecar-model"}', encoding="utf-8")
+    (agents_dir / "child.json").write_text('{"model": "child-sidecar-model"}', encoding="utf-8")
+
+    class RecordingDriver:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str | None, tuple[str, ...]]] = []
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            del provider_name, temperature, context
+            self.calls.append((agent_id, tuple(model_names)))
+            if agent_id == "root" and len([c for c in self.calls if c[0] == "root"]) == 1:
+                return ModelResponse(
+                    payload={"kind": "call_subagent", "subagent_id": "child", "parameters": {}},
+                    raw_text='{"kind":"call_subagent","subagent_id":"child","parameters":{}}',
+                )
+            return ModelResponse(
+                payload={"kind": "final_message", "message": f"{agent_id}-done"},
+                raw_text='{"kind":"final_message","message":"done"}',
+            )
+
+    driver = RecordingDriver()
+    host = AgentHost.from_env(env_path, model_driver=driver)
+
+    result = host.run_agent("root", initial_instruction="hello", model_override="override-model")
+
+    assert result.message == "root-done"
+    assert [models for agent_id, models in driver.calls if agent_id == "root"] == [
+        ("override-model",),
+        ("override-model",),
+    ]
+    assert [models for agent_id, models in driver.calls if agent_id == "child"] == [
+        ("env-child-model",),
+    ]
+    assert host.get_agent("root").model_names == ("env-root-model",)
+    assert host.get_agent("child").model_names == ("env-child-model",)
+
+
+def test_host_all_agents_model_override_supersedes_configured_agent_models(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    with env_path.open("a", encoding="utf-8") as fh:
+        fh.write("\nAGENT_MODELS=root=env-root-model|child=env-child-model\n")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "root.md").write_text(
+        """---
+id: root
+role: tester
+subagents:
+  - child
+---
+You are a tester.
+---
+Say hi
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "child.md").write_text(
+        """---
+id: child
+role: child
+---
+You are a child.
+---
+Work
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "root.json").write_text('{"model": "root-sidecar-model"}', encoding="utf-8")
+    (agents_dir / "child.json").write_text('{"model": "child-sidecar-model"}', encoding="utf-8")
+
+    class RecordingDriver:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str | None, tuple[str, ...]]] = []
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            del provider_name, temperature, context
+            self.calls.append((agent_id, tuple(model_names)))
+            if agent_id == "root" and len([c for c in self.calls if c[0] == "root"]) == 1:
+                return ModelResponse(
+                    payload={"kind": "call_subagent", "subagent_id": "child", "parameters": {}},
+                    raw_text='{"kind":"call_subagent","subagent_id":"child","parameters":{}}',
+                )
+            return ModelResponse(
+                payload={"kind": "final_message", "message": f"{agent_id}-done"},
+                raw_text='{"kind":"final_message","message":"done"}',
+            )
+
+    driver = RecordingDriver()
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=driver,
+        all_agents_model_override="override-model",
+    )
+
+    result = host.run_agent("root", initial_instruction="hello")
+
+    assert result.message == "root-done"
+    assert [models for _, models in driver.calls] == [
+        ("override-model",),
+        ("override-model",),
+        ("override-model",),
+    ]
+    assert host.get_agent("root").model_names == ("override-model",)
+    assert host.get_agent("child").model_names == ("override-model",)
+
+
 def test_agent_decision_extracts_skill_name() -> None:
     from agent_framework.agents.agent_decision import AgentDecision
     from agent_framework.model import ModelResponse

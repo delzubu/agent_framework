@@ -10,6 +10,7 @@ from typing import Any, TYPE_CHECKING
 import yaml
 
 from agent_framework.agents.helpers import SECTION_PATTERN
+from agent_framework.model_overrides import normalize_model_override_names
 
 if TYPE_CHECKING:
     from agent_framework.agents.agent import Agent
@@ -44,6 +45,7 @@ class AgentRegistry:
 
     directories: tuple[Path, ...]
     config: Any = None   # HostConfig | None — stored for model resolution
+    runtime_model_override: tuple[str, ...] | None = None
     _catalog: dict[str, Path] = field(default_factory=dict, repr=False)
     _cache: dict[str, "Agent"] = field(default_factory=dict, repr=False)
 
@@ -52,7 +54,13 @@ class AgentRegistry:
         """Build an AgentRegistry from a HostConfig."""
         agent_dir = getattr(config, "agent_directory", None)
         directories: tuple[Path, ...] = (Path(agent_dir),) if agent_dir else ()
-        return cls(directories=directories, config=config)
+        return cls(
+            directories=directories,
+            config=config,
+            runtime_model_override=normalize_model_override_names(
+                getattr(config, "runtime_model_override", None)
+            ),
+        )
 
     def discover(self) -> None:
         """Scan all directories and build the agent_id→path catalog.
@@ -148,13 +156,14 @@ class AgentRegistry:
                 source_path,
                 default_provider=default_provider,
                 default_model=default_model,
+                model_override=self.runtime_model_override,
             )
         except Exception:
             _LOGGER.error("failed to load agent markdown %s", source_path, exc_info=True)
             raise
 
         # Apply per-agent model overrides
-        if cfg is not None:
+        if cfg is not None and self.runtime_model_override is None:
             agent_models = getattr(cfg, "agent_models", {}) or {}
             stem = source_path.stem
             if stem in agent_models:

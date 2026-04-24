@@ -92,6 +92,7 @@ class SessionRunner:
         *,
         user_comm: Any | None = None,
         runtime_tracer: Any | None = None,
+        all_agents_model_override: str | tuple[str, ...] | None = None,
     ) -> Any:
         if self._host_factory is not None:
             return self._host_factory(
@@ -99,8 +100,13 @@ class SessionRunner:
                 env_path=self.env_path,
                 user_comm=user_comm,
                 runtime_tracer=runtime_tracer,
+                all_agents_model_override=all_agents_model_override,
             )
-        host = AgentHost.from_env(str(self.env_path), user_comm=user_comm)
+        host = AgentHost.from_env(
+            str(self.env_path),
+            user_comm=user_comm,
+            all_agents_model_override=all_agents_model_override,
+        )
         audit_sub = host._audit_trace_subscriber
         receive_sub = host._host_receive_log_subscriber
         if runtime_tracer is not None:
@@ -141,6 +147,8 @@ class SessionRunner:
         runtime_tracer: Any | None = None,
         session_id: str | None = None,
         on_first_llm_call: Callable[[Any], None] | None = None,
+        agent_model_override: str | tuple[str, ...] | None = None,
+        agent_model_override_scope: str = "root_only",
     ) -> dict[str, object]:
         _LOGGER.debug(
             "SessionRunner.run_once entry",
@@ -211,6 +219,11 @@ class SessionRunner:
             session_context,
             user_comm=user_comm,
             runtime_tracer=effective_runtime_tracer,
+            all_agents_model_override=(
+                agent_model_override
+                if agent_model_override and str(agent_model_override_scope).strip().lower() == "all_agents"
+                else None
+            ),
         )
         if effective_runtime_tracer is not None:
             from agent_framework.agent_event_publisher import agent_events
@@ -264,7 +277,18 @@ class SessionRunner:
                     _LOGGER.debug("test_setup entry")
                     setup_module.test_setup({"prompt": prompt}, session_context)
                     _LOGGER.debug("test_setup exit")
-                result = host.run_agent(resolved_agent_id, initial_instruction=prompt)
+                run_agent_kwargs: dict[str, Any] = {
+                    "initial_instruction": prompt,
+                }
+                if (
+                    agent_model_override
+                    and str(agent_model_override_scope).strip().lower() != "all_agents"
+                ):
+                    run_agent_kwargs["model_override"] = agent_model_override
+                result = host.run_agent(
+                    resolved_agent_id,
+                    **run_agent_kwargs,
+                )
                 if setup_module and hasattr(setup_module, "test_teardown"):
                     _LOGGER.debug("test_teardown entry")
                     setup_module.test_teardown({"prompt": prompt}, session_context)

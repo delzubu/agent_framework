@@ -27,6 +27,13 @@ The runtime now supports two parent orchestration styles:
 
 The second path is intentionally agent-owned rather than host-owned. A behavior can short-circuit from `before_run(...)`, but the workflow runner still delegates child execution through the same parent-side subagent orchestration internals used by model-driven decisions. That preserves parent transcript, audit, hook, and callback behavior instead of requiring custom trace emulation in application code.
 
+The evaluator also supports run-scoped model overrides for the agent under test. That split is implemented in the runtime layers that already own model resolution:
+
+- `root_only` overrides only the top-level tested agent at `AgentHost.run_agent(...)` time
+- `all_agents` overrides every agent loaded for that run at `AgentRegistry` load time
+
+This is deliberate. The evaluator UI and CLI only pass the selected model and scope through; they do not implement a separate model-resolution system. That keeps evaluator runs aligned with the same host/registry semantics used elsewhere in the framework.
+
 ## Next Steps
 
 - [Host and Orchestration]({{ '/reference/architecture/host-and-orchestration/' | relative_url }})

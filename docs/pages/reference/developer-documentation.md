@@ -84,6 +84,26 @@ This makes `AgentBehavior.before_run(...)` a supported place to run deterministi
 
 For the full developer guide, examples, and authoring guidance, see [Programmatic Workflow Agents]({{ '/reference/programmatic-workflow-agents/' | relative_url }}).
 
+## Evaluator Agent Model Overrides
+
+`agent_framework_evaluator` now supports run-scoped model overrides for the agent under test. This is separate from `DEFAULT_EVAL_MODEL`, which still controls the evaluator/scoring LLM.
+
+Two scopes are supported:
+
+- `root_only` — only the tested/top-level agent uses the selected override model
+- `all_agents` — every agent invoked during that run uses the selected override model
+
+The important runtime detail is where the override is applied:
+
+- `root_only` is applied to the root invocation clone in `AgentHost.run_agent(...)`, so cached agent definitions are not mutated for later runs
+- `all_agents` is applied at agent-load time through the host/registry path, so it supersedes `.env` `DEFAULT_MODEL`, `.env` `AGENT_MODELS`, and adjacent runtime `.json` `model` declarations for that host instance
+
+Evaluator surfaces:
+
+- Web UI: model dropdown populated from `.env` `DEFAULT_MODEL`, left empty by default
+- CLI: `--agent-model-override` and `--agent-model-override-scope {root_only,all_agents}`
+- Initializers: `DEFAULT_AGENT_MODEL_OVERRIDE` / `get_default_agent_model_override()` and `DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE` / `get_default_agent_model_override_scope()`
+
 ## Next Steps
 
 - [Architecture Overview]({{ '/reference/architecture/overview/' | relative_url }})

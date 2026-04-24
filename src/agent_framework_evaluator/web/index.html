@@ -21,6 +21,17 @@
         <input id="initializer-select" type="text" list="initializer-list" placeholder="e.g. seed.py (from AGENT_EVAL_INITIALIZER_DIR) or full path" autocomplete="off" spellcheck="false">
         <datalist id="initializer-list"></datalist>
       </label>
+      <label>Agent model override
+        <select id="agent-model-override">
+          <option value="">Configured default</option>
+        </select>
+      </label>
+      <label>Override scope
+        <select id="agent-model-override-scope">
+          <option value="root_only">Tested agent only</option>
+          <option value="all_agents">Whole run</option>
+        </select>
+      </label>
       <div id="case-list-section" class="case-list-section" hidden>
         <div class="case-list-header">
           <span class="case-list-title">Test cases</span>

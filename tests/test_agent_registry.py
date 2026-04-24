@@ -161,6 +161,25 @@ class TestAgentRegistryGet:
         agent = registry.get("eta")
         assert agent.model_names == ("gpt-4o",)
 
+    def test_get_runtime_model_override_supersedes_agent_models_and_sidecar(self, tmp_path: Path):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        agent_md = _write_agent_md(agents_dir, "theta.md", "theta")
+        agent_md.with_suffix(".json").write_text('{"model": "sidecar-model"}', encoding="utf-8")
+
+        class FakeCfg(_FakeConfig):
+            agent_directory = str(agents_dir)
+            agent_models = {"theta": ("env-model",)}
+
+        registry = AgentRegistry(
+            directories=(agents_dir,),
+            config=FakeCfg(),
+            runtime_model_override=("override-model",),
+        )
+        registry.discover()
+        agent = registry.get("theta")
+        assert agent.model_names == ("override-model",)
+
 
 # ---------------------------------------------------------------------------
 # list_names

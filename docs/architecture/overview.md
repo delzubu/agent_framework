@@ -70,6 +70,22 @@ This is intentionally not a host shortcut. The workflow runner reuses the same p
 
 Architecturally, this keeps deterministic controller logic at the agent layer while avoiding a second, divergent orchestration stack in `host.py`.
 
+### 2.6d Run-scoped evaluator model overrides
+
+The evaluator can now override the model used by the agent under test without editing `.env` or adjacent runtime `.json` files. This is intentionally implemented as a runtime concern, not as evaluator-only branching.
+
+Two scopes exist:
+
+- `root_only` — only the tested/top-level agent is overridden for that run
+- `all_agents` — every agent loaded and executed during that run is overridden
+
+The split is architectural, not cosmetic:
+
+- `root_only` is applied at root invocation time in `AgentHost.run_agent(...)` by cloning the resolved root agent with replacement `model_names`
+- `all_agents` is applied at agent-load time through `AgentRegistry`, so it supersedes `.env` `DEFAULT_MODEL`, `.env` `AGENT_MODELS`, and adjacent runtime `.json` `model` declarations for the host instance used by that evaluator run
+
+This keeps the semantics in the same layers that already own model resolution. The evaluator UI and CLI only transport the override contract; they do not implement a second model-selection system.
+
 ### 2.6b Skills as a Third Capability Pillar
 
 Alongside tools and subagents, **skills** are a first-class agent capability. Skills are directory-discovered, markdown-defined behavioral instruction sets — reusable knowledge fragments that the model can invoke by name rather than implementing the same instructions in every agent prompt.
@@ -198,6 +214,7 @@ Infrastructure layer — entry points, orchestration, and cross-cutting concerns
 | `agent.py` | Compatibility facade — re-exports everything from `agents/` |
 | `config.py` | Configuration loading — `HostConfig` dataclass, `.env` parser |
 | `host.py` | `AgentHost` — central orchestrator, headless invocation, `run_tool_loop()` |
+| `model_overrides.py` | Typed run-scoped model override helpers used by host/evaluator surfaces |
 | `model.py` | `ModelDriver`/`AsyncModelDriver` protocols, `ModelContext`, `ModelResponse`, `DriverCapabilities`, `ModelDriverBase`, `merge_runtime_system_into_messages`, `OpenAiModelDriver`, adapters, system prompt templates |
 | `tool.py` | `Tool` base class, `ToolDefinition`, markdown-based tool loading |
 | `errors.py` | `ModelDriverError`, `ConversationNotFoundError` — structured error types |
@@ -219,6 +236,13 @@ Infrastructure layer — entry points, orchestration, and cross-cutting concerns
 ### Evaluator package (`src/agent_framework_evaluator/`)
 
 Shipped next to the core package (same distribution, `[web]` extra): local **FastAPI** app, **WebSocket** trace streaming, **`SessionRunner`** (setup modules + `run_agent`), and **`agent-eval`** / `python -m agent_framework_evaluator` CLI. User-facing guide: [Using the agent evaluator](../guides/using-agent-evaluator.md).
+
+The evaluator now transports an explicit agent-run model override contract:
+
+- selected override model name
+- override scope: `root_only` or `all_agents`
+
+UI defaults can come from initializer hooks, but the runtime remains the source of truth for how those scopes are applied.
 
 ### Drivers Subpackage (`src/agent_framework/drivers/`)
 

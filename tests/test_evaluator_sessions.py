@@ -43,8 +43,10 @@ def test_debugger_subscriber_buffers_events_by_session() -> None:
 
 class _FakeHost:
     trace_context_overlay = None
+    last_model_override = None
 
-    def run_agent(self, agent_id: str, initial_instruction: str):
+    def run_agent(self, agent_id: str, initial_instruction: str, *, model_override=None):
+        self.last_model_override = model_override
         return AgentResult(status="completed", message=f"{agent_id}:{initial_instruction}")
 
     def session_usage_totals(self) -> dict[str, int]:
@@ -116,6 +118,45 @@ def test_session_runner_can_resume_after_user_input(tmp_path: Path) -> None:
     result = runner.run_once(agent_id="needs_input", prompt="clarified", setup_path=setup_path)
     assert result["status"] == "completed"
     assert result["message"] == "needs_input:clarified"
+
+
+def test_session_runner_passes_root_only_agent_model_override_to_run_agent(tmp_path: Path) -> None:
+    setup_path = tmp_path / "setup.py"
+    setup_path.write_text("", encoding="utf-8")
+    host = _FakeHost()
+    runner = SessionRunner(env_path=tmp_path / ".env", host_factory=lambda **_: host)
+
+    runner.run_once(
+        agent_id="root",
+        prompt="hello",
+        setup_path=setup_path,
+        agent_model_override="gpt-override",
+        agent_model_override_scope="root_only",
+    )
+
+    assert host.last_model_override == "gpt-override"
+
+
+def test_session_runner_passes_all_agents_override_to_host_factory(tmp_path: Path) -> None:
+    setup_path = tmp_path / "setup.py"
+    setup_path.write_text("", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def host_factory(**kwargs):
+        captured.update(kwargs)
+        return _FakeHost()
+
+    runner = SessionRunner(env_path=tmp_path / ".env", host_factory=host_factory)
+
+    runner.run_once(
+        agent_id="root",
+        prompt="hello",
+        setup_path=setup_path,
+        agent_model_override="gpt-override",
+        agent_model_override_scope="all_agents",
+    )
+
+    assert captured["all_agents_model_override"] == "gpt-override"
 
 
 def test_evaluator_usage_tracker_prefers_runtime_summaries() -> None:

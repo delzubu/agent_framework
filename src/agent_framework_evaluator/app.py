@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from agent_framework.agent_registry import AgentRegistry, normalize_agent_id
 from agent_framework.agents.helpers import AgentMarkdownError
 from agent_framework.config import load_host_config
+from agent_framework.model_overrides import normalize_agent_model_override_scope
 from agent_framework.tracing import TraceContext, make_trace_event
 from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework_evaluator.auto_user_reply import reply_text_for_outbox_item
@@ -33,6 +34,8 @@ from agent_framework_evaluator.initializer_catalog import (
     evaluator_initializer_root,
     list_initializer_scripts,
     load_initializer_default_agent,
+    load_initializer_default_agent_model_override,
+    load_initializer_default_agent_model_override_scope,
     load_initializer_default_evaluator_criteria,
     load_initializer_default_prompt,
     load_initializer_default_eval_model,
@@ -81,6 +84,8 @@ class EvaluateBatchBody(BaseModel):
     case_indices: list[int] | None = None
     log_level: str = "warning"
     case_run_mode: str = "standard"
+    agent_model_override: str = ""
+    agent_model_override_scope: str = "root_only"
 
 
 def _normalize_log_level(value: Any) -> str:
@@ -323,7 +328,16 @@ def create_app() -> FastAPI:
             "env_path": os.environ.get("AGENT_EVAL_DEFAULT_ENV_PATH", ".env"),
             "agent": os.environ.get("AGENT_EVAL_DEFAULT_AGENT", ""),
             "initializer": os.environ.get("AGENT_EVAL_DEFAULT_INITIALIZER", ""),
+            "agent_model_override": os.environ.get("AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE", ""),
+            "agent_model_override_scope": normalize_agent_model_override_scope(
+                os.environ.get("AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE", "root_only")
+            ),
         }
+
+    @app.get("/api/evaluator-model-options")
+    def evaluator_model_options(env_path: str = ".env") -> dict[str, Any]:
+        cfg = load_host_config(resolve_env_path(env_path))
+        return {"model_options": list(cfg.default_model)}
 
     @app.post("/api/sessions")
     def create_session(
@@ -614,9 +628,19 @@ def create_app() -> FastAPI:
             text = load_initializer_default_prompt(env_file, initializer)
             criteria = load_initializer_default_evaluator_criteria(env_file, initializer)
             agent = load_initializer_default_agent(env_file, initializer)
+            agent_model_override = load_initializer_default_agent_model_override(env_file, initializer)
+            agent_model_override_scope = load_initializer_default_agent_model_override_scope(
+                env_file, initializer
+            )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not text and not criteria and not agent:
+        if (
+            not text
+            and not criteria
+            and not agent
+            and not agent_model_override
+            and not agent_model_override_scope
+        ):
             cases = load_test_cases(env_file, initializer)
             if not cases:
                 raise HTTPException(
@@ -629,7 +653,15 @@ def create_app() -> FastAPI:
             c0 = cases[0]
             text = str(c0.get("prompt", "") or "")
             criteria = str(c0.get("criteria", "") or "")
-        return {"template": text or "", "evaluator_criteria": criteria or "", "agent": agent or ""}
+        return {
+            "template": text or "",
+            "evaluator_criteria": criteria or "",
+            "agent": agent or "",
+            "agent_model_override": agent_model_override or "",
+            "agent_model_override_scope": normalize_agent_model_override_scope(
+                agent_model_override_scope or "root_only"
+            ),
+        }
 
     @app.get("/api/setup-template")
     def setup_template(path: str) -> dict[str, Any]:
@@ -697,6 +729,8 @@ def create_app() -> FastAPI:
                         user_comm=rec.comm,
                         runtime_tracer=rec.tracer,
                         session_id=body.session_id,
+                        agent_model_override=body.agent_model_override or None,
+                        agent_model_override_scope=body.agent_model_override_scope,
                     )
 
                 try:
@@ -858,6 +892,12 @@ def create_app() -> FastAPI:
                             runtime_tracer=rec.tracer,
                             session_id=session_id,
                             on_first_llm_call=on_first_llm_call,
+                            agent_model_override=(
+                                str(msg.get("agent_model_override", "")).strip() or None
+                            ),
+                            agent_model_override_scope=str(
+                                msg.get("agent_model_override_scope", "root_only")
+                            ),
                         )
 
                     try:

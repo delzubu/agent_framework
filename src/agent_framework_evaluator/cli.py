@@ -34,6 +34,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Default initializer .py (under AGENT_EVAL_INITIALIZER_DIR from .env); overridable in the UI.",
     )
+    web.add_argument(
+        "--agent-model-override",
+        default=None,
+        help="Default model override for the tested agent (or all agents when paired with --agent-model-override-scope).",
+    )
+    web.add_argument(
+        "--agent-model-override-scope",
+        choices=("root_only", "all_agents"),
+        default="root_only",
+        help="Scope for --agent-model-override in the UI defaults.",
+    )
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8123)
     web.add_argument("--open-browser", action="store_true")
@@ -44,6 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--setup")
     run.add_argument("--prompt")
     run.add_argument("--prompt-file")
+    run.add_argument("--agent-model-override")
+    run.add_argument(
+        "--agent-model-override-scope",
+        choices=("root_only", "all_agents"),
+        default="root_only",
+    )
     run.add_argument("--output")
     run.add_argument(
         "--trace-jsonl",
@@ -86,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Agent id to run (default: initializer DEFAULT_AGENT or 'root').",
     )
+    evaluate.add_argument("--agent-model-override")
+    evaluate.add_argument(
+        "--agent-model-override-scope",
+        choices=("root_only", "all_agents"),
+        default="root_only",
+    )
     evaluate.add_argument("--output", metavar="FILE", help="Write full JSON result to file.")
     evaluate.add_argument(
         "--verbose",
@@ -106,12 +129,22 @@ def _cmd_web(args: argparse.Namespace) -> int:
     import uvicorn
 
     os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] = str(args.env)
-    for key in ("AGENT_EVAL_DEFAULT_AGENT", "AGENT_EVAL_DEFAULT_INITIALIZER"):
+    for key in (
+        "AGENT_EVAL_DEFAULT_AGENT",
+        "AGENT_EVAL_DEFAULT_INITIALIZER",
+        "AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE",
+        "AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE",
+    ):
         os.environ.pop(key, None)
     if args.agent:
         os.environ["AGENT_EVAL_DEFAULT_AGENT"] = args.agent
     if args.initializer:
         os.environ["AGENT_EVAL_DEFAULT_INITIALIZER"] = args.initializer
+    if args.agent_model_override:
+        os.environ["AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE"] = args.agent_model_override
+        os.environ["AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE"] = (
+            args.agent_model_override_scope
+        )
 
     url = f"http://{args.host}:{args.port}/"
     if args.open_browser:
@@ -167,6 +200,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             prompt=prompt,
             setup_path=Path(args.setup) if args.setup else None,
             runtime_tracer=merged_tracer,
+            agent_model_override=args.agent_model_override,
+            agent_model_override_scope=args.agent_model_override_scope,
         )
         usage_summary = getattr(runner, "_last_usage_summary", None)
     except Exception as exc:
@@ -219,6 +254,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             agent_id=agent_id,
             prompt=prompt.rstrip() + CASE_NO_CALLBACKS_POSTFIX,
             setup_path=setup_path,
+            agent_model_override=args.agent_model_override,
+            agent_model_override_scope=args.agent_model_override_scope,
         )
         usage_summary = getattr(runner, "_last_usage_summary", None)
         selected = select_agent_result_field(run_result, result_field)

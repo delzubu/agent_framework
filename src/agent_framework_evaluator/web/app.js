@@ -5,6 +5,8 @@ const sendChatButton = document.getElementById("send-chat-button");
 const envPathInput = document.getElementById("env-path");
 const agentInput = document.getElementById("agent-select");
 const initializerInput = document.getElementById("initializer-select");
+const agentModelOverrideSelect = document.getElementById("agent-model-override");
+const agentModelOverrideScopeSelect = document.getElementById("agent-model-override-scope");
 const agentList = document.getElementById("agent-list");
 const initializerList = document.getElementById("initializer-list");
 const channelToggles = document.getElementById("channel-toggles");
@@ -104,6 +106,8 @@ let lastCaseListHint = "";
 
 /** @type {"standard" | "no_callbacks"} */
 let caseRunMode = "standard";
+let pendingDefaultAgentModelOverride = "";
+let pendingDefaultAgentModelOverrideScope = "root_only";
 
 /** @type {HTMLElement | null} */
 let caseRunMenuAnchor = null;
@@ -960,6 +964,8 @@ async function playCase(caseIndex, opts = {}) {
         prompt: runPrompt,
         initializer: init,
         case_run_mode: caseRunMode,
+        agent_model_override: getAgentModelOverride(),
+        agent_model_override_scope: getAgentModelOverrideScope(),
       }),
     );
     await pRun;
@@ -1020,6 +1026,8 @@ async function runAllCasesPlay() {
         initializer: init,
         log_level: selectedTraceLogLevel(),
         case_run_mode: caseRunMode,
+        agent_model_override: getAgentModelOverride(),
+        agent_model_override_scope: getAgentModelOverrideScope(),
       }),
     });
     if (!res.ok) {
@@ -2230,10 +2238,19 @@ function getEnvPath() {
   return (envPathInput && envPathInput.value.trim()) || ".env";
 }
 
+function getAgentModelOverride() {
+  return (agentModelOverrideSelect && agentModelOverrideSelect.value.trim()) || "";
+}
+
+function getAgentModelOverrideScope() {
+  return (agentModelOverrideScopeSelect && agentModelOverrideScopeSelect.value) || "root_only";
+}
+
 async function refreshCatalogs() {
   const ep = getEnvPath();
   await loadAgentCatalog(ep);
   await loadInitializerCatalog(ep);
+  await loadEvaluatorModelOptions(ep);
 }
 
 async function ensureSessionConnected() {
@@ -2290,6 +2307,38 @@ async function loadInitializerCatalog(envPath) {
   }
 }
 
+async function loadEvaluatorModelOptions(envPath) {
+  if (!agentModelOverrideSelect) return;
+  const current = agentModelOverrideSelect.value;
+  try {
+    const res = await fetch(`/api/evaluator-model-options?env_path=${encodeURIComponent(envPath)}`);
+    const data = await res.json();
+    const options = Array.isArray(data.model_options) ? data.model_options : [];
+    agentModelOverrideSelect.innerHTML = "";
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "Configured default";
+    agentModelOverrideSelect.appendChild(blank);
+    for (const model of options) {
+      const opt = document.createElement("option");
+      opt.value = String(model);
+      opt.textContent = String(model);
+      agentModelOverrideSelect.appendChild(opt);
+    }
+    const preferred = current || pendingDefaultAgentModelOverride;
+    if (preferred && options.includes(preferred)) {
+      agentModelOverrideSelect.value = preferred;
+    } else {
+      agentModelOverrideSelect.value = "";
+    }
+    if (agentModelOverrideScopeSelect) {
+      agentModelOverrideScopeSelect.value = pendingDefaultAgentModelOverrideScope || "root_only";
+    }
+  } catch (_) {
+    /* ignore model option failures */
+  }
+}
+
 function applyInitializerResponseFields(data) {
   if (data.template && promptInput && !promptInput.value.trim()) {
     promptInput.value = data.template;
@@ -2299,6 +2348,17 @@ function applyInitializerResponseFields(data) {
   }
   if (data.agent && agentInput && !agentInput.value.trim()) {
     agentInput.value = data.agent;
+  }
+  if (
+    data.agent_model_override &&
+    agentModelOverrideSelect &&
+    !agentModelOverrideSelect.value.trim() &&
+    Array.from(agentModelOverrideSelect.options).some((opt) => opt.value === data.agent_model_override)
+  ) {
+    agentModelOverrideSelect.value = data.agent_model_override;
+  }
+  if (data.agent_model_override_scope && agentModelOverrideScopeSelect && !getAgentModelOverride()) {
+    agentModelOverrideScopeSelect.value = data.agent_model_override_scope;
   }
 }
 
@@ -2382,6 +2442,8 @@ async function initSession() {
     if (envPathInput) envPathInput.value = defs.env_path || ".env";
     if (defs.agent && agentInput) agentInput.value = defs.agent;
     if (defs.initializer && initializerInput) initializerInput.value = defs.initializer;
+    pendingDefaultAgentModelOverride = String(defs.agent_model_override || "");
+    pendingDefaultAgentModelOverrideScope = String(defs.agent_model_override_scope || "root_only");
     await refreshCatalogs();
     await ensureSessionConnected();
     await refreshInitializerCases();
@@ -2449,6 +2511,8 @@ async function sendChatOrRun() {
       prompt: promptText,
       initializer: initializerPath || null,
       case_run_mode: caseRunMode,
+      agent_model_override: getAgentModelOverride(),
+      agent_model_override_scope: getAgentModelOverrideScope(),
     }),
   );
   if (promptInput) {

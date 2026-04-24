@@ -38,6 +38,7 @@ from agent_framework.model import (
     ModelResponse,
     merge_runtime_system_into_messages,
 )
+from agent_framework.model_overrides import normalize_model_override_names
 from agent_framework.model_validation import ModelValidationChain, ModelValidationContext
 from agent_framework.file_reference import (
     DefaultFileReferenceResolver,
@@ -241,6 +242,7 @@ class AgentHost:
         *,
         model_driver: Any | None = None,
         model_override: str | tuple[str, ...] | None = None,
+        all_agents_model_override: str | tuple[str, ...] | None = None,
         user_comm: Any | None = None,
         input_reader: Any = None,  # deprecated; ignored (kept for test compat)
         output_writer: Any = None,  # deprecated; ignored (kept for test compat)
@@ -262,6 +264,9 @@ class AgentHost:
                 model names (first = highest priority).  This is the programmatic
                 mechanism for runtime model selection; no default behaviour is
                 added here.
+            all_agents_model_override: When provided, forces every agent loaded
+                by this host to use the given model tuple, overriding agent-side
+                runtime metadata and ``AGENT_MODELS`` for this host instance.
             user_comm: Optional ``UserCommunication`` implementation.  Defaults
                 to ``NullUserCommunication`` inside ``create()``.
         """
@@ -287,6 +292,7 @@ class AgentHost:
             model_driver=model_driver,
             config=config,
             user_comm=user_comm,
+            all_agents_model_override=all_agents_model_override,
         )
         host.enable_audit_trace(output_dir="logs")
         if _agent_host_receive_log_enabled_from_env():
@@ -310,6 +316,7 @@ class AgentHost:
         *,
         model_driver: Any | None = None,
         model_override: str | tuple[str, ...] | None = None,
+        all_agents_model_override: str | tuple[str, ...] | None = None,
     ) -> "AgentHost":
         """Construct a console host, run discovery, and start MCP connections."""
         from agent_framework.console_communication import ConsoleUserCommunication
@@ -318,6 +325,7 @@ class AgentHost:
             env_path,
             model_driver=model_driver,
             model_override=model_override,
+            all_agents_model_override=all_agents_model_override,
             user_comm=ConsoleUserCommunication(),
         )
         # Run start() synchronously to discover registries and start MCP
@@ -345,6 +353,7 @@ class AgentHost:
         builtin_tools: bool = True,
         mcp_enabled: bool = True,
         command_fallback: Any | None = None,
+        all_agents_model_override: str | tuple[str, ...] | None = None,
     ) -> "AgentHost":
         """Construct a host with an explicit driver.  No ``.env`` file required.
 
@@ -374,6 +383,9 @@ class AgentHost:
 
         tool_registry = ToolRegistry.from_config(config)
         agent_registry = AgentRegistry.from_config(config)
+        agent_registry.runtime_model_override = normalize_model_override_names(
+            all_agents_model_override
+        )
         command_registry = CommandRegistry.from_config(config)
 
         if builtin_tools:
@@ -1585,11 +1597,16 @@ class AgentHost:
         *,
         conversation_messages: tuple[dict[str, str], ...] | None = None,
         prompt_fragments: tuple[str, ...] | None = None,
+        model_override: str | tuple[str, ...] | None = None,
     ) -> AgentResult:
         """Run a specific agent id as a top-level invocation."""
         if initial_instruction and self.file_ref_resolver is not None:
             initial_instruction = expand_file_refs(initial_instruction, self.file_ref_resolver)
-        agent = self._agent_with_runtime_tracing(self.get_agent(agent_id))
+        agent = self.get_agent(agent_id)
+        root_model_override = normalize_model_override_names(model_override)
+        if root_model_override is not None:
+            agent = replace(agent, model_names=root_model_override)
+        agent = self._agent_with_runtime_tracing(agent)
         prompt_num = self._next_prompt_counter()
         root_run_id = f"{self.session_id}.p{prompt_num}.{agent_id}"
         parameters, rendered_prompt_override = self._bootstrap_root_prompt_inputs(
