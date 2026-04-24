@@ -132,6 +132,16 @@ const unifiedEntries = [];
 
 const TRACE_STRING_PREVIEW_CHARS = 90;
 const LEVEL_ORDER = { debug: 10, info: 20, warning: 30, error: 40 };
+const {
+  adjustPromptInputHeight: adjustPromptInputHeightUi,
+  appendConversationBubble: appendConversationBubbleUi,
+  clearAppStatus: clearAppStatusUi,
+  copyTextToClipboard: copyTextToClipboardUi,
+  removeTypingPlaceholder: removeTypingPlaceholderUi,
+  setAppStatus: setAppStatusUi,
+  setComposerEnabled: setComposerEnabledUi,
+  showTypingPlaceholder: showTypingPlaceholderUi,
+} = window.ConversationUi;
 const { fillEvaluationDetailDom, renderEvalScoreBar } = window.EvaluationRendering;
 const {
   displayBatchSummary: displayBatchSummaryUi,
@@ -1010,8 +1020,7 @@ function clearTraceUi() {
 let awaitingPromptId = null;
 
 function setComposerEnabled(enabled) {
-  if (promptInput) promptInput.disabled = !enabled;
-  if (sendChatButton) sendChatButton.disabled = !enabled;
+  setComposerEnabledUi(promptInput, sendChatButton, enabled);
 }
 
 /**
@@ -1037,45 +1046,16 @@ function setAwaitingPrompt(promptId) {
 }
 
 function removeTypingPlaceholder() {
-  if (typingPlaceholderEl && typingPlaceholderEl.parentNode) {
-    typingPlaceholderEl.remove();
-  }
-  typingPlaceholderEl = null;
+  typingPlaceholderEl = removeTypingPlaceholderUi(typingPlaceholderEl);
 }
 
 function showTypingPlaceholder() {
-  if (!conversationThread) return;
-  removeTypingPlaceholder();
-  const wrap = document.createElement("div");
-  wrap.className = "conv-msg conv-msg--typing";
-  wrap.setAttribute("aria-live", "polite");
-  wrap.setAttribute("aria-busy", "true");
-  const sp = document.createElement("span");
-  sp.className = "typing-spinner";
-  const lab = document.createElement("span");
-  lab.textContent = "Thinking…";
-  wrap.appendChild(sp);
-  wrap.appendChild(lab);
-  conversationThread.appendChild(wrap);
-  typingPlaceholderEl = wrap;
-  conversationThread.scrollTop = conversationThread.scrollHeight;
-}
-
-function scrollThreadToBottom() {
-  if (conversationThread) conversationThread.scrollTop = conversationThread.scrollHeight;
+  typingPlaceholderEl = showTypingPlaceholderUi(typingPlaceholderEl, conversationThread);
 }
 
 /** Grow the composer like ChatGPT; only show a scrollbar when content exceeds the cap. */
 function adjustPromptInputHeight() {
-  const el = promptInput;
-  if (!el) return;
-  const maxH = Math.min(200, Math.floor(window.innerHeight * 0.28));
-  el.style.maxHeight = `${maxH}px`;
-  el.style.height = "auto";
-  const sh = el.scrollHeight;
-  const h = Math.min(sh, maxH);
-  el.style.height = `${h}px`;
-  el.style.overflowY = sh > maxH ? "auto" : "hidden";
+  adjustPromptInputHeightUi(promptInput);
 }
 
 let promptResizeTimer = null;
@@ -1090,95 +1070,22 @@ window.addEventListener("resize", () => {
  * @param {{ markdown?: boolean } | undefined} opts
  */
 function appendConversationBubble(role, text, opts) {
-  if (!conversationThread || typeof text !== "string") return;
-  const wrap = document.createElement("div");
-  const roleKey = role === "error" ? "error" : role;
-  wrap.className = `conv-msg conv-msg--${roleKey}`;
-  const meta = document.createElement("div");
-  meta.className = "conv-msg-meta";
-  if (role === "user") meta.textContent = "You";
-  else if (role === "error") meta.textContent = "Error";
-  else meta.textContent = "Agent";
-  const body = document.createElement("div");
-  body.className = "conv-msg-body";
-  const useMd =
-    role === "assistant" && opts && typeof opts === "object" && opts.markdown === true;
-  if (useMd) {
-    const parse = getMarkedParse();
-    body.classList.add("conv-msg-body--markdown");
-    if (parse) {
-      try {
-        body.innerHTML = parse(text);
-      } catch (_) {
-        body.textContent = text;
-      }
-    } else {
-      body.textContent = text;
-    }
-  } else {
-    body.textContent = text;
-  }
-  const controls = document.createElement("div");
-  controls.className = "conv-msg-controls";
-  const copyBtn = document.createElement("button");
-  copyBtn.type = "button";
-  copyBtn.className = "conv-msg-copy";
-  copyBtn.textContent = "Copy";
-  copyBtn.setAttribute("aria-label", `Copy ${roleKey} message`);
-  copyBtn.addEventListener("click", async () => {
-    const originalLabel = "Copy";
-    try {
-      await copyTextToClipboard(text);
-      copyBtn.textContent = "Copied";
-      copyBtn.classList.add("conv-msg-copy--ok");
-      window.setTimeout(() => {
-        copyBtn.textContent = originalLabel;
-        copyBtn.classList.remove("conv-msg-copy--ok");
-      }, 1200);
-    } catch (_) {
-      copyBtn.textContent = "Failed";
-      copyBtn.classList.add("conv-msg-copy--error");
-      window.setTimeout(() => {
-        copyBtn.textContent = originalLabel;
-        copyBtn.classList.remove("conv-msg-copy--error");
-      }, 1200);
-    }
+  appendConversationBubbleUi(conversationThread, role, text, opts, {
+    copyTextToClipboard,
+    getMarkedParse,
   });
-  controls.appendChild(copyBtn);
-  wrap.appendChild(meta);
-  wrap.appendChild(controls);
-  wrap.appendChild(body);
-  conversationThread.appendChild(wrap);
-  scrollThreadToBottom();
 }
 
 function setAppStatus(message) {
-  if (appStatus) appStatus.textContent = message || "";
+  setAppStatusUi(appStatus, message);
 }
 
 function clearAppStatus() {
-  if (appStatus) appStatus.textContent = "";
+  clearAppStatusUi(appStatus);
 }
 
 async function copyTextToClipboard(text) {
-  const value = typeof text === "string" ? text : String(text ?? "");
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.setAttribute("readonly", "true");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  textarea.style.pointerEvents = "none";
-  document.body.appendChild(textarea);
-  textarea.select();
-  try {
-    document.execCommand("copy");
-  } finally {
-    document.body.removeChild(textarea);
-  }
+  await copyTextToClipboardUi(text);
 }
 
 /**
