@@ -103,8 +103,6 @@ let lastCaseListHint = "";
 
 /** @type {"standard" | "no_callbacks"} */
 let caseRunMode = "standard";
-let pendingDefaultAgentModelOverride = "";
-let pendingDefaultAgentModelOverrideScope = "root_only";
 
 /** @type {HTMLElement | null} */
 let caseRunMenuAnchor = null;
@@ -136,6 +134,7 @@ const {
 const {
   normalizeUsageTotals,
 } = window.UsageRendering;
+const { createSessionClient } = window.SessionClient;
 const { selectedTraceLogLevel: selectedTraceLogLevelPrimitive } = window.TracePrimitives;
 const { createTraceController, LEVEL_ORDER: TRACE_LEVEL_ORDER } = window.TraceUi;
 
@@ -259,7 +258,7 @@ async function runPostEvaluation() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        session_id: sessionId ?? "",
+        session_id: sessionClient.getSessionId() ?? "",
         evaluator_prompt: crit,
         log_level: selectedTraceLogLevel(),
       }),
@@ -461,12 +460,7 @@ function setRunCaseButtonBusy(caseIndex, busy) {
 }
 
 async function recreateSessionForNewRun() {
-  detachWebSocket();
-  if (sessionId) {
-    await fetch(`/api/sessions/${sessionId}/close`, { method: "POST" }).catch(() => {});
-    sessionId = null;
-  }
-  await ensureSessionConnected();
+  await sessionClient.recreateSession();
 }
 
 function waitForAgentRunResult() {
@@ -490,7 +484,7 @@ async function refreshInitializerCases() {
   }
   try {
     const r = await fetch(
-      `/api/initializer-cases?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(init)}`,
+      `/api/initializer-cases?env_path=${encodeURIComponent(sessionClient.getEnvPath())}&initializer=${encodeURIComponent(init)}`,
     );
     if (!r.ok) {
       loadedCases = [];
@@ -585,7 +579,7 @@ async function playCase(caseIndex, opts = {}) {
   if (!batch) setRunCaseButtonBusy(caseIndex, true);
   evaluationInFlight = true;
   try {
-    await ensureSessionConnected();
+    await sessionClient.ensureConnected();
     if (!batch) {
       clearStoredAgentResult();
       resetEvaluationPanel();
@@ -598,25 +592,22 @@ async function playCase(caseIndex, opts = {}) {
     refreshComposerState();
     showTypingPlaceholder();
     setAppStatus("Running…");
-    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("No WebSocket");
     const pRun = waitForAgentRunResult();
-    socket.send(
-      JSON.stringify({
-        type: "run",
-        agent_id: agentInput?.value.trim() || "root",
-        prompt: runPrompt,
-        initializer: init,
-        case_run_mode: caseRunMode,
-        agent_model_override: getAgentModelOverride(),
-        agent_model_override_scope: getAgentModelOverrideScope(),
-      }),
-    );
+    await sessionClient.sendRun({
+      type: "run",
+      agent_id: agentInput?.value.trim() || "root",
+      prompt: runPrompt,
+      initializer: init,
+      case_run_mode: caseRunMode,
+      agent_model_override: sessionClient.getAgentModelOverride(),
+      agent_model_override_scope: sessionClient.getAgentModelOverrideScope(),
+    });
     await pRun;
     const res = await fetch("/api/evaluate-case", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        session_id: sessionId ?? "",
+        session_id: sessionClient.getSessionId() ?? "",
         initializer: init,
         case_index: caseIndex,
         log_level: selectedTraceLogLevel(),
@@ -660,17 +651,17 @@ async function runAllCasesPlay() {
   /** @type {BatchSummaryRow[]} */
   const summaryRows = [];
   try {
-    await ensureSessionConnected();
+    await sessionClient.ensureConnected();
     const res = await fetch("/api/evaluate-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        session_id: sessionId ?? "",
+        session_id: sessionClient.getSessionId() ?? "",
         initializer: init,
         log_level: selectedTraceLogLevel(),
         case_run_mode: caseRunMode,
-        agent_model_override: getAgentModelOverride(),
-        agent_model_override_scope: getAgentModelOverrideScope(),
+        agent_model_override: sessionClient.getAgentModelOverride(),
+        agent_model_override_scope: sessionClient.getAgentModelOverrideScope(),
       }),
     });
     if (!res.ok) {
@@ -859,22 +850,8 @@ function handleOutboxItem(item) {
 }
 
 async function postUserInputHttp(text) {
-  if (!sessionId || !awaitingPromptId) return;
-  const res = await fetch(`/api/sessions/${sessionId}/user-input`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt_id: awaitingPromptId, text }),
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const j = await res.json();
-      if (typeof j.detail === "string") detail = j.detail;
-    } catch (_) {
-      /* ignore */
-    }
-    throw new Error(detail);
-  }
+  if (!awaitingPromptId) return;
+  await sessionClient.postUserInput(awaitingPromptId, text);
   appendConversationBubble("user", text ?? "");
   setAwaitingPrompt(null);
   if (promptInput) promptInput.value = "";
@@ -884,361 +861,101 @@ async function postUserInputHttp(text) {
   refreshComposerState();
 }
 
-let socket = null;
-let sessionId = null;
+function handleSessionResult(msg) {
+  clearAppStatus();
+  removeTypingPlaceholder();
+  agentRunInProgress = false;
+  refreshComposerState();
 
-function onSocketMessage(ev) {
-  const msg = JSON.parse(ev.data);
-  if (msg.type === "trace" && msg.event) {
-    traceController.routeEvent(msg.event);
-  }
-  if (msg.type === "result" && msg.payload) {
-    clearAppStatus();
-    removeTypingPlaceholder();
-    agentRunInProgress = false;
-    refreshComposerState();
-
-    const p = /** @type {Record<string, unknown>} */ (msg.payload);
-    lastAgentResultPayload = p;
-    if (msg.prompt_snapshots && typeof msg.prompt_snapshots === "object") {
-      lastPromptSnapshots = normalizePromptSnapshots(
-        /** @type {Record<string, unknown>} */ (msg.prompt_snapshots),
-      );
-    }
-    traceController.setUsageSummary(
-      msg.usage_summary && typeof msg.usage_summary === "object"
-        ? /** @type {Record<string, unknown>} */ (msg.usage_summary)
-        : null,
+  const p = /** @type {Record<string, unknown>} */ (msg.payload);
+  lastAgentResultPayload = p;
+  if (msg.prompt_snapshots && typeof msg.prompt_snapshots === "object") {
+    lastPromptSnapshots = normalizePromptSnapshots(
+      /** @type {Record<string, unknown>} */ (msg.prompt_snapshots),
     );
-    updateEvaluateUi();
-    void refreshAgentPromptView();
-
-    let messageText = "";
-    let asMarkdown = false;
-    if (typeof p.message === "string") {
-      messageText = p.message;
-      asMarkdown = true;
-    } else if (p.message != null) {
-      try {
-        messageText = JSON.stringify(p.message, null, 2);
-      } catch (_) {
-        messageText = String(p.message);
-      }
-    }
-    appendConversationBubble("assistant", messageText, { markdown: asMarkdown });
-    if (pendingAgentRun) {
-      const pr = pendingAgentRun;
-      pendingAgentRun = null;
-      pr.resolve(msg);
-      return;
-    }
-    void runPostEvaluation();
   }
-  if (msg.type === "error") {
-    clearAppStatus();
-    removeTypingPlaceholder();
-    agentRunInProgress = false;
-    refreshComposerState();
-    traceController.setUsageSummary(
-      msg.usage_summary && typeof msg.usage_summary === "object"
-        ? /** @type {Record<string, unknown>} */ (msg.usage_summary)
-        : null,
-    );
+  traceController.setUsageSummary(
+    msg.usage_summary && typeof msg.usage_summary === "object"
+      ? /** @type {Record<string, unknown>} */ (msg.usage_summary)
+      : null,
+  );
+  updateEvaluateUi();
+  void refreshAgentPromptView();
 
-    if (pendingAgentRun) {
-      const pr = pendingAgentRun;
-      pendingAgentRun = null;
-      const et = msg.error_type || "Error";
-      const lines = [`[${et}] ${msg.message || ""}`];
-      if (msg.path) {
-        lines.push(`File: ${msg.path}`);
-      }
-      if (msg.hint) {
-        lines.push(msg.hint);
-      }
-      appendConversationBubble("error", lines.join("\n\n"));
-      pr.reject(new Error(lines.join("\n")));
-      return;
-    }
-
-    const et = msg.error_type || "Error";
-    const lines = [`[${et}] ${msg.message || ""}`];
-    if (msg.path) {
-      lines.push(`File: ${msg.path}`);
-    }
-    if (msg.hint) {
-      lines.push(msg.hint);
-    }
-    appendConversationBubble("error", lines.join("\n\n"));
-    clearStoredAgentResult();
-    resetEvaluationPanel();
-  }
-  if (msg.type === "outbox" && msg.item) {
-    handleOutboxItem(msg.item);
-  }
-}
-
-function detachWebSocket() {
-  if (socket) {
+  let messageText = "";
+  let asMarkdown = false;
+  if (typeof p.message === "string") {
+    messageText = p.message;
+    asMarkdown = true;
+  } else if (p.message != null) {
     try {
-      socket.removeEventListener("message", onSocketMessage);
-      socket.close();
+      messageText = JSON.stringify(p.message, null, 2);
     } catch (_) {
-      /* ignore */
-    }
-    socket = null;
-  }
-}
-
-async function connectWebSocket() {
-  if (!sessionId) throw new Error("no session");
-  detachWebSocket();
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${window.location.host}/ws/${sessionId}`);
-  socket = ws;
-  ws.addEventListener("message", onSocketMessage);
-  await new Promise((resolve, reject) => {
-    const to = setTimeout(() => reject(new Error("WebSocket open timeout")), 15000);
-    ws.addEventListener(
-      "open",
-      () => {
-        clearTimeout(to);
-        resolve(undefined);
-      },
-      { once: true },
-    );
-    ws.addEventListener(
-      "error",
-      () => {
-        clearTimeout(to);
-        reject(new Error("WebSocket error"));
-      },
-      { once: true },
-    );
-  });
-}
-
-function getEnvPath() {
-  return (envPathInput && envPathInput.value.trim()) || ".env";
-}
-
-function getAgentModelOverride() {
-  return (agentModelOverrideInput && agentModelOverrideInput.value.trim()) || "";
-}
-
-function getAgentModelOverrideScope() {
-  return (agentModelOverrideScopeSelect && agentModelOverrideScopeSelect.value) || "root_only";
-}
-
-async function refreshCatalogs() {
-  const ep = getEnvPath();
-  await loadAgentCatalog(ep);
-  await loadInitializerCatalog(ep);
-  await loadEvaluatorModelOptions(ep);
-}
-
-async function ensureSessionConnected() {
-  const ep = getEnvPath();
-  const health = await fetch(`/api/agents?env_path=${encodeURIComponent(ep)}`);
-  if (!health.ok) throw new Error("Server unreachable");
-  const needNew = !sessionId || !socket || socket.readyState !== WebSocket.OPEN;
-  if (needNew) {
-    if (sessionId) {
-      await fetch(`/api/sessions/${sessionId}/close`, { method: "POST" }).catch(() => {});
-    }
-    await refreshCatalogs();
-    const res = await fetch("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ env_path: ep }),
-    });
-    if (!res.ok) throw new Error("Failed to create session");
-    const data = await res.json();
-    sessionId = data.session_id;
-    await connectWebSocket();
-  }
-}
-
-async function loadAgentCatalog(envPath) {
-  if (!agentList) return;
-  try {
-    const res = await fetch(`/api/agents?env_path=${encodeURIComponent(envPath)}`);
-    const data = await res.json();
-    agentList.innerHTML = "";
-    for (const id of data.agents || []) {
-      const opt = document.createElement("option");
-      opt.value = id;
-      agentList.appendChild(opt);
-    }
-  } catch (_) {
-    /* ignore catalog failures */
-  }
-}
-
-async function loadInitializerCatalog(envPath) {
-  if (!initializerList) return;
-  try {
-    const res = await fetch(`/api/initializers?env_path=${encodeURIComponent(envPath)}`);
-    const data = await res.json();
-    initializerList.innerHTML = "";
-    for (const id of data.initializers || []) {
-      const opt = document.createElement("option");
-      opt.value = id;
-      initializerList.appendChild(opt);
-    }
-  } catch (_) {
-    /* ignore catalog failures */
-  }
-}
-
-async function loadEvaluatorModelOptions(envPath) {
-  if (!agentModelOverrideInput || !agentModelOverrideList) return;
-  const current = agentModelOverrideInput.value.trim();
-  try {
-    const res = await fetch(`/api/evaluator-model-options?env_path=${encodeURIComponent(envPath)}`);
-    const data = await res.json();
-    const options = Array.isArray(data.model_options) ? data.model_options : [];
-    agentModelOverrideList.innerHTML = "";
-    for (const model of options) {
-      const opt = document.createElement("option");
-      opt.value = String(model);
-      agentModelOverrideList.appendChild(opt);
-    }
-    const preferred = current || pendingDefaultAgentModelOverride;
-    agentModelOverrideInput.value = preferred || "";
-    if (agentModelOverrideScopeSelect) {
-      agentModelOverrideScopeSelect.value = pendingDefaultAgentModelOverrideScope || "root_only";
-    }
-  } catch (_) {
-    /* ignore model option failures */
-  }
-}
-
-function applyInitializerResponseFields(data) {
-  if (data.template && promptInput && !promptInput.value.trim()) {
-    promptInput.value = data.template;
-  }
-  if (data.evaluator_criteria && evaluatorPromptInput && !evaluatorPromptInput.value.trim()) {
-    evaluatorPromptInput.value = data.evaluator_criteria;
-  }
-  if (data.agent && agentInput && !agentInput.value.trim()) {
-    agentInput.value = data.agent;
-  }
-  if (
-    data.agent_model_override &&
-    agentModelOverrideInput &&
-    !agentModelOverrideInput.value.trim()
-  ) {
-    agentModelOverrideInput.value = data.agent_model_override;
-  }
-  if (data.agent_model_override_scope && agentModelOverrideScopeSelect && !getAgentModelOverride()) {
-    agentModelOverrideScopeSelect.value = data.agent_model_override_scope;
-  }
-}
-
-async function maybeApplyInitializerPrompt() {
-  if (!initializerInput) return;
-  const init = initializerInput.value.trim();
-  if (!init) return;
-  const needPrompt = promptInput && !promptInput.value.trim();
-  const needEval = evaluatorPromptInput && !evaluatorPromptInput.value.trim();
-  const needAgent = agentInput && !agentInput.value.trim();
-  if (!needPrompt && !needEval && !needAgent) return;
-  try {
-    const r = await fetch(
-      `/api/initializer-template?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(init)}`,
-    );
-    if (!r.ok) return;
-    const data = await r.json();
-    applyInitializerResponseFields(data);
-    updateEvaluateUi();
-    adjustPromptInputHeight();
-  } catch (_) {
-    /* leave fields empty */
-  }
-}
-
-initializerInput?.addEventListener("change", async () => {
-  const raw = initializerInput.value.trim();
-  if (!raw) return;
-  const needPrompt = promptInput && !promptInput.value.trim();
-  const needEval = evaluatorPromptInput && !evaluatorPromptInput.value.trim();
-  const needAgent = agentInput && !agentInput.value.trim();
-  if (needPrompt || needEval || needAgent) {
-    try {
-      const ir = await fetch(
-        `/api/initializer-template?env_path=${encodeURIComponent(getEnvPath())}&initializer=${encodeURIComponent(raw)}`,
-      );
-      if (ir.ok) {
-        const data = await ir.json();
-        applyInitializerResponseFields(data);
-        updateEvaluateUi();
-        adjustPromptInputHeight();
-      } else {
-        try {
-          const res = await fetch(`/api/setup-template?path=${encodeURIComponent(raw)}`);
-          const data = await res.json();
-          applyInitializerResponseFields(data);
-          updateEvaluateUi();
-          adjustPromptInputHeight();
-        } catch (_) {
-          /* ignore */
-        }
-      }
-    } catch (_) {
-      try {
-        const res = await fetch(`/api/setup-template?path=${encodeURIComponent(raw)}`);
-        const data = await res.json();
-        applyInitializerResponseFields(data);
-        updateEvaluateUi();
-        adjustPromptInputHeight();
-      } catch (_) {
-        /* ignore */
-      }
+      messageText = String(p.message);
     }
   }
-  void refreshInitializerCases();
-});
-
-function closeSessionOnLeave() {
-  if (!sessionId) return;
-  fetch(`/api/sessions/${sessionId}/close`, { method: "POST", keepalive: true }).catch(() => {});
-}
-
-window.addEventListener("beforeunload", () => {
-  closeSessionOnLeave();
-});
-
-async function initSession() {
-  try {
-    const dr = await fetch("/api/evaluator-defaults");
-    const defs = await dr.json();
-    if (envPathInput) envPathInput.value = defs.env_path || ".env";
-    if (defs.agent && agentInput) agentInput.value = defs.agent;
-    if (defs.initializer && initializerInput) initializerInput.value = defs.initializer;
-    pendingDefaultAgentModelOverride = String(defs.agent_model_override || "");
-    pendingDefaultAgentModelOverrideScope = String(defs.agent_model_override_scope || "root_only");
-    await refreshCatalogs();
-    await ensureSessionConnected();
-    await refreshInitializerCases();
-    refreshComposerState();
-    adjustPromptInputHeight();
-  } catch (err) {
-    setAppStatus(`Failed to start session: ${err}`);
+  appendConversationBubble("assistant", messageText, { markdown: asMarkdown });
+  if (pendingAgentRun) {
+    const pr = pendingAgentRun;
+    pendingAgentRun = null;
+    pr.resolve(msg);
+    return;
   }
+  void runPostEvaluation();
 }
 
-let envRefreshTimer = null;
-envPathInput?.addEventListener("input", () => {
-  if (envRefreshTimer) clearTimeout(envRefreshTimer);
-  envRefreshTimer = setTimeout(() => {
-    refreshCatalogs().catch(() => {});
-    void refreshInitializerCases();
-  }, 400);
-});
-envPathInput?.addEventListener("change", () => {
-  refreshCatalogs().catch(() => {});
-  void refreshInitializerCases();
+function handleSessionError(msg) {
+  clearAppStatus();
+  removeTypingPlaceholder();
+  agentRunInProgress = false;
+  refreshComposerState();
+  traceController.setUsageSummary(
+    msg.usage_summary && typeof msg.usage_summary === "object"
+      ? /** @type {Record<string, unknown>} */ (msg.usage_summary)
+      : null,
+  );
+
+  const et = msg.error_type || "Error";
+  const lines = [`[${et}] ${msg.message || ""}`];
+  if (msg.path) {
+    lines.push(`File: ${msg.path}`);
+  }
+  if (msg.hint) {
+    lines.push(msg.hint);
+  }
+  appendConversationBubble("error", lines.join("\n\n"));
+
+  if (pendingAgentRun) {
+    const pr = pendingAgentRun;
+    pendingAgentRun = null;
+    pr.reject(new Error(lines.join("\n")));
+    return;
+  }
+
+  clearStoredAgentResult();
+  resetEvaluationPanel();
+}
+
+const sessionClient = createSessionClient({
+  adjustPromptInputHeight,
+  agentInput,
+  agentList,
+  agentModelOverrideInput,
+  agentModelOverrideList,
+  agentModelOverrideScopeSelect,
+  envPathInput,
+  evaluatorPromptInput,
+  initializerInput,
+  initializerList,
+  onError: handleSessionError,
+  onOutboxItem: handleOutboxItem,
+  onResult: handleSessionResult,
+  onTraceEvent: (event) => traceController.routeEvent(event),
+  promptInput,
+  refreshComposerState,
+  refreshInitializerCases,
+  setAppStatus,
+  updateEvaluateUi,
 });
 
 async function sendChatOrRun() {
@@ -1253,14 +970,10 @@ async function sendChatOrRun() {
   }
 
   try {
-    await ensureSessionConnected();
-    await maybeApplyInitializerPrompt();
+    await sessionClient.ensureConnected();
+    await sessionClient.maybeApplyInitializerPrompt();
   } catch (err) {
     setAppStatus(`Cannot reach server: ${err}`);
-    return;
-  }
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    setAppStatus("No WebSocket after reconnect.");
     return;
   }
   const agentId = agentInput.value.trim() || "root";
@@ -1275,17 +988,15 @@ async function sendChatOrRun() {
   refreshComposerState();
   showTypingPlaceholder();
   setAppStatus("Running…");
-  socket.send(
-    JSON.stringify({
-      type: "run",
-      agent_id: agentId,
-      prompt: promptText,
-      initializer: initializerPath || null,
-      case_run_mode: caseRunMode,
-      agent_model_override: getAgentModelOverride(),
-      agent_model_override_scope: getAgentModelOverrideScope(),
-    }),
-  );
+  await sessionClient.sendRun({
+    type: "run",
+    agent_id: agentId,
+    prompt: promptText,
+    initializer: initializerPath || null,
+    case_run_mode: caseRunMode,
+    agent_model_override: sessionClient.getAgentModelOverride(),
+    agent_model_override_scope: sessionClient.getAgentModelOverrideScope(),
+  });
   if (promptInput) {
     promptInput.value = "";
     adjustPromptInputHeight();
@@ -1422,7 +1133,7 @@ function renderAgentUserSection() {
 
 async function fetchRawSystemPrompt() {
   const aid = agentInput?.value.trim() || "root";
-  const ep = getEnvPath();
+  const ep = sessionClient.getEnvPath();
   const res = await fetch(
     `/api/agent-system-prompt?env_path=${encodeURIComponent(ep)}&agent_id=${encodeURIComponent(aid)}`,
   );
@@ -1435,6 +1146,7 @@ async function fetchRawSystemPrompt() {
 }
 
 async function ensurePromptSnapshotsFromApi() {
+  const sessionId = sessionClient.getSessionId();
   if (lastPromptSnapshots || !sessionId) return;
   try {
     const r = await fetch(`/api/sessions/${sessionId}/last-prompts`);
@@ -1501,6 +1213,6 @@ if (runAllCasesBtn) {
 }
 initCaseRunMenu();
 
-initSession().catch((err) => {
+sessionClient.init().catch((err) => {
   setAppStatus(`Failed to start session: ${err}`);
 });
