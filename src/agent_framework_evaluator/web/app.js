@@ -5,7 +5,8 @@ const sendChatButton = document.getElementById("send-chat-button");
 const envPathInput = document.getElementById("env-path");
 const agentInput = document.getElementById("agent-select");
 const initializerInput = document.getElementById("initializer-select");
-const agentModelOverrideSelect = document.getElementById("agent-model-override");
+const agentModelOverrideInput = document.getElementById("agent-model-override");
+const agentModelOverrideList = document.getElementById("agent-model-override-list");
 const agentModelOverrideScopeSelect = document.getElementById("agent-model-override-scope");
 const agentList = document.getElementById("agent-list");
 const initializerList = document.getElementById("initializer-list");
@@ -2239,7 +2240,7 @@ function getEnvPath() {
 }
 
 function getAgentModelOverride() {
-  return (agentModelOverrideSelect && agentModelOverrideSelect.value.trim()) || "";
+  return (agentModelOverrideInput && agentModelOverrideInput.value.trim()) || "";
 }
 
 function getAgentModelOverrideScope() {
@@ -2308,29 +2309,20 @@ async function loadInitializerCatalog(envPath) {
 }
 
 async function loadEvaluatorModelOptions(envPath) {
-  if (!agentModelOverrideSelect) return;
-  const current = agentModelOverrideSelect.value;
+  if (!agentModelOverrideInput || !agentModelOverrideList) return;
+  const current = agentModelOverrideInput.value.trim();
   try {
     const res = await fetch(`/api/evaluator-model-options?env_path=${encodeURIComponent(envPath)}`);
     const data = await res.json();
     const options = Array.isArray(data.model_options) ? data.model_options : [];
-    agentModelOverrideSelect.innerHTML = "";
-    const blank = document.createElement("option");
-    blank.value = "";
-    blank.textContent = "Configured default";
-    agentModelOverrideSelect.appendChild(blank);
+    agentModelOverrideList.innerHTML = "";
     for (const model of options) {
       const opt = document.createElement("option");
       opt.value = String(model);
-      opt.textContent = String(model);
-      agentModelOverrideSelect.appendChild(opt);
+      agentModelOverrideList.appendChild(opt);
     }
     const preferred = current || pendingDefaultAgentModelOverride;
-    if (preferred && options.includes(preferred)) {
-      agentModelOverrideSelect.value = preferred;
-    } else {
-      agentModelOverrideSelect.value = "";
-    }
+    agentModelOverrideInput.value = preferred || "";
     if (agentModelOverrideScopeSelect) {
       agentModelOverrideScopeSelect.value = pendingDefaultAgentModelOverrideScope || "root_only";
     }
@@ -2351,11 +2343,10 @@ function applyInitializerResponseFields(data) {
   }
   if (
     data.agent_model_override &&
-    agentModelOverrideSelect &&
-    !agentModelOverrideSelect.value.trim() &&
-    Array.from(agentModelOverrideSelect.options).some((opt) => opt.value === data.agent_model_override)
+    agentModelOverrideInput &&
+    !agentModelOverrideInput.value.trim()
   ) {
-    agentModelOverrideSelect.value = data.agent_model_override;
+    agentModelOverrideInput.value = data.agent_model_override;
   }
   if (data.agent_model_override_scope && agentModelOverrideScopeSelect && !getAgentModelOverride()) {
     agentModelOverrideScopeSelect.value = data.agent_model_override_scope;

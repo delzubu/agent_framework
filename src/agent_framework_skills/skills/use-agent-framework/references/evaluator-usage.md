@@ -81,7 +81,7 @@ AGENT_EVAL_INITIALIZER_DIR=path/to/initializers   # directory scanned for *.py i
 
 All other `.env` keys are inherited from `agent_framework` (see framework-usage.md).
 
-The evaluator UI model dropdown is populated from `.env` `DEFAULT_MODEL`. If `DEFAULT_MODEL` contains `gpt-4.1,gpt-4o-mini`, the UI exposes those as separate choices and leaves the selection empty by default.
+The evaluator UI model field is free text with completions from `.env` `DEFAULT_MODEL`. If `DEFAULT_MODEL` contains `gpt-4.1,gpt-4o-mini`, the UI offers those as suggestions and leaves the field empty by default.
 
 ---
 
