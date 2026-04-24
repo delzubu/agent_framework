@@ -596,6 +596,110 @@ class TestResponseFormatRetry:
         assert exc_info.value.status_code == 400
 
 
+class TestRateLimitRetry:
+    @pytest.mark.asyncio
+    async def test_retries_transient_429_inside_driver(self, monkeypatch: pytest.MonkeyPatch):
+        driver = _make_driver(
+            retry_on_rate_limit=True,
+            rate_limit_max_attempts=3,
+            rate_limit_initial_delay_seconds=0.01,
+            rate_limit_max_delay_seconds=0.01,
+        )
+        ctx = _make_context()
+        success_payload = _make_response_payload('{"result": "ok"}')
+        success_text = json.dumps(success_payload)
+
+        async def fake_sleep(delay: float):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        call_count = 0
+
+        async def fake_post(url, *, json=None, **kwargs):
+            nonlocal call_count
+            import json as _json
+            call_count += 1
+            resp = MagicMock()
+            if call_count == 1:
+                resp.status_code = 429
+                resp.text = _json.dumps({
+                    "error": {
+                        "message": "Hit token rate limit. Minute limit reached.",
+                        "code": "429",
+                    }
+                })
+                resp.headers = {}
+                return resp
+            resp.status_code = 200
+            resp.json.return_value = success_payload
+            resp.text = success_text
+            resp.headers = {}
+            return resp
+
+        mock_client = AsyncMock()
+        mock_client.post = fake_post
+        driver._client = mock_client
+
+        result = await driver.decide(
+            agent_id="a1",
+            provider_name="dial",
+            model_names=("gpt-4o",),
+            temperature=0.2,
+            context=ctx,
+        )
+
+        assert call_count == 2
+        assert result.payload == {"result": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_permanent_monthly_429(self, monkeypatch: pytest.MonkeyPatch):
+        driver = _make_driver(
+            retry_on_rate_limit=True,
+            rate_limit_max_attempts=3,
+            rate_limit_initial_delay_seconds=0.01,
+            rate_limit_max_delay_seconds=0.01,
+        )
+        ctx = _make_context()
+
+        async def fake_sleep(delay: float):
+            raise AssertionError("sleep should not be called for permanent monthly quota errors")
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        call_count = 0
+
+        async def fake_post(url, *, json=None, **kwargs):
+            nonlocal call_count
+            import json as _json
+            call_count += 1
+            resp = MagicMock()
+            resp.status_code = 429
+            resp.text = _json.dumps({
+                "error": {
+                    "message": "Hit token rate limit. Month limit reached.",
+                    "display_message": "You've exceeded your monthly token limit",
+                    "code": "429",
+                }
+            })
+            resp.headers = {}
+            return resp
+
+        mock_client = AsyncMock()
+        mock_client.post = fake_post
+        driver._client = mock_client
+
+        with pytest.raises(ModelDriverError) as exc_info:
+            await driver.decide(
+                agent_id="a1",
+                provider_name="dial",
+                model_names=("gpt-4o",),
+                temperature=0.2,
+                context=ctx,
+            )
+
+        assert call_count == 1
+        assert exc_info.value.status_code == 429
+
+
 # ---------------------------------------------------------------------------
 # aclose
 # ---------------------------------------------------------------------------

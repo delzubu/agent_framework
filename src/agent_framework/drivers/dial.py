@@ -26,8 +26,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
+from datetime import datetime, timezone
 
 from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
@@ -247,6 +249,10 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
     api_key: str = ""
     custom_fields: dict[str, Any] | None = None
     retry_without_response_format: bool = True
+    retry_on_rate_limit: bool = True
+    rate_limit_max_attempts: int = 3
+    rate_limit_initial_delay_seconds: float = 5.0
+    rate_limit_max_delay_seconds: float = 60.0
     timeout: float = 120.0
     on_request_trace: Any | None = None
     on_response_trace: Any | None = None
@@ -483,39 +489,119 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
             ModelDriverError: On HTTP error or transport failure.
         """
         client = await self._acquire_client()
-        try:
-            resp = await client.post(endpoint, json=body)
-        except httpx.TransportError as exc:
-            _LOGGER.error("DIAL transport error for %s: %s", self.base_url, exc)
-            raise ModelDriverError(
-                f"Cannot reach DIAL at {self.base_url!r}: {exc}. "
-                "Check network connectivity and VPN access to the DIAL endpoint.",
-                status_code=502,
-                upstream_body=None,
-            ) from exc
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                resp = await client.post(endpoint, json=body)
+            except httpx.TransportError as exc:
+                _LOGGER.error("DIAL transport error for %s: %s", self.base_url, exc)
+                raise ModelDriverError(
+                    f"Cannot reach DIAL at {self.base_url!r}: {exc}. "
+                    "Check network connectivity and VPN access to the DIAL endpoint.",
+                    status_code=502,
+                    upstream_body=None,
+                ) from exc
 
-        if resp.status_code == 400 and "response_format" in body and allow_retry and self.retry_without_response_format:
-            _LOGGER.warning(
-                "DIAL HTTP 400 with response_format on %s; retrying without response_format",
-                endpoint,
-            )
+            if resp.status_code == 400 and "response_format" in body and allow_retry and self.retry_without_response_format:
+                _LOGGER.warning(
+                    "DIAL HTTP 400 with response_format on %s; retrying without response_format",
+                    endpoint,
+                )
+                return None
+
+            if resp.status_code == 429:
+                upstream = resp.text[:2000] if resp.text else None
+                retry_delay = self._dial_retry_delay_seconds(resp, attempt=attempt)
+                if retry_delay is not None:
+                    _LOGGER.warning(
+                        "DIAL HTTP 429 %s: retrying in %.2fs (attempt %s/%s)",
+                        endpoint,
+                        retry_delay,
+                        attempt,
+                        self.rate_limit_max_attempts,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+                _LOGGER.warning(
+                    "DIAL HTTP 429 %s: %s",
+                    endpoint,
+                    (upstream or "")[:500],
+                )
+                raise ModelDriverError(
+                    "DIAL returned HTTP 429",
+                    status_code=429,
+                    upstream_body=upstream,
+                )
+
+            if resp.status_code >= 400:
+                upstream = resp.text[:2000] if resp.text else None
+                _LOGGER.warning(
+                    "DIAL HTTP %s %s: %s",
+                    resp.status_code,
+                    endpoint,
+                    (upstream or "")[:500],
+                )
+                raise ModelDriverError(
+                    f"DIAL returned HTTP {resp.status_code}",
+                    status_code=resp.status_code,
+                    upstream_body=upstream,
+                )
+
+            return resp.json(), resp.text
+
+    def _dial_retry_delay_seconds(self, resp: Any, *, attempt: int) -> float | None:
+        """Return retry delay for transient 429s, or ``None`` when not retryable."""
+        if not self.retry_on_rate_limit or attempt >= self.rate_limit_max_attempts:
+            return None
+        upstream = resp.text or ""
+        payload = self._try_parse_error_payload(upstream)
+        display_message = str((payload.get("error") or {}).get("display_message") or "").strip().lower()
+        message = str((payload.get("error") or {}).get("message") or "").strip().lower()
+        if any(token in display_message for token in ("monthly", "daily", "weekly")):
+            return None
+        if any(token in message for token in ("monthly token limit", "daily token limit", "weekly token limit")):
             return None
 
-        if resp.status_code >= 400:
-            upstream = resp.text[:2000] if resp.text else None
-            _LOGGER.warning(
-                "DIAL HTTP %s %s: %s",
-                resp.status_code,
-                endpoint,
-                (upstream or "")[:500],
-            )
-            raise ModelDriverError(
-                f"DIAL returned HTTP {resp.status_code}",
-                status_code=resp.status_code,
-                upstream_body=upstream,
-            )
+        retry_after = self._parse_retry_after_seconds(getattr(resp, "headers", None))
+        if retry_after is not None:
+            return min(retry_after, self.rate_limit_max_delay_seconds)
 
-        return resp.json(), resp.text
+        delay = self.rate_limit_initial_delay_seconds * (2 ** max(attempt - 1, 0))
+        return min(delay, self.rate_limit_max_delay_seconds)
+
+    @staticmethod
+    def _try_parse_error_payload(raw_text: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _parse_retry_after_seconds(headers: Any) -> float | None:
+        if headers is None:
+            return None
+        value = None
+        if hasattr(headers, "get"):
+            value = headers.get("Retry-After") or headers.get("retry-after")
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            delay = float(text)
+            return max(delay, 0.0)
+        except ValueError:
+            pass
+        try:
+            when = parsedate_to_datetime(text)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return max((when - datetime.now(timezone.utc)).total_seconds(), 0.0)
+        except Exception:
+            return None
 
     def _parse_response(
         self,
