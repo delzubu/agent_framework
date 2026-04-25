@@ -6,10 +6,11 @@ import asyncio
 import contextvars
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait as _futures_wait
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
@@ -20,23 +21,56 @@ from agent_framework.agents.agent_decision import SubagentCallSpec
 from agent_framework.agent_registry import AgentRegistry
 from agent_framework.agent_event_publisher import agent_events
 from agent_framework.audit_trace import AuditTraceSubscriber, InMemoryAuditTracer
-from agent_framework.command import CommandDefinition, CommandRegistry, render as render_command
-from agent_framework.config import HostConfig, load_host_config
+from agent_framework.command import CommandRegistry, render as render_command
+from agent_framework.config import (
+    DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES,
+    HostConfig,
+    load_host_config,
+)
+from agent_framework.drivers import OpenAiModelDriver
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
+    CapabilityDefinition,
     DEFAULT_RESPONSE_MODE,
     ModelContext,
     ModelDriver,
     ModelResponse,
-    OpenAiModelDriver,
     merge_runtime_system_into_messages,
 )
-from agent_framework.file_reference import DefaultFileReferenceResolver, FileReferenceResolver, expand_file_refs
+from agent_framework.model_overrides import normalize_model_override_names
+from agent_framework.model_validation import ModelValidationChain, ModelValidationContext
+from agent_framework.file_reference import (
+    DefaultFileReferenceResolver,
+    FileReferenceResolver,
+    expand_file_refs,
+    replace_file_blocks,
+)
 from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tool_registry import ToolRegistry
 from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
+from agent_framework.interaction import PendingInteraction
+from agent_framework.memory import (
+    CatalogMemoryQueryProvider,
+    ConfiguredMemoryScopeResolver,
+    InMemoryMemoryBackend,
+    MemoryBackend,
+    MemoryEntry,
+    MemoryProjector,
+    MemoryQueryHit,
+    MemoryQueryProvider,
+    MemoryRef,
+    MemoryScope,
+    MemoryScopeResolver,
+    XmlMemoryProjector,
+    _entry_from_content,
+    _size_bytes_for_content,
+    build_memory_uri,
+    find_memory_uris,
+    next_memory_version,
+    parse_memory_uri,
+)
 from agent_framework.tracing import (
     CompositeRuntimeTracer,
     NullRuntimeTracer,
@@ -47,6 +81,7 @@ from agent_framework.tracing import (
 )
 from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework.user_communication import NullUserCommunication, UserCommunication
+from agent_framework.usage_tracking import RuntimeUsageTracker
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,6 +99,16 @@ class SubagentBatchItemResult:
     parameters_injection: str = "override"
     callback_intent: str | None = None
     callback_prompt: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RunRegistration:
+    """Minimal lineage record for one active or recently active run."""
+
+    run_id: str
+    agent_id: str
+    caller_id: str | None
+    parent_run_id: str | None
 
 
 def _agent_host_receive_log_enabled_from_env() -> bool:
@@ -111,6 +156,10 @@ class AgentHost:
     _audit_trace_subscriber: AuditTraceSubscriber | None = field(default=None, repr=False)
     _llm_traces_wired: bool = field(default=False, repr=False)
     skill_registry: SkillRegistry | None = None
+    memory_backend: MemoryBackend | None = None
+    memory_query_provider: MemoryQueryProvider | None = None
+    memory_projector: MemoryProjector | None = None
+    memory_scope_resolver: MemoryScopeResolver | None = None
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
     file_ref_resolver: FileReferenceResolver | None = field(
         default_factory=DefaultFileReferenceResolver, repr=False
@@ -130,11 +179,52 @@ class AgentHost:
     _checkpoint_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _timed_out_run_ids: set[str] = field(default_factory=set, repr=False)
     _timed_out_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    pending_interactions: dict[str, PendingInteraction] = field(default_factory=dict, repr=False)
+    _pending_interactions_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _run_registry: dict[str, RunRegistration] = field(default_factory=dict, repr=False)
+    _run_registry_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    runtime_usage_tracker: RuntimeUsageTracker = field(default_factory=RuntimeUsageTracker, repr=False)
+    model_validation_chain: ModelValidationChain = field(
+        default_factory=ModelValidationChain.with_defaults,
+        repr=False,
+    )
 
     @property
     def audit_tracer(self) -> InMemoryAuditTracer | None:
         """JSONL audit store when :meth:`enable_audit_trace` is used (read-only)."""
         return self._audit_jsonl
+
+    def register_model_exception_validator(self, validator: Any) -> None:
+        """Append one model-call exception validator to the runtime chain."""
+        self.model_validation_chain.register_exception_validator(validator)
+
+    def register_model_response_validator(self, validator: Any) -> None:
+        """Append one parsed-response validator to the runtime chain."""
+        self.model_validation_chain.register_response_validator(validator)
+
+    def validate_model_exception(
+        self,
+        exc: BaseException,
+        *,
+        validation_context: ModelValidationContext,
+    ) -> BaseException:
+        """Run registered exception validators and return the final exception."""
+        return self.model_validation_chain.validate_exception(
+            exc,
+            context=validation_context,
+        )
+
+    def validate_model_response(
+        self,
+        response: ModelResponse,
+        *,
+        validation_context: ModelValidationContext,
+    ) -> None:
+        """Run registered parsed-response validators."""
+        self.model_validation_chain.validate_response(
+            response,
+            context=validation_context,
+        )
 
     @property
     def host_receive_log_path(self) -> Path | None:
@@ -152,6 +242,7 @@ class AgentHost:
         *,
         model_driver: Any | None = None,
         model_override: str | tuple[str, ...] | None = None,
+        all_agents_model_override: str | tuple[str, ...] | None = None,
         user_comm: Any | None = None,
         input_reader: Any = None,  # deprecated; ignored (kept for test compat)
         output_writer: Any = None,  # deprecated; ignored (kept for test compat)
@@ -173,6 +264,9 @@ class AgentHost:
                 model names (first = highest priority).  This is the programmatic
                 mechanism for runtime model selection; no default behaviour is
                 added here.
+            all_agents_model_override: When provided, forces every agent loaded
+                by this host to use the given model tuple, overriding agent-side
+                runtime metadata and ``AGENT_MODELS`` for this host instance.
             user_comm: Optional ``UserCommunication`` implementation.  Defaults
                 to ``NullUserCommunication`` inside ``create()``.
         """
@@ -198,6 +292,7 @@ class AgentHost:
             model_driver=model_driver,
             config=config,
             user_comm=user_comm,
+            all_agents_model_override=all_agents_model_override,
         )
         host.enable_audit_trace(output_dir="logs")
         if _agent_host_receive_log_enabled_from_env():
@@ -221,6 +316,7 @@ class AgentHost:
         *,
         model_driver: Any | None = None,
         model_override: str | tuple[str, ...] | None = None,
+        all_agents_model_override: str | tuple[str, ...] | None = None,
     ) -> "AgentHost":
         """Construct a console host, run discovery, and start MCP connections."""
         from agent_framework.console_communication import ConsoleUserCommunication
@@ -229,6 +325,7 @@ class AgentHost:
             env_path,
             model_driver=model_driver,
             model_override=model_override,
+            all_agents_model_override=all_agents_model_override,
             user_comm=ConsoleUserCommunication(),
         )
         # Run start() synchronously to discover registries and start MCP
@@ -256,6 +353,7 @@ class AgentHost:
         builtin_tools: bool = True,
         mcp_enabled: bool = True,
         command_fallback: Any | None = None,
+        all_agents_model_override: str | tuple[str, ...] | None = None,
     ) -> "AgentHost":
         """Construct a host with an explicit driver.  No ``.env`` file required.
 
@@ -285,11 +383,18 @@ class AgentHost:
 
         tool_registry = ToolRegistry.from_config(config)
         agent_registry = AgentRegistry.from_config(config)
+        agent_registry.runtime_model_override = normalize_model_override_names(
+            all_agents_model_override
+        )
         command_registry = CommandRegistry.from_config(config)
 
         if builtin_tools:
             from agent_framework.builtin_tools import register_builtin_tools
             register_builtin_tools(tool_registry)
+            if getattr(config, "memory_enabled", True) and getattr(config, "memory_builtin_tools_enabled", True):
+                from agent_framework.memory_tools import register_memory_tools
+
+                register_memory_tools(tool_registry)
 
         mcp_manager: Any = None
         if mcp_enabled and getattr(config, "mcp_enabled", True):
@@ -437,6 +542,8 @@ class AgentHost:
         response_format: dict[str, Any] | None = None,
         response_mode: str = DEFAULT_RESPONSE_MODE,
         tools: Sequence[ToolDefinition] | None = None,
+        skills: Sequence[CapabilityDefinition] | None = None,
+        subagents: Sequence[CapabilityDefinition] | None = None,
         conversation_id: str | None = None,
     ) -> ModelResponse:
         """Single-turn model call without loading an agent definition.
@@ -460,6 +567,12 @@ class AgentHost:
                 plain-text responses or tool-calling loops where JSON parsing
                 of the assistant turn is not needed.
             tools: Tool definitions to expose to the model.
+            skills: Optional skill capabilities (``CapabilityDefinition``) for the
+                runtime envelope (e.g. ``invoke_skill`` metadata). Headless
+                ``complete`` does not execute skill or subagent callbacks—callers
+                that emit those decisions need a multi-step loop (see
+                :meth:`run_agent`).
+            subagents: Optional child-agent capabilities for the runtime envelope.
             conversation_id: If provided and a ``conversation_store`` is
                 attached, prior messages are prepended and the response is
                 appended to the store.
@@ -478,6 +591,8 @@ class AgentHost:
                 response_mode=response_mode,
                 response_format=response_format,
                 tools=tuple(tools or []),
+                skills=tuple(skills or ()),
+                subagents=tuple(subagents or ()),
                 run_id=run_id,
             )
         )
@@ -503,6 +618,8 @@ class AgentHost:
         response_format: dict[str, Any] | None = None,
         response_mode: str = DEFAULT_RESPONSE_MODE,
         tools: Sequence[ToolDefinition] | None = None,
+        skills: Sequence[CapabilityDefinition] | None = None,
+        subagents: Sequence[CapabilityDefinition] | None = None,
         conversation_id: str | None = None,
     ) -> ModelResponse:
         """Async single-turn model call without loading an agent definition.
@@ -523,6 +640,8 @@ class AgentHost:
                 response_mode=response_mode,
                 response_format=response_format,
                 tools=tuple(tools or []),
+                skills=tuple(skills or ()),
+                subagents=tuple(subagents or ()),
                 run_id=run_id,
             )
         )
@@ -678,6 +797,530 @@ class AgentHost:
             self.skill_registry.discover()
         return self.skill_registry
 
+    def create_memory_backend(self) -> MemoryBackend:
+        """Construct the default memory backend for this host.
+
+        Override in subclasses to provide persistent or remote-backed memory.
+        The default implementation returns :class:`InMemoryMemoryBackend`.
+        """
+        return InMemoryMemoryBackend()
+
+    def get_memory_backend(self) -> MemoryBackend:
+        """Lazy-initialize and return the host-level memory backend.
+
+        The backend owns canonical storage and exact lookup for ``mem://``
+        entries.
+        """
+        if self.memory_backend is None:
+            self.memory_backend = self.create_memory_backend()
+        return self.memory_backend
+
+    def create_memory_query_provider(self) -> MemoryQueryProvider:
+        """Construct the default memory query provider for this host.
+
+        Override in subclasses to plug in semantic retrieval or hybrid catalog
+        implementations. The default implementation returns
+        :class:`CatalogMemoryQueryProvider`.
+        """
+        return CatalogMemoryQueryProvider(self.get_memory_backend())
+
+    def get_memory_query_provider(self) -> MemoryQueryProvider:
+        """Lazy-initialize and return the host-level memory query provider.
+
+        Query providers handle discovery and ranking of memory refs within the
+        visible scopes of a run.
+        """
+        if self.memory_query_provider is None:
+            self.memory_query_provider = self.create_memory_query_provider()
+        return self.memory_query_provider
+
+    def create_memory_projector(self) -> MemoryProjector:
+        """Construct the default memory projector for this host.
+
+        Override in subclasses to emit alternative prompt formats. The default
+        implementation returns :class:`XmlMemoryProjector`.
+        """
+        return XmlMemoryProjector()
+
+    def get_memory_projector(self) -> MemoryProjector:
+        """Lazy-initialize and return the host-level memory projector.
+
+        Projectors render already-resolved memory metadata and content into the
+        deterministic prompt format used by model calls.
+        """
+        if self.memory_projector is None:
+            self.memory_projector = self.create_memory_projector()
+        return self.memory_projector
+
+    def create_memory_scope_resolver(self) -> MemoryScopeResolver:
+        """Construct the default visibility policy for scoped memory.
+
+        Override in subclasses to enforce caller-aware or product-specific
+        scope rules. The default implementation returns a
+        :class:`ConfiguredMemoryScopeResolver` seeded from :class:`HostConfig`.
+        """
+        return ConfiguredMemoryScopeResolver(
+            global_scope_keys=tuple(getattr(self.config, "memory_global_scopes", ())),
+            group_scope_keys=tuple(getattr(self.config, "memory_group_scopes", ())),
+            use_case_scope_keys=tuple(getattr(self.config, "memory_use_case_scopes", ())),
+            enable_agent_scope=bool(getattr(self.config, "memory_enable_agent_scope", False)),
+        )
+
+    def get_memory_scope_resolver(self) -> MemoryScopeResolver:
+        """Lazy-initialize and return the host-level memory scope resolver.
+
+        The resolver decides which scoped memory namespaces are visible to a
+        host operation or agent run before any query or projection occurs.
+        """
+        if self.memory_scope_resolver is None:
+            self.memory_scope_resolver = self.create_memory_scope_resolver()
+        return self.memory_scope_resolver
+
+    def get_visible_memory_scopes(self, *, agent_id: str, run_id: str) -> tuple[MemoryScope, ...]:
+        """Return the memory scopes visible to a host operation or agent run."""
+        if not getattr(self.config, "memory_enabled", True):
+            return ()
+        return self.get_memory_scope_resolver().visible_scopes(
+            session_id=self.session_id,
+            agent_id=agent_id,
+            run_id=run_id,
+        )
+
+    def get_default_agent_tool_names(self) -> tuple[str, ...]:
+        """Return tools implicitly available to every agent.
+
+        Memory read tools are injected here rather than in agent frontmatter so
+        they remain available across the framework without granting write access
+        by default.
+        """
+        if not getattr(self.config, "memory_enabled", True):
+            return ()
+        if not getattr(self.config, "memory_builtin_tools_enabled", True):
+            return ()
+        return ("memory_get", "memory_list", "memory_query")
+
+    def get_memory_auto_store_threshold_bytes(self) -> int:
+        """Return the byte threshold above which payloads are auto-stored in memory."""
+        configured = int(
+            getattr(self.config, "memory_auto_store_threshold_bytes", DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES)
+        )
+        return configured if configured > 0 else DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES
+
+    def store_memory(
+        self,
+        *,
+        path: str,
+        content: Any,
+        mime_type: str,
+        scope: MemoryScope | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryRef:
+        """Store a memory entry and return its stable ref."""
+        scope_value = scope or MemoryScope(kind="session", key=self.session_id)
+        uri = build_memory_uri(scope_value, path)
+        ref = MemoryRef(
+            uri=uri,
+            scope=scope_value,
+            mime_type=mime_type,
+            title=title,
+            summary=summary,
+            size_bytes=_size_bytes_for_content(content),
+            metadata=dict(metadata or {}),
+        )
+        entry = _entry_from_content(ref, content)
+        stored_ref = self.get_memory_backend().put(entry)
+        self.publish_trace_event(
+            kind="runtime.memory_put",
+            title=f"Memory stored: {path}",
+            summary=f"Stored memory entry {stored_ref.uri}.",
+            payload={
+                "memory_uri": stored_ref.uri,
+                "scope": stored_ref.scope.as_text(),
+                "mime_type": stored_ref.mime_type,
+                "title": stored_ref.title,
+                "summary": stored_ref.summary,
+                "size_bytes": stored_ref.size_bytes,
+                "version": stored_ref.version,
+                "metadata": dict(stored_ref.metadata),
+            },
+            context=TraceContext(session_id=self.session_id),
+        )
+        return stored_ref
+
+    def create_memory(
+        self,
+        *,
+        path: str,
+        content: Any,
+        mime_type: str | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        scope: MemoryScope | None = None,
+    ) -> MemoryRef:
+        """Create a new memory entry using inferred defaults where possible.
+
+        Args:
+            path: Relative path under the target scope.
+            content: Content to store. Strings become text; objects become JSON.
+            mime_type: Optional MIME type override. Inferred when omitted.
+            title: Optional short human-readable label.
+            summary: Optional short discovery summary for list/query output.
+            metadata: Optional arbitrary metadata persisted on the ref.
+            scope: Optional explicit scope override. Defaults to the current
+                host session scope.
+        """
+        inferred_mime = mime_type or self._infer_memory_mime_type(content)
+        return self.store_memory(
+            path=path,
+            content=content,
+            mime_type=inferred_mime,
+            scope=scope,
+            title=title,
+            summary=summary,
+            metadata=metadata,
+        )
+
+    def get_memory(self, uri: str) -> MemoryEntry:
+        """Return one memory entry by URI."""
+        return self.get_memory_backend().get(uri)
+
+    def update_memory(
+        self,
+        *,
+        uri: str,
+        content: Any,
+        mime_type: str | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryRef:
+        """Update an existing memory entry and bump its version."""
+        current = self.get_memory(uri)
+        updated_ref = MemoryRef(
+            uri=current.ref.uri,
+            scope=current.ref.scope,
+            mime_type=mime_type or current.ref.mime_type,
+            title=title if title is not None else current.ref.title,
+            summary=summary if summary is not None else current.ref.summary,
+            size_bytes=_size_bytes_for_content(content),
+            version=next_memory_version(current.ref.version),
+            metadata=dict(current.ref.metadata) | dict(metadata or {}),
+        )
+        entry = _entry_from_content(updated_ref, content)
+        stored_ref = self.get_memory_backend().put(entry)
+        self.publish_trace_event(
+            kind="runtime.memory_update",
+            title=f"Memory updated: {uri}",
+            summary=f"Updated memory entry {stored_ref.uri} to version {stored_ref.version}.",
+            payload={
+                "memory_uri": stored_ref.uri,
+                "scope": stored_ref.scope.as_text(),
+                "mime_type": stored_ref.mime_type,
+                "title": stored_ref.title,
+                "summary": stored_ref.summary,
+                "size_bytes": stored_ref.size_bytes,
+                "version": stored_ref.version,
+                "metadata": dict(stored_ref.metadata),
+            },
+            context=TraceContext(session_id=self.session_id),
+        )
+        return stored_ref
+
+    def render_memory_entry(self, uri: str) -> str:
+        """Render one memory entry as XML."""
+        entry = self.get_memory(uri)
+        return self.get_memory_projector().render_entries((entry,))
+
+    def list_memory_refs(
+        self,
+        *,
+        scope_kind: str | None = None,
+        scope_key: str | None = None,
+        limit: int = 20,
+    ) -> tuple[MemoryRef, ...]:
+        """List visible memory refs, optionally filtered to a single visible scope.
+
+        This method returns lightweight refs only and never materialises full
+        content.
+        """
+        scopes = self._filter_visible_memory_scopes(
+            scope_kind=scope_kind,
+            scope_key=scope_key,
+            agent_id="",
+            run_id="",
+        )
+        hits = self.get_memory_query_provider().list(scopes, limit=limit)
+        return tuple(hit.ref for hit in hits)
+
+    def query_memory(
+        self,
+        text: str,
+        *,
+        scope_kind: str | None = None,
+        scope_key: str | None = None,
+        limit: int = 10,
+    ) -> tuple[MemoryQueryHit, ...]:
+        """Query visible memory by text.
+
+        Query semantics depend on the active :class:`MemoryQueryProvider`.
+        """
+        scopes = self._filter_visible_memory_scopes(
+            scope_kind=scope_kind,
+            scope_key=scope_key,
+            agent_id="",
+            run_id="",
+        )
+        return self.get_memory_query_provider().query(text, scopes, limit=limit)
+
+    def build_memory_prompt(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        parameter_values: dict[str, Any],
+        seed_parameters: dict[str, Any],
+        prompt_text: str = "",
+    ) -> tuple[tuple[MemoryScope, ...], tuple[MemoryRef, ...], str]:
+        """Build deterministic memory XML for one model call."""
+        scopes = self.get_visible_memory_scopes(agent_id=agent_id, run_id=run_id)
+        if not scopes:
+            return scopes, (), ""
+
+        query_provider = self.get_memory_query_provider()
+        projector = self.get_memory_projector()
+        catalog_hits = query_provider.list(scopes, limit=20)
+        catalog_xml = projector.render_catalog(catalog_hits)
+
+        explicit_uris = (
+            find_memory_uris(parameter_values)
+            + find_memory_uris(seed_parameters)
+            + find_memory_uris(prompt_text)
+        )
+        seen: set[str] = set()
+        entries: list[MemoryEntry] = []
+        refs: list[MemoryRef] = []
+        visible_scope_pairs = {(scope.kind, scope.key) for scope in scopes}
+        for uri in explicit_uris:
+            if uri in seen:
+                continue
+            seen.add(uri)
+            scope_kind, scope_key, _ = parse_memory_uri(uri)
+            if visible_scope_pairs and (scope_kind, scope_key) not in visible_scope_pairs:
+                continue
+            entry = self.get_memory_backend().get(uri)
+            entries.append(entry)
+            refs.append(entry.ref)
+
+        content_xml = projector.render_entries(entries)
+        parts = [part for part in (catalog_xml, content_xml) if part]
+        return scopes, tuple(refs), "\n\n".join(parts)
+
+    def normalize_memory_parameters(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        parameters: dict[str, Any],
+        child_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Replace oversized parameter payloads with session-scoped memory refs."""
+        if not getattr(self.config, "memory_enabled", True):
+            return dict(parameters)
+
+        normalized: dict[str, Any] = {}
+        for name, value in parameters.items():
+            normalized[name] = self._normalize_memory_parameter_value(
+                name=name,
+                value=value,
+                agent_id=agent_id,
+                run_id=run_id,
+                child_agent_id=child_agent_id,
+            )
+        return normalized
+
+    def _normalize_memory_parameter_value(
+        self,
+        *,
+        name: str,
+        value: Any,
+        agent_id: str,
+        run_id: str,
+        child_agent_id: str | None = None,
+    ) -> Any:
+        if isinstance(value, str) and value.startswith("mem://"):
+            return value
+        try:
+            size_bytes = _size_bytes_for_content(value)
+        except TypeError:
+            return value
+        if size_bytes < self.get_memory_auto_store_threshold_bytes():
+            return value
+
+        scope = MemoryScope(kind="session", key=self.session_id)
+        target = child_agent_id or agent_id
+        path = f"runs/{run_id}/agents/{target}/parameters/{name}"
+        ref = self.store_memory(
+            path=path,
+            content=value,
+            mime_type=self._infer_memory_mime_type(value),
+            scope=scope,
+            title=f"Auto-stored parameter {name}",
+            summary=(
+                f"Auto-stored parameter {name!r} for agent {target!r} because it exceeded "
+                f"{self.get_memory_auto_store_threshold_bytes()} bytes."
+            ),
+            metadata={
+                "source_agent_id": agent_id,
+                "target_agent_id": target,
+                "parameter_name": name,
+                "run_id": run_id,
+                "size_bytes": size_bytes,
+                "auto_stored": True,
+            },
+        )
+        self.publish_trace_event(
+            kind="runtime.memory_autostore",
+            title=f"Auto-stored parameter: {name}",
+            summary=f"Stored oversized parameter {name!r} as {ref.uri}.",
+            payload={
+                "agent_id": agent_id,
+                "child_agent_id": child_agent_id,
+                "run_id": run_id,
+                "parameter_name": name,
+                "memory_uri": ref.uri,
+                "size_bytes": size_bytes,
+                "threshold_bytes": self.get_memory_auto_store_threshold_bytes(),
+            },
+            context=TraceContext(run_id=run_id, agent_id=agent_id),
+        )
+        return ref.uri
+
+    def _filter_visible_memory_scopes(
+        self,
+        *,
+        scope_kind: str | None,
+        scope_key: str | None,
+        agent_id: str,
+        run_id: str,
+    ) -> tuple[MemoryScope, ...]:
+        """Return visible scopes, optionally narrowed to one explicit scope."""
+        scopes = self.get_visible_memory_scopes(agent_id=agent_id, run_id=run_id)
+        if scope_kind or scope_key:
+            if not (scope_kind and scope_key):
+                raise ValueError("scope_kind and scope_key must be supplied together.")
+            scopes = tuple(
+                scope for scope in scopes if scope.kind == scope_kind and scope.key == scope_key
+            )
+        return scopes
+
+    @staticmethod
+    def _infer_memory_mime_type(value: Any) -> str:
+        if isinstance(value, str):
+            return "text/plain"
+        if isinstance(value, bytes):
+            return "application/octet-stream"
+        return "application/json"
+
+    @staticmethod
+    def _sanitize_memory_path_segment(value: str | None, *, fallback: str) -> str:
+        if not value:
+            return fallback
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-.")
+        return cleaned or fallback
+
+    def _lift_prompt_file_blocks_to_memory(
+        self,
+        *,
+        agent_id: str,
+        run_id: str,
+        prompt: str,
+    ) -> str:
+        """Store expanded ``<file>`` prompt blocks in memory and replace them with refs.
+
+        Only host-generated file/RAG inclusions are lifted from the prompt. Freeform
+        user prose is intentionally left inline.
+        """
+        if not prompt or "<file" not in prompt or not getattr(self.config, "memory_enabled", True):
+            return prompt
+
+        scope = MemoryScope(kind="session", key=self.session_id)
+
+        def _replace(block: str, attrs: dict[str, str], index: int) -> str:
+            file_name = attrs.get("name")
+            safe_name = self._sanitize_memory_path_segment(file_name, fallback=f"file-{index}")
+            path = f"runs/{run_id}/agents/{agent_id}/prompt-files/{index:03d}-{safe_name}"
+            ref = self.store_memory(
+                path=path,
+                content=block,
+                mime_type="text/xml",
+                scope=scope,
+                title=f"Prompt file {file_name or index}",
+                summary=(
+                    f"Expanded file content lifted from the root prompt for agent {agent_id!r}."
+                ),
+                metadata={
+                    "source_agent_id": agent_id,
+                    "run_id": run_id,
+                    "file_name": file_name,
+                    "encoding": attrs.get("encoding"),
+                    "source": "prompt_file_block",
+                    "auto_lifted": True,
+                },
+            )
+            self.publish_trace_event(
+                kind="runtime.memory_prompt_lift",
+                title=f"Lifted prompt file block: {file_name or index}",
+                summary=f"Stored root prompt file block as {ref.uri}.",
+                payload={
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "memory_uri": ref.uri,
+                    "file_name": file_name,
+                    "encoding": attrs.get("encoding"),
+                },
+                context=TraceContext(run_id=run_id, agent_id=agent_id),
+            )
+            return f'<memory id="{ref.uri}" />'
+
+        return replace_file_blocks(prompt, _replace)
+
+    def _bootstrap_root_prompt_inputs(
+        self,
+        *,
+        agent: Agent,
+        run_id: str,
+        initial_instruction: str,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Prepare root-run parameters and prompt text before the first model call.
+
+        The bootstrap path is intentionally conservative:
+
+        - when the supplied prompt cleanly matches the agent's template contract,
+          recover structured parameters and let the normal parameter/memory flow run
+        - otherwise, keep the prompt freeform but lift expanded ``<file>`` blocks
+          into memory so large RAG payloads are no longer carried inline
+        """
+        if not initial_instruction:
+            return {}, ""
+
+        parsed_parameters = agent.try_parse_prompt_input(initial_instruction)
+        if parsed_parameters is not None:
+            try:
+                rendered_from_parameters = agent.render_user_prompt(parsed_parameters)
+            except ValueError:
+                rendered_from_parameters = None
+            if rendered_from_parameters is not None and rendered_from_parameters.strip() == initial_instruction.strip():
+                return parsed_parameters, None
+
+        return {}, self._lift_prompt_file_blocks_to_memory(
+            agent_id=agent.agent_id,
+            run_id=run_id,
+            prompt=initial_instruction,
+        )
+
     def register_tool(self, tool: Tool) -> None:
         """Register a concrete tool instance for runtime execution."""
         self.tool_registry.register(tool)
@@ -829,6 +1472,124 @@ class AgentHost:
             self._prompt_counter += 1
             return self._prompt_counter
 
+    def open_interaction(
+        self,
+        *,
+        prompt: str,
+        intent: str,
+        run_id: str,
+        agent_id: str,
+        caller_id: str | None,
+        parent_run_id: str | None,
+        interaction_kind: str,
+        blocking: bool = True,
+    ) -> PendingInteraction:
+        """Register a pending interactive prompt and emit a trace event."""
+        interaction = PendingInteraction(
+            prompt_id=str(uuid4()),
+            session_id=self.session_id,
+            prompt=prompt,
+            intent=intent,
+            run_id=run_id,
+            agent_id=agent_id,
+            caller_id=caller_id,
+            parent_run_id=parent_run_id,
+            interaction_kind=interaction_kind,
+            blocking=blocking,
+            created_at=datetime.now(timezone.utc),
+        )
+        with self._pending_interactions_lock:
+            self.pending_interactions[interaction.prompt_id] = interaction
+        self.publish_trace_event(
+            kind="runtime.interaction_opened",
+            title="Interaction opened",
+            payload=interaction.metadata(),
+            context=TraceContext(
+                run_id=run_id,
+                agent_id=agent_id,
+                caller_id=caller_id,
+            ),
+        )
+        return interaction
+
+    def close_interaction(self, prompt_id: str, *, answer: str | None = None, cancelled: bool = False) -> None:
+        """Remove a pending interaction and emit the matching trace event."""
+        with self._pending_interactions_lock:
+            interaction = self.pending_interactions.pop(prompt_id, None)
+        if interaction is None:
+            return
+        kind = "runtime.interaction_cancelled" if cancelled else "runtime.interaction_answered"
+        title = "Interaction cancelled" if cancelled else "Interaction answered"
+        payload = interaction.metadata()
+        payload["answer"] = answer
+        self.publish_trace_event(
+            kind=kind,
+            title=title,
+            payload=payload,
+            context=TraceContext(
+                run_id=interaction.run_id,
+                agent_id=interaction.agent_id,
+                caller_id=interaction.caller_id,
+            ),
+        )
+
+    def get_pending_interaction(self, prompt_id: str) -> PendingInteraction | None:
+        """Return a pending interaction by prompt id."""
+        with self._pending_interactions_lock:
+            return self.pending_interactions.get(prompt_id)
+
+    def register_run(
+        self,
+        *,
+        run_id: str,
+        agent_id: str,
+        caller_id: str | None,
+        parent_run_id: str | None,
+    ) -> None:
+        """Record minimal lineage for a run so callback bubbling can skip layers."""
+        with self._run_registry_lock:
+            self._run_registry[run_id] = RunRegistration(
+                run_id=run_id,
+                agent_id=agent_id,
+                caller_id=caller_id,
+                parent_run_id=parent_run_id,
+            )
+        self.runtime_usage_tracker.record_run_started(
+            run_id=run_id,
+            agent_id=agent_id,
+            parent_run_id=parent_run_id,
+        )
+
+    def record_runtime_llm_usage(self, *, run_id: str | None, usage: Any) -> None:
+        """Feed normalized LLM usage into the per-session runtime tracker."""
+        if not run_id:
+            return
+        self.runtime_usage_tracker.record_llm_usage(run_id=run_id, usage=usage)
+
+    def finish_runtime_usage(self, *, run_id: str | None) -> dict[str, dict[str, int]]:
+        """Return canonical self and inclusive usage totals for a completed run."""
+        if not run_id:
+            empty = {
+                "input_tokens": 0,
+                "input_cached_tokens": 0,
+                "output_tokens": 0,
+                "output_cached_tokens": 0,
+                "total_tokens": 0,
+            }
+            return {"usage_self": dict(empty), "usage_inclusive": dict(empty)}
+        return self.runtime_usage_tracker.finish_run(run_id=run_id)
+
+    def session_usage_totals(self) -> dict[str, int]:
+        """Return session-wide normalized usage totals."""
+        return self.runtime_usage_tracker.session_totals()
+
+    def get_run_registration(self, run_id: str | None) -> RunRegistration | None:
+        """Return the stored run lineage record, if any."""
+        if not run_id:
+            return None
+        with self._run_registry_lock:
+            return self._run_registry.get(run_id)
+
     def run_agent(
         self,
         agent_id: str,
@@ -836,19 +1597,29 @@ class AgentHost:
         *,
         conversation_messages: tuple[dict[str, str], ...] | None = None,
         prompt_fragments: tuple[str, ...] | None = None,
+        model_override: str | tuple[str, ...] | None = None,
     ) -> AgentResult:
         """Run a specific agent id as a top-level invocation."""
         if initial_instruction and self.file_ref_resolver is not None:
             initial_instruction = expand_file_refs(initial_instruction, self.file_ref_resolver)
-        agent = self._agent_with_runtime_tracing(self.get_agent(agent_id))
+        agent = self.get_agent(agent_id)
+        root_model_override = normalize_model_override_names(model_override)
+        if root_model_override is not None:
+            agent = replace(agent, model_names=root_model_override)
+        agent = self._agent_with_runtime_tracing(agent)
         prompt_num = self._next_prompt_counter()
         root_run_id = f"{self.session_id}.p{prompt_num}.{agent_id}"
+        parameters, rendered_prompt_override = self._bootstrap_root_prompt_inputs(
+            agent=agent,
+            run_id=root_run_id,
+            initial_instruction=initial_instruction or "",
+        )
         with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
             return agent.run(
                 host=self,
-                parameters={},
+                parameters=parameters,
                 caller_id="host",
-                rendered_prompt_override=initial_instruction or "",
+                rendered_prompt_override=rendered_prompt_override,
                 conversation_messages=conversation_messages,
                 prompt_fragments=prompt_fragments,
                 run_id=root_run_id,
@@ -884,11 +1655,17 @@ class AgentHost:
         """Synchronously invoke a child agent from a caller agent."""
         base_dir = caller.source_path.parent if caller.source_path is not None else None
         callee = self._agent_with_runtime_tracing(self.get_agent(callee_id, base_dir=base_dir))
+        normalized_parameters = self.normalize_memory_parameters(
+            agent_id=caller.agent_id,
+            run_id=run_id or (f"{parent_run_id}.{callee_id}" if parent_run_id else f"{callee_id}.{self.session_id}"),
+            parameters=parameters,
+            child_agent_id=callee_id,
+        )
         child_run_id = run_id or (f"{parent_run_id}.{callee_id}" if parent_run_id else None)
         with active_tracer_scope(self.runtime_tracer, self.trace_context_overlay):
             return callee.run(
                 host=self,
-                parameters=parameters,
+                parameters=normalized_parameters,
                 caller_id=caller.agent_id,
                 parent_run_id=parent_run_id,
                 run_id=child_run_id,
@@ -1046,6 +1823,9 @@ class AgentHost:
                         caller_id=caller.agent_id,
                         callee=callee,
                         prompt=br.callback_prompt or "",
+                        intent=br.callback_intent or "information_request",
+                        run_id=br.run_id,
+                        parent_run_id=parent_run_id,
                     )
                 except Exception as exc:
                     self.delete_checkpoint(br.run_id)
@@ -1205,8 +1985,52 @@ class AgentHost:
         """Execute a loaded tool by name."""
         return self.get_tool(tool_name).invoke(parameters, self)
 
-    def resolve_callback(self, *, caller_id: str, callee: Agent, prompt: str) -> str:
+    def resolve_callback(
+        self,
+        *,
+        caller_id: str,
+        callee: Agent,
+        prompt: str,
+        intent: str = "information_request",
+        run_id: str = "",
+        parent_run_id: str | None = None,
+        allow_user_fallback: bool = True,
+        callback_parameters: dict[str, Any] | None = None,
+    ) -> str:
         """Collect a callback response from the caller side."""
+        params = dict(callback_parameters or {})
+        current_hops = int(params.get("bubble_hops", 0) or 0)
+        passthrough_agents = {
+            str(item).strip()
+            for item in (params.get("passthrough_agents") or [])
+            if str(item).strip()
+        }
+        resolvable_by = {
+            str(item).strip()
+            for item in (params.get("resolvable_by") or [])
+            if str(item).strip()
+        }
+        should_passthrough = caller_id in passthrough_agents
+        not_resolvable_here = bool(resolvable_by) and caller_id not in resolvable_by and caller_id != "host"
+        if caller_id != "host" and (should_passthrough or not_resolvable_here):
+            caller_run = self.get_run_registration(parent_run_id)
+            if caller_run is not None and caller_run.caller_id is not None:
+                params["bubble_hops"] = current_hops + 1
+                return self.resolve_callback(
+                    caller_id=caller_run.caller_id,
+                    callee=callee,
+                    prompt=prompt,
+                    intent=intent,
+                    run_id=run_id,
+                    parent_run_id=caller_run.parent_run_id,
+                    allow_user_fallback=allow_user_fallback,
+                    callback_parameters=params,
+                )
+            if not allow_user_fallback:
+                raise RuntimeError(
+                    f"Callback for {callee.agent_id!r} could not be resolved without host/user interaction."
+                )
+            caller_id = "host"
         if caller_id != "host":
             try:
                 caller_agent = self.get_agent(caller_id)
@@ -1218,26 +2042,78 @@ class AgentHost:
                     return response
                 result = caller_agent.run(
                     host=self,
-                    parameters={},
+                    parameters=dict(callback_parameters or {}),
                     caller_id="host",
                     rendered_prompt_override=prompt,
                 )
                 if result.message:
                     return result.message
+                if not allow_user_fallback:
+                    raise RuntimeError(
+                        f"Caller agent {caller_id!r} did not resolve callback for {callee.agent_id!r}."
+                    )
         # Fall back to user_comm
+        if not allow_user_fallback:
+            raise RuntimeError(
+                f"Callback for {callee.agent_id!r} could not be resolved without host/user interaction."
+            )
         if self.user_comm is None:
             return ""
         message = f"{callee.agent_id} asks {caller_id}: {prompt}\nResponse: "
-        result = self._run_user_comm_coro(self.user_comm.read_user_input(message))
+        interaction = self.open_interaction(
+            prompt=message,
+            intent=intent,
+            run_id=run_id or f"{callee.agent_id}.{self.session_id}",
+            agent_id=callee.agent_id,
+            caller_id=caller_id,
+            parent_run_id=parent_run_id,
+            interaction_kind="callback_to_caller",
+            blocking=True,
+        )
+        result = self._run_user_comm_coro(
+            self.user_comm.read_user_input(
+                message,
+                prompt_id=interaction.prompt_id,
+                metadata=interaction.metadata(),
+            )
+        )
+        self.close_interaction(interaction.prompt_id, answer=result, cancelled=result is None)
         return result or ""
 
-    def request_user_input(self, prompt: str) -> str:
+    def request_user_input(
+        self,
+        prompt: str,
+        *,
+        intent: str = "information_request",
+        run_id: str = "",
+        agent_id: str = "",
+        caller_id: str | None = None,
+        parent_run_id: str | None = None,
+        interaction_kind: str = "direct_user_input",
+    ) -> str:
         """Collect direct user input via ``user_comm``."""
         if self.user_comm is None:
             raise RuntimeError(
                 "No UserCommunication configured. Use AgentHost.create() with user_comm=."
             )
-        result = self._run_user_comm_coro(self.user_comm.read_user_input(f"{prompt}\n> "))
+        interaction = self.open_interaction(
+            prompt=prompt,
+            intent=intent,
+            run_id=run_id or f"{agent_id or 'agent'}.{self.session_id}",
+            agent_id=agent_id or "agent",
+            caller_id=caller_id,
+            parent_run_id=parent_run_id,
+            interaction_kind=interaction_kind,
+            blocking=True,
+        )
+        result = self._run_user_comm_coro(
+            self.user_comm.read_user_input(
+                f"{prompt}\n> ",
+                prompt_id=interaction.prompt_id,
+                metadata=interaction.metadata(),
+            )
+        )
+        self.close_interaction(interaction.prompt_id, answer=result, cancelled=result is None)
         return result or ""
 
     def open_context(self, *, caller_id: str, callee_id: str, kind: str) -> CallContext:
@@ -1311,6 +2187,7 @@ async def run_tool_loop(
     tool_executor: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None,
     terminal_tools: Sequence[str] = (),
     max_iterations: int = 10,
+    return_on_max_iterations: bool = False,
     conversation_id: str | None = None,
     model_names: str | tuple[str, ...] | None = None,
     temperature: float = 0.2,
@@ -1331,14 +2208,20 @@ async def run_tool_loop(
 
     Args:
         host: The ``AgentHost`` to use for model calls.
-        messages: Initial message list.  Modified in-place as turns progress.
+        messages: Mutable message list **mutated in place** (not copied). After a plain
+            ``stop`` (no tool calls), an ``assistant`` row is appended. After tool calls,
+            an ``assistant`` row with ``tool_calls`` is appended **before** terminal-tool
+            handling so transcripts match clarification-style flows.
         tools: Tool definitions exposed to the model.
         tool_executor: Async callable ``(tool_name, arguments) -> result_str``.
             When ``None``, tool calls are recorded but not executed.
         terminal_tools: Tool names that cause an immediate loop exit when called
             by the model.  The tool is not executed; its arguments are returned.
         max_iterations: Maximum number of model calls before raising
-            ``RuntimeError``.
+            ``RuntimeError`` (unless ``return_on_max_iterations`` is true).
+        return_on_max_iterations: When true, return a ``ModelResponse`` with
+            ``finish_reason="max_iterations"`` instead of raising when the loop
+            exhausts iterations without a stop or terminal tool.
         conversation_id: Passed through to ``complete_async()`` for store
             integration.
         model_names: Model(s) to use.  Accepts a comma-separated string, a
@@ -1362,7 +2245,11 @@ async def run_tool_loop(
 
     from agent_framework.model import ModelResponse
 
-    current_messages = list(messages)
+    # Mutate the caller's ``messages`` list in place (do not copy), so store-backed
+    # wrappers can diff-append new rows to a ``ConversationStore``.
+    current_messages = messages
+    terminal_set = frozenset(terminal_tools)
+    last_response: ModelResponse | None = None
 
     for _ in range(max_iterations):
         response = await host.complete_async(
@@ -1374,18 +2261,35 @@ async def run_tool_loop(
             tools=tools,
             conversation_id=conversation_id,
         )
+        last_response = response
 
         tool_calls = response.tool_calls or ()
 
-        # No tool calls — model is done
+        # No tool calls — model is done (record final assistant in transcript)
         if not tool_calls:
+            current_messages.append(
+                {
+                    "role": "assistant",
+                    "content": response.raw_text or None,
+                }
+            )
             return response
 
-        # Check for terminal tool
+        # Record assistant turn (including tool_calls) before terminal handling so
+        # callers persisting ``messages`` match clarification-style transcripts.
+        current_messages.append(
+            {
+                "role": "assistant",
+                "content": response.raw_text or None,
+                "tool_calls": list(tool_calls),
+            }
+        )
+
+        # Terminal tool — do not execute tools; return tool arguments as raw_text
         for tc in tool_calls:
             fn = tc.get("function", {})
             name = fn.get("name", "")
-            if name in terminal_tools:
+            if name in terminal_set:
                 raw_args = fn.get("arguments", "{}")
                 return ModelResponse(
                     payload={},
@@ -1394,13 +2298,6 @@ async def run_tool_loop(
                     finish_reason="terminal_tool",
                     usage=response.usage,
                 )
-
-        # Append assistant message with tool calls
-        current_messages.append({
-            "role": "assistant",
-            "content": response.raw_text or None,
-            "tool_calls": list(tool_calls),
-        })
 
         # Execute tools and collect results
         for tc in tool_calls:
@@ -1430,6 +2327,14 @@ async def run_tool_loop(
                 "tool_call_id": tc.get("id", ""),
                 "content": result,
             })
+
+    if return_on_max_iterations and last_response is not None:
+        return ModelResponse(
+            payload={},
+            raw_text=last_response.raw_text or "",
+            finish_reason="max_iterations",
+            usage=last_response.usage,
+        )
 
     raise RuntimeError(
         f"run_tool_loop reached max_iterations={max_iterations} without a stop condition."

@@ -116,11 +116,27 @@ class WebUserCommunication:
         )
         return PermissionDecision(allowed=allowed, remember_for_session=False)
 
-    async def read_user_input(self, prompt: str = "") -> str | None:
-        return await self._read_input_after_enqueue({"kind": "prompt", "prompt": prompt}, prompt)
+    async def read_user_input(
+        self,
+        prompt: str = "",
+        *,
+        prompt_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> str | None:
+        item = {"kind": "prompt", "prompt": prompt}
+        if metadata:
+            item.update(metadata)
+        return await self._read_input_after_enqueue(item, prompt, prompt_id=prompt_id, metadata=metadata)
 
-    async def _read_input_after_enqueue(self, item: dict[str, Any], trace_prompt: str) -> str | None:
-        prompt_id = str(uuid.uuid4())
+    async def _read_input_after_enqueue(
+        self,
+        item: dict[str, Any],
+        trace_prompt: str,
+        *,
+        prompt_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> str | None:
+        prompt_id = prompt_id or str(uuid.uuid4())
         item["prompt_id"] = prompt_id
         self._pending_prompt_id = prompt_id
         try_publish_trace(
@@ -128,7 +144,12 @@ class WebUserCommunication:
             kind="user.prompt_requested",
             title="Waiting for user input",
             summary=trace_prompt[:200],
-            payload={"session_id": self.session_id, "prompt": trace_prompt[:2000], "prompt_id": prompt_id},
+            payload={
+                "session_id": self.session_id,
+                "prompt": trace_prompt[:2000],
+                "prompt_id": prompt_id,
+                "metadata": dict(metadata or {}),
+            },
         )
         self._outbox.append(item)
         loop = asyncio.get_running_loop()
@@ -144,6 +165,7 @@ class WebUserCommunication:
                 "session_id": self.session_id,
                 "text": (result or "")[:2000],
                 "prompt_id": prompt_id,
+                "metadata": dict(metadata or {}),
             },
         )
         return result

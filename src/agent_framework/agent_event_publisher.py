@@ -8,7 +8,6 @@ from typing import Any, Final
 from uuid import uuid4
 
 from agent_framework.agents.agent_decision import AgentDecision
-from agent_framework.agents.agent_run import AgentRun
 from agent_framework.tracing import (
     LogEventPayload,
     NullRuntimeTracer,
@@ -153,7 +152,13 @@ class AgentEventPublisher:
             ),
         )
 
-    def audit_agent_call_finished(self, *, run_id: str) -> None:
+    def audit_agent_call_finished(
+        self,
+        *,
+        run_id: str,
+        usage_self: dict[str, int] | None = None,
+        usage_inclusive: dict[str, int] | None = None,
+    ) -> None:
         self._publish(
             make_trace_event(
                 channel="runtime",
@@ -161,7 +166,11 @@ class AgentEventPublisher:
                 title="Audit: agent call finished",
                 span_id=run_id,
                 context=TraceContext(run_id=run_id),
-                payload={"run_id": run_id},
+                payload={
+                    "run_id": run_id,
+                    "usage_self": dict(usage_self or {}),
+                    "usage_inclusive": dict(usage_inclusive or {}),
+                },
             ),
         )
 

@@ -5,6 +5,8 @@ const sendChatButton = document.getElementById("send-chat-button");
 const envPathInput = document.getElementById("env-path");
 const agentInput = document.getElementById("agent-select");
 const initializerInput = document.getElementById("initializer-select");
+const agentModelOverrideSelect = document.getElementById("agent-model-override");
+const agentModelOverrideScopeSelect = document.getElementById("agent-model-override-scope");
 const agentList = document.getElementById("agent-list");
 const initializerList = document.getElementById("initializer-list");
 const channelToggles = document.getElementById("channel-toggles");
@@ -34,6 +36,7 @@ const evalLlmInlineDetail = document.getElementById("eval-llm-inline-detail");
 const evalCodeInlineDetail = document.getElementById("eval-code-inline-detail");
 const batchSummaryPanel = document.getElementById("batch-summary-panel");
 const batchSummaryTableBody = document.getElementById("batch-summary-table-body");
+const runUsageSummary = document.getElementById("run-usage-summary");
 const batchAvgScoreBar = document.getElementById("batch-avg-score-bar");
 const batchAvgScoreLabel = document.getElementById("batch-avg-score-label");
 const evaluationDetailModal = document.getElementById("evaluation-detail-modal");
@@ -68,6 +71,10 @@ let lastEvaluationPayload = null;
 
 /** Last agent `result` payload from the server. @type {Record<string, unknown> | null} */
 let lastAgentResultPayload = null;
+/** @type {Record<string, unknown> | null} */
+let lastUsageSummary = null;
+/** @type {Map<string, Record<string, unknown>>} */
+let liveRunUsage = new Map();
 
 /**
  * Snapshots from the last run (first LLM request).
@@ -99,6 +106,8 @@ let lastCaseListHint = "";
 
 /** @type {"standard" | "no_callbacks"} */
 let caseRunMode = "standard";
+let pendingDefaultAgentModelOverride = "";
+let pendingDefaultAgentModelOverrideScope = "root_only";
 
 /** @type {HTMLElement | null} */
 let caseRunMenuAnchor = null;
@@ -122,80 +131,7 @@ const unifiedEntries = [];
 
 const TRACE_STRING_PREVIEW_CHARS = 90;
 const LEVEL_ORDER = { debug: 10, info: 20, warning: 30, error: 40 };
-
-function looksLikeMarkdown(s) {
-  if (typeof s !== "string" || s.length < 4) return false;
-  return (
-    /(^|\n)#{1,6}\s/m.test(s) ||
-    /(^|\n)[-*+]\s/m.test(s) ||
-    /```[\s\S]*?```/.test(s) ||
-    /(^|\n)\|[^\n]+\|/m.test(s) ||
-    /\[[^\]]+\]\([^)]+\)/.test(s)
-  );
-}
-
-function getMarkedParse() {
-  const m = globalThis.marked;
-  if (m && typeof m.parse === "function") {
-    return m.parse.bind(m);
-  }
-  return null;
-}
-
-function openTraceDetailModal(title, text) {
-  const modal = document.getElementById("trace-detail-modal");
-  const titleEl = document.getElementById("trace-detail-modal-title");
-  const srcEl = document.getElementById("trace-detail-modal-source");
-  const mdEl = document.getElementById("trace-detail-modal-md");
-  const tabs = document.getElementById("trace-detail-dialog-tabs");
-  const tabSrc = document.getElementById("trace-detail-tab-source");
-  const tabMd = document.getElementById("trace-detail-tab-md");
-  if (!modal || !titleEl || !srcEl || !mdEl) return;
-  titleEl.textContent = title;
-  srcEl.textContent = text;
-  const parseMd = getMarkedParse();
-  const showMd = Boolean(parseMd && looksLikeMarkdown(text));
-  mdEl.innerHTML = "";
-  if (showMd && parseMd) {
-    try {
-      mdEl.innerHTML = parseMd(text);
-    } catch (_) {
-      mdEl.innerHTML = "<p><em>Could not render as Markdown.</em></p>";
-    }
-  }
-  if (tabs) tabs.hidden = !showMd;
-  if (tabMd) tabMd.style.display = showMd ? "" : "none";
-  if (tabSrc) tabSrc.classList.add("trace-detail-tab--active");
-  if (tabMd) tabMd.classList.remove("trace-detail-tab--active");
-  srcEl.classList.add("trace-detail-panel--active");
-  mdEl.classList.remove("trace-detail-panel--active");
-  modal.showModal();
-}
-
-function wireTraceDetailModal() {
-  const modal = document.getElementById("trace-detail-modal");
-  const closeBtn = document.getElementById("trace-detail-modal-close");
-  const tabSrc = document.getElementById("trace-detail-tab-source");
-  const tabMd = document.getElementById("trace-detail-tab-md");
-  const srcEl = document.getElementById("trace-detail-modal-source");
-  const mdEl = document.getElementById("trace-detail-modal-md");
-  if (!modal || !closeBtn) return;
-  closeBtn.addEventListener("click", () => modal.close());
-  modal.addEventListener("click", (e) => {
-    if (e.target === modal) modal.close();
-  });
-  function showPanel(which) {
-    const showSrc = which === "source";
-    srcEl?.classList.toggle("trace-detail-panel--active", showSrc);
-    mdEl?.classList.toggle("trace-detail-panel--active", !showSrc);
-    tabSrc?.classList.toggle("trace-detail-tab--active", showSrc);
-    tabMd?.classList.toggle("trace-detail-tab--active", !showSrc);
-  }
-  tabSrc?.addEventListener("click", () => showPanel("source"));
-  tabMd?.addEventListener("click", () => showPanel("md"));
-}
-
-wireTraceDetailModal();
+const { fillEvaluationDetailDom, renderEvalScoreBar } = window.EvaluationRendering;
 
 function wireEvaluationDetailModal() {
   if (!evaluationDetailModal || !evaluationDetailClose) return;
@@ -216,117 +152,164 @@ function wireEvaluationDetailModal() {
 
 wireEvaluationDetailModal();
 
-/**
- * @param {HTMLElement} container
- * @param {number} score
- */
-function renderEvalScoreBar(container, score) {
-  if (!container) return;
-  container.innerHTML = "";
-  const s = Math.min(10, Math.max(0, Number(score)));
-  for (let i = 0; i < 10; i++) {
-    const amt = Math.min(1, Math.max(0, s - i));
-    const hue = (i / 9) * 120;
-    const wrap = document.createElement("span");
-    wrap.className = "eval-segment";
-    wrap.style.setProperty("--eval-lit", String(amt));
-    const glow = document.createElement("span");
-    glow.className = "eval-segment-glow";
-    glow.style.background = `hsl(${hue} 82% 48%)`;
-    const inner = document.createElement("span");
-    inner.className = "eval-segment-inner";
-    inner.style.background = `linear-gradient(to bottom, hsl(${hue} 74% 50%), hsl(${hue} 62% 34%))`;
-    wrap.appendChild(glow);
-    wrap.appendChild(inner);
-    container.appendChild(wrap);
-  }
-}
-
-/**
- * @param {HTMLElement} target
- * @param {null | { score: number, overall_verdict: string, evaluation: EvalCriterionRow[] }} d
- */
-function fillEvaluationDetailDom(target, d) {
-  if (!target || !d) return;
-  const parseMd = getMarkedParse();
-  target.innerHTML = "";
-
-  const hOverall = document.createElement("h4");
-  hOverall.textContent = "Overall result";
-  target.appendChild(hOverall);
-  const overallDiv = document.createElement("div");
-  overallDiv.className = "evaluation-detail-section";
-  const ov = d.overall_verdict || "";
-  if (parseMd) {
-    try {
-      overallDiv.innerHTML = parseMd(ov);
-    } catch (_) {
-      overallDiv.textContent = ov;
-    }
-  } else {
-    overallDiv.textContent = ov;
-  }
-  target.appendChild(overallDiv);
-
-  const hCrit = document.createElement("h4");
-  hCrit.textContent = "Criteria";
-  target.appendChild(hCrit);
-
-  const table = document.createElement("table");
-  table.className = "eval-detail-table";
-  const thead = document.createElement("thead");
-  const hr = document.createElement("tr");
-  for (const label of ["Criteria", "Passed", "Reason"]) {
-    const th = document.createElement("th");
-    th.scope = "col";
-    th.textContent = label;
-    hr.appendChild(th);
-  }
-  thead.appendChild(hr);
-  table.appendChild(thead);
-
-  const tbody = document.createElement("tbody");
-  const rows = Array.isArray(d.evaluation) ? d.evaluation : [];
-  if (rows.length === 0) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 3;
-    td.className = "eval-detail-empty";
-    td.textContent = "No criteria rows returned.";
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-  } else {
-    for (const row of rows) {
-      const tr = document.createElement("tr");
-      const tdC = document.createElement("td");
-      tdC.className = "eval-detail-criteria";
-      tdC.textContent = row.criteria ?? "";
-      const tdP = document.createElement("td");
-      tdP.className = "eval-detail-passed";
-      const icon = document.createElement("span");
-      const ok = Boolean(row.passed);
-      icon.className = ok ? "eval-pass-icon" : "eval-fail-icon";
-      icon.setAttribute("role", "img");
-      icon.setAttribute("aria-label", ok ? "Passed" : "Failed");
-      icon.textContent = ok ? "\u2713" : "\u2717";
-      tdP.appendChild(icon);
-      const tdR = document.createElement("td");
-      tdR.className = "eval-detail-reason";
-      tdR.textContent = row.reason ?? "";
-      tr.appendChild(tdC);
-      tr.appendChild(tdP);
-      tr.appendChild(tdR);
-      tbody.appendChild(tr);
-    }
-  }
-  table.appendChild(tbody);
-  target.appendChild(table);
-}
-
 /** Hue 0 (red) … 120 (green) for score 0–10 (same scale as the evaluation bar). */
 function scoreToHue(score) {
   const s = Math.min(10, Math.max(0, Number(score)));
   return (s / 10) * 120;
+}
+
+function normalizeUsageTotals(totals) {
+  const t = totals && typeof totals === "object" ? totals : {};
+  return {
+    input_tokens: Number(t.input_tokens ?? 0) || 0,
+    input_cached_tokens: Number(t.input_cached_tokens ?? 0) || 0,
+    output_tokens: Number(t.output_tokens ?? 0) || 0,
+    output_cached_tokens: Number(t.output_cached_tokens ?? 0) || 0,
+    total_tokens: Number(t.total_tokens ?? 0) || 0,
+  };
+}
+
+function renderUsageTotals(target, totals, opts = {}) {
+  if (!target) return;
+  const label = typeof opts.label === "string" ? opts.label : "";
+  const t = normalizeUsageTotals(totals);
+  target.innerHTML = "";
+  if (label) {
+    const heading = document.createElement("div");
+    heading.className = "usage-summary-heading";
+    heading.textContent = label;
+    target.appendChild(heading);
+  }
+  const grid = document.createElement("div");
+  grid.className = "usage-summary-grid";
+  const rows = [
+    ["Input", t.input_tokens],
+    ["Input cached", t.input_cached_tokens],
+    ["Output", t.output_tokens],
+    ["Output cached", t.output_cached_tokens],
+    ["Total", t.total_tokens],
+  ];
+  for (const [name, value] of rows) {
+    const card = document.createElement("div");
+    card.className = "usage-summary-card";
+    const k = document.createElement("span");
+    k.className = "usage-summary-key";
+    k.textContent = String(name);
+    const v = document.createElement("strong");
+    v.className = "usage-summary-value";
+    v.textContent = String(value);
+    card.appendChild(k);
+    card.appendChild(v);
+    grid.appendChild(card);
+  }
+  target.appendChild(grid);
+}
+
+function renderSessionUsageSummary(summary) {
+  if (!runUsageSummary) return;
+  if (!summary || typeof summary !== "object") {
+    runUsageSummary.hidden = true;
+    runUsageSummary.innerHTML = "";
+    return;
+  }
+  renderUsageTotals(runUsageSummary, summary.session_totals, { label: "Session usage" });
+  runUsageSummary.hidden = false;
+}
+
+function renderTraceUsagePanel(summary, selectedRunId = null) {
+  void summary;
+  void selectedRunId;
+}
+
+function formatTokenCount(value) {
+  const n = Number(value ?? 0) || 0;
+  return n.toLocaleString();
+}
+
+function formatUsageLine(totals, opts = {}) {
+  const t = normalizeUsageTotals(totals);
+  const suffix = typeof opts.suffix === "string" ? opts.suffix : "";
+  return [
+    `I${suffix}: ${formatTokenCount(t.input_tokens)}`,
+    `Ic${suffix}: ${formatTokenCount(t.input_cached_tokens)}`,
+    `O${suffix}: ${formatTokenCount(t.output_tokens)}`,
+    `Oc${suffix}: ${formatTokenCount(t.output_cached_tokens)}`,
+  ].join("   ");
+}
+
+function buildUsageLinesBlock(lines, className) {
+  const wrap = document.createElement("div");
+  wrap.className = className;
+  for (const lineText of lines) {
+    const line = document.createElement("div");
+    line.className = `${className}-line`;
+    line.textContent = lineText;
+    wrap.appendChild(line);
+  }
+  return wrap;
+}
+
+function formatRunUsageLines(runEntry) {
+  if (!runEntry || typeof runEntry !== "object") return [];
+  const selfTotals = normalizeUsageTotals(runEntry.self_totals);
+  const inclTotals = normalizeUsageTotals(runEntry.inclusive_totals);
+  return [
+    formatUsageLine(selfTotals),
+    formatUsageLine(inclTotals, { suffix: "s" }),
+  ];
+}
+
+function formatLlmUsageLine(usage) {
+  if (!usage || typeof usage !== "object") return "";
+  return formatUsageLine(normalizeUsageTotals(usage));
+}
+
+function renderAgentBubbleUsage(usageEl, usageSelf, usageInclusive) {
+  if (!usageEl) return;
+  const lines = [
+    formatUsageLine(usageSelf),
+    formatUsageLine(usageInclusive, { suffix: "s" }),
+  ];
+  usageEl.innerHTML = "";
+  usageEl.hidden = false;
+  for (const lineText of lines) {
+    const line = document.createElement("div");
+    line.className = "trace-agent-call-usage-line";
+    line.textContent = lineText;
+    usageEl.appendChild(line);
+  }
+}
+
+function syncTraceRunUsage(runId) {
+  if (!runId) return;
+  const fr = runFrames.get(runId);
+  if (!fr || !fr.usageEl) return;
+  const runMap = lastUsageSummary && typeof lastUsageSummary === "object" && lastUsageSummary.runs && typeof lastUsageSummary.runs === "object"
+    ? lastUsageSummary.runs
+    : {};
+  const runEntry = liveRunUsage.get(runId) || runMap[runId];
+  const lines = formatRunUsageLines(runEntry);
+  fr.usageEl.innerHTML = "";
+  fr.usageEl.hidden = lines.length === 0;
+  if (lines.length > 0) {
+    fr.usageEl.appendChild(buildUsageLinesBlock(lines, "trace-agent-call-usage"));
+  }
+}
+
+function syncAllTraceRunUsage() {
+  for (const runId of runFrames.keys()) {
+    syncTraceRunUsage(runId);
+  }
+}
+
+function absorbUsageSummary(summary) {
+  if (!summary || typeof summary !== "object") return;
+  const runMap = summary.runs && typeof summary.runs === "object" ? summary.runs : {};
+  for (const [runId, runEntry] of Object.entries(runMap)) {
+    if (runEntry && typeof runEntry === "object") {
+      liveRunUsage.set(runId, /** @type {Record<string, unknown>} */ (runEntry));
+    }
+  }
 }
 
 /**
@@ -885,6 +868,8 @@ function displayBatchSummary(rows) {
 
     const scoreTd = document.createElement("td");
     scoreTd.className = "batch-summary-td-score";
+    const usageTd = document.createElement("td");
+    usageTd.className = "batch-summary-td-usage";
 
     let detailPayload = r.detail != null ? r.detail : null;
     if (r.error && detailPayload == null) {
@@ -905,6 +890,11 @@ function displayBatchSummary(rows) {
       scoreTd.textContent = "—";
       scoreTd.classList.add("batch-summary-score--na");
     }
+    const usageTotals =
+      r.detail && typeof r.detail === "object" && r.detail.usage_summary && typeof r.detail.usage_summary === "object"
+        ? normalizeUsageTotals(r.detail.usage_summary.session_totals)
+        : null;
+    usageTd.textContent = usageTotals ? String(usageTotals.total_tokens) : "—";
 
     tr.tabIndex = 0;
     tr.setAttribute("role", "button");
@@ -927,6 +917,7 @@ function displayBatchSummary(rows) {
 
     tr.appendChild(titleTd);
     tr.appendChild(scoreTd);
+    tr.appendChild(usageTd);
     batchSummaryTableBody.appendChild(tr);
   }
 
@@ -973,6 +964,8 @@ async function playCase(caseIndex, opts = {}) {
         prompt: runPrompt,
         initializer: init,
         case_run_mode: caseRunMode,
+        agent_model_override: getAgentModelOverride(),
+        agent_model_override_scope: getAgentModelOverrideScope(),
       }),
     );
     await pRun;
@@ -1033,6 +1026,8 @@ async function runAllCasesPlay() {
         initializer: init,
         log_level: selectedTraceLogLevel(),
         case_run_mode: caseRunMode,
+        agent_model_override: getAgentModelOverride(),
+        agent_model_override_scope: getAgentModelOverrideScope(),
       }),
     });
     if (!res.ok) {
@@ -1437,7 +1432,35 @@ function appendConversationBubble(role, text, opts) {
   } else {
     body.textContent = text;
   }
+  const controls = document.createElement("div");
+  controls.className = "conv-msg-controls";
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "conv-msg-copy";
+  copyBtn.textContent = "Copy";
+  copyBtn.setAttribute("aria-label", `Copy ${roleKey} message`);
+  copyBtn.addEventListener("click", async () => {
+    const originalLabel = "Copy";
+    try {
+      await copyTextToClipboard(text);
+      copyBtn.textContent = "Copied";
+      copyBtn.classList.add("conv-msg-copy--ok");
+      window.setTimeout(() => {
+        copyBtn.textContent = originalLabel;
+        copyBtn.classList.remove("conv-msg-copy--ok");
+      }, 1200);
+    } catch (_) {
+      copyBtn.textContent = "Failed";
+      copyBtn.classList.add("conv-msg-copy--error");
+      window.setTimeout(() => {
+        copyBtn.textContent = originalLabel;
+        copyBtn.classList.remove("conv-msg-copy--error");
+      }, 1200);
+    }
+  });
+  controls.appendChild(copyBtn);
   wrap.appendChild(meta);
+  wrap.appendChild(controls);
   wrap.appendChild(body);
   conversationThread.appendChild(wrap);
   scrollThreadToBottom();
@@ -1449,6 +1472,27 @@ function setAppStatus(message) {
 
 function clearAppStatus() {
   if (appStatus) appStatus.textContent = "";
+}
+
+async function copyTextToClipboard(text) {
+  const value = typeof text === "string" ? text : String(text ?? "");
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }
 
 /**
@@ -1693,12 +1737,17 @@ function beginAgentCallFrame(event) {
   subEl.className = "trace-agent-call-sub";
   subEl.textContent = "running…";
 
+  const usageEl = document.createElement("div");
+  usageEl.className = "trace-agent-call-usage";
+  usageEl.hidden = true;
+
   summary.appendChild(spinner);
   summary.appendChild(statusEl);
   summary.appendChild(document.createTextNode(" "));
   summary.appendChild(labelEl);
   summary.appendChild(document.createTextNode(" — "));
   summary.appendChild(subEl);
+  summary.appendChild(usageEl);
 
   const body = document.createElement("div");
   body.className = "trace-agent-call-body";
@@ -1722,6 +1771,7 @@ function beginAgentCallFrame(event) {
     statusEl,
     labelEl,
     subEl,
+    usageEl,
     agentName,
     lastStatus: null,
     depth,
@@ -1751,6 +1801,13 @@ function endAgentCallFrame(event) {
   if (!fr) {
     return;
   }
+  liveRunUsage.set(runId, {
+    agent_id: fr.agentName,
+    run_id: runId,
+    self_totals: p.usage_self,
+    inclusive_totals: p.usage_inclusive,
+  });
+  renderAgentBubbleUsage(fr.usageEl, p.usage_self, p.usage_inclusive);
   if (fr.details.classList.contains("trace-agent-call--running")) {
     applyFrameOutcome(fr.details, fr, fr.lastStatus || "completed");
   }
@@ -1825,12 +1882,20 @@ function onAgentFinished(event) {
   if (!rid || !runFrames.has(rid)) {
     return;
   }
-  const st = getPayload(event).status;
+  const payload = getPayload(event);
+  const st = payload.status;
   const fr = runFrames.get(rid);
   if (st != null && st !== "") {
     fr.lastStatus = String(st);
   }
+  liveRunUsage.set(rid, {
+    agent_id: getContext(event).agent_id || fr.agentName,
+    run_id: rid,
+    self_totals: payload.usage_self,
+    inclusive_totals: payload.usage_inclusive,
+  });
   applyFrameOutcome(fr.details, fr, fr.lastStatus || st || "completed");
+  syncTraceRunUsage(rid);
 }
 
 function buildTraceDetails(event) {
@@ -1853,9 +1918,17 @@ function buildTraceDetails(event) {
     summary.appendChild(document.createTextNode(" "));
     summary.appendChild(badge);
   }
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  if (kind === "llm.response" || kind === "llm.error") {
+    const usageLine = formatLlmUsageLine(payload.usage);
+    if (usageLine) {
+      const usageBlock = buildUsageLinesBlock([usageLine], "trace-event-usage");
+      summary.appendChild(usageBlock);
+    }
+  }
   const body = document.createElement("div");
   body.className = "trace-event-body";
-  body.appendChild(renderPayloadTree(event.payload ?? {}));
+  body.appendChild(renderPayloadTree(payload));
   node.appendChild(summary);
   node.appendChild(body);
   return node;
@@ -1892,12 +1965,18 @@ function buildFlowNode(runId, depth) {
   const pill = document.createElement("button");
   pill.type = "button";
   pill.className = `flow-pill${fr.lastStatus === "completed" || fr.lastStatus === null ? " flow-pill--success" : fr.lastStatus === "failed" ? " flow-pill--error" : " flow-pill--neutral"}`;
-  pill.textContent = fr.agentName;
+  let pillLabel = fr.agentName;
+  if (lastUsageSummary && lastUsageSummary.runs && lastUsageSummary.runs[runId]) {
+    const totals = normalizeUsageTotals(lastUsageSummary.runs[runId].inclusive_totals);
+    pillLabel += ` (${totals.total_tokens})`;
+  }
+  pill.textContent = pillLabel;
   pill.title = `run: ${runId}`;
   pill.addEventListener("click", () => {
     fr.details.scrollIntoView({ behavior: "smooth", block: "nearest" });
     fr.details.open = true;
     fr.details.classList.add("flow-highlight");
+    renderTraceUsagePanel(lastUsageSummary, runId);
     setTimeout(() => fr.details.classList.remove("flow-highlight"), 1500);
   });
   node.appendChild(pill);
@@ -2039,6 +2118,13 @@ function onSocketMessage(ev) {
         /** @type {Record<string, unknown>} */ (msg.prompt_snapshots),
       );
     }
+    lastUsageSummary =
+      msg.usage_summary && typeof msg.usage_summary === "object"
+        ? /** @type {Record<string, unknown>} */ (msg.usage_summary)
+        : null;
+    absorbUsageSummary(lastUsageSummary);
+    renderSessionUsageSummary(lastUsageSummary);
+    syncAllTraceRunUsage();
     updateEvaluateUi();
     void refreshAgentPromptView();
 
@@ -2068,6 +2154,12 @@ function onSocketMessage(ev) {
     removeTypingPlaceholder();
     agentRunInProgress = false;
     refreshComposerState();
+    if (msg.usage_summary && typeof msg.usage_summary === "object") {
+      lastUsageSummary = /** @type {Record<string, unknown>} */ (msg.usage_summary);
+      absorbUsageSummary(lastUsageSummary);
+    }
+    renderSessionUsageSummary(lastUsageSummary);
+    syncAllTraceRunUsage();
 
     if (pendingAgentRun) {
       const pr = pendingAgentRun;
@@ -2146,10 +2238,19 @@ function getEnvPath() {
   return (envPathInput && envPathInput.value.trim()) || ".env";
 }
 
+function getAgentModelOverride() {
+  return (agentModelOverrideSelect && agentModelOverrideSelect.value.trim()) || "";
+}
+
+function getAgentModelOverrideScope() {
+  return (agentModelOverrideScopeSelect && agentModelOverrideScopeSelect.value) || "root_only";
+}
+
 async function refreshCatalogs() {
   const ep = getEnvPath();
   await loadAgentCatalog(ep);
   await loadInitializerCatalog(ep);
+  await loadEvaluatorModelOptions(ep);
 }
 
 async function ensureSessionConnected() {
@@ -2206,6 +2307,38 @@ async function loadInitializerCatalog(envPath) {
   }
 }
 
+async function loadEvaluatorModelOptions(envPath) {
+  if (!agentModelOverrideSelect) return;
+  const current = agentModelOverrideSelect.value;
+  try {
+    const res = await fetch(`/api/evaluator-model-options?env_path=${encodeURIComponent(envPath)}`);
+    const data = await res.json();
+    const options = Array.isArray(data.model_options) ? data.model_options : [];
+    agentModelOverrideSelect.innerHTML = "";
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "Configured default";
+    agentModelOverrideSelect.appendChild(blank);
+    for (const model of options) {
+      const opt = document.createElement("option");
+      opt.value = String(model);
+      opt.textContent = String(model);
+      agentModelOverrideSelect.appendChild(opt);
+    }
+    const preferred = current || pendingDefaultAgentModelOverride;
+    if (preferred && options.includes(preferred)) {
+      agentModelOverrideSelect.value = preferred;
+    } else {
+      agentModelOverrideSelect.value = "";
+    }
+    if (agentModelOverrideScopeSelect) {
+      agentModelOverrideScopeSelect.value = pendingDefaultAgentModelOverrideScope || "root_only";
+    }
+  } catch (_) {
+    /* ignore model option failures */
+  }
+}
+
 function applyInitializerResponseFields(data) {
   if (data.template && promptInput && !promptInput.value.trim()) {
     promptInput.value = data.template;
@@ -2215,6 +2348,17 @@ function applyInitializerResponseFields(data) {
   }
   if (data.agent && agentInput && !agentInput.value.trim()) {
     agentInput.value = data.agent;
+  }
+  if (
+    data.agent_model_override &&
+    agentModelOverrideSelect &&
+    !agentModelOverrideSelect.value.trim() &&
+    Array.from(agentModelOverrideSelect.options).some((opt) => opt.value === data.agent_model_override)
+  ) {
+    agentModelOverrideSelect.value = data.agent_model_override;
+  }
+  if (data.agent_model_override_scope && agentModelOverrideScopeSelect && !getAgentModelOverride()) {
+    agentModelOverrideScopeSelect.value = data.agent_model_override_scope;
   }
 }
 
@@ -2298,6 +2442,8 @@ async function initSession() {
     if (envPathInput) envPathInput.value = defs.env_path || ".env";
     if (defs.agent && agentInput) agentInput.value = defs.agent;
     if (defs.initializer && initializerInput) initializerInput.value = defs.initializer;
+    pendingDefaultAgentModelOverride = String(defs.agent_model_override || "");
+    pendingDefaultAgentModelOverrideScope = String(defs.agent_model_override_scope || "root_only");
     await refreshCatalogs();
     await ensureSessionConnected();
     await refreshInitializerCases();
@@ -2348,6 +2494,10 @@ async function sendChatOrRun() {
   const promptText = promptInput ? promptInput.value : "";
   clearStoredAgentResult();
   resetEvaluationPanel();
+  lastUsageSummary = null;
+  liveRunUsage = new Map();
+  renderSessionUsageSummary(null);
+  syncAllTraceRunUsage();
   clearTraceUi();
   appendConversationBubble("user", promptText || "(empty prompt)");
   agentRunInProgress = true;
@@ -2361,6 +2511,8 @@ async function sendChatOrRun() {
       prompt: promptText,
       initializer: initializerPath || null,
       case_run_mode: caseRunMode,
+      agent_model_override: getAgentModelOverride(),
+      agent_model_override_scope: getAgentModelOverrideScope(),
     }),
   );
   if (promptInput) {

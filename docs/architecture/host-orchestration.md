@@ -17,6 +17,8 @@
 - **Call contexts** — `CallContext` objects tracking active call edges between agents
 - **Audit tracer** — optional `InMemoryAuditTracer` for immutable JSONL audit output
 - **Runtime tracer** — `runtime_tracer` (`RuntimeTracer`, default `NullRuntimeTracer`) for structured `TraceEvent` fan-out; LLM provider hooks also publish `llm.request` / `llm.response` when trace logging is enabled
+- **Pending interaction registry** — `PendingInteraction` objects keyed by `prompt_id`, used to route user replies back to the exact blocked run
+- **Run lineage registry** — minimal `run_id -> (agent_id, caller_id, parent_run_id)` records used for callback passthrough and upward bubbling
 - **Thread pool** — `ThreadPoolExecutor` for async subagent parallelism
 - **Host-level hooks** — `onPreModel` and `onPostModel` for cross-cutting model interception
 
@@ -44,6 +46,8 @@ class AgentHost:
     trace_context_overlay: TraceContext | None  # merged into published TraceEvent context (e.g. evaluator session_id)
     skill_registry: SkillRegistry | None
     conversation_store: ConversationStore | AsyncConversationStore | None
+    pending_interactions: dict[str, PendingInteraction]
+    _run_registry: dict[str, RunRegistration]
     _executor: ThreadPoolExecutor            # max_workers=8
     _command_fallback: Callable | None       # (name, raw_args) -> Awaitable[str | None]
     _started: bool
@@ -339,11 +343,43 @@ Contexts remain in `self.contexts` with `status="resolved"` after completion. Th
 
 ### 7.1 The `resolve_callback()` Chain
 
-**`resolve_callback(*, caller_id: str, callee: Agent, prompt: str) -> str`**
+**`resolve_callback(*, caller_id: str, callee: Agent, prompt: str, intent: str, run_id: str, parent_run_id: str | None, allow_user_fallback: bool, callback_parameters: dict[str, Any] | None) -> str`**
 
-Called when an agent emits a `callback` decision and has a `caller_id`. Implements a three-level resolution chain:
+Called when an agent emits a caller-mediated interaction and has a `caller_id`. Callback routing is now provenance-aware and may skip layers before invoking any caller model.
 
-**Level 1 — Caller's behavior (`respond_to_callback`)**
+Resolution order:
+
+1. host-side passthrough / resolver filtering
+2. caller behavior (`respond_to_callback`)
+3. running the caller agent
+4. host/user fallback if allowed
+
+**Level 1 — Host-side passthrough / resolver filtering**
+
+Before loading the caller agent, the host inspects `callback_parameters` for:
+
+- `passthrough_agents`
+- `resolvable_by`
+- `bubble_hops`
+
+If the current caller should be skipped, the host uses `parent_run_id` plus the run lineage registry to jump to the caller's caller:
+
+```python
+caller_run = self.get_run_registration(parent_run_id)
+return self.resolve_callback(
+    caller_id=caller_run.caller_id,
+    callee=callee,
+    prompt=prompt,
+    intent=intent,
+    run_id=run_id,
+    parent_run_id=caller_run.parent_run_id,
+    callback_parameters=updated_parameters,
+)
+```
+
+This is what allows orchestration agents to forward specialist clarifications straight to the UI instead of spending tokens on them.
+
+**Level 2 — Caller's behavior (`respond_to_callback`)**
 
 ```python
 caller_agent = self.get_agent(caller_id)
@@ -354,26 +390,80 @@ if response is not None:
 
 `respond_to_callback()` on `Agent` delegates to each attached `AgentBehavior.respond_to_callback()`. The first non-None response wins. This allows behaviors to intercept callbacks without running the full agent loop.
 
-**Level 2 — Run caller agent**
+**Level 3 — Run caller agent**
 
 ```python
-result = self.run_agent(caller_id, prompt)
+result = caller_agent.run(
+    host=self,
+    parameters=callback_parameters or {},
+    caller_id="host",
+    rendered_prompt_override=prompt,
+)
 return result.message
 ```
 
-The caller agent is run with the callback prompt as its instruction. Its response becomes the callback resolution. This enables parent agents to handle subagent questions by running themselves.
+The caller agent is run with the callback prompt as its instruction, and may also see callback metadata in `parameters`. Its response becomes the callback resolution.
 
-**Level 3 — Console fallback**
+**Level 4 — Host/user fallback**
 
-If neither level 1 nor level 2 is available, falls back to `request_user_input(prompt)`.
+If caller-side resolution does not produce an answer and `allow_user_fallback=True`, the host falls back to `request_user_input(...)`. If `allow_user_fallback=False` (used by `request_resolution`), the callback fails instead of asking the user.
 
 ### 7.2 Direct User Input
 
-**`request_user_input(prompt: str) -> str`**
+**`request_user_input(prompt: str, *, intent: str, run_id: str, agent_id: str, caller_id: str | None, parent_run_id: str | None, interaction_kind: str = "direct_user_input") -> str`**
 
-Delegates to **`user_comm.read_user_input(...)`** via the host’s async bridge (same path as the rest of **`UserCommunication`**). If **`user_comm`** is **`None`**, raises **`RuntimeError`** — use **`AgentHost.create(..., user_comm=...)`** or **`from_env_console`** (which wires **`ConsoleUserCommunication`**).
+Direct user interaction is now first-class. The host:
+
+1. creates a `PendingInteraction` with a stable `prompt_id`
+2. records provenance:
+   - `session_id`
+   - `run_id`
+   - `agent_id`
+   - `caller_id`
+   - `parent_run_id`
+   - `intent`
+   - `interaction_kind`
+3. emits `runtime.interaction_opened`
+4. calls `user_comm.read_user_input(..., prompt_id=..., metadata=...)`
+5. closes the interaction and emits `runtime.interaction_answered`
+
+This is what allows web/evaluator transports to route the response to the exact blocked child instead of guessing from session state.
 
 Legacy **`input_reader`** / **`output_writer`** arguments on **`from_env`** are deprecated and ignored.
+
+### 7.3 Interaction kinds
+
+The host tracks why the interaction exists:
+
+| `interaction_kind` | Meaning |
+|--------------------|---------|
+| `direct_user_input` | A sequential agent explicitly asked the user directly. |
+| `callback_to_caller` | A caller-mediated callback eventually reached the host. |
+| `callback_passthrough` | Caller bubbling was redirected to the host by policy. |
+| `parallel_callback_resume` | Reserved for resumed blocked children in parallel batches. |
+
+### 7.4 Agent defaults and per-decision policy
+
+Callback routing is controlled at two layers:
+
+1. sidecar `callback_policy`
+   - `passthrough_child_callbacks`
+   - `max_bubble_hops`
+   - `fallback_target`
+2. per-decision callback parameters
+   - `bubble_hops`
+   - `max_bubble_hops`
+   - `fallback_target`
+   - `passthrough_agents`
+   - `resolvable_by`
+   - `passthrough_child_callbacks`
+
+This allows:
+
+- orchestration agents to forward clarifications immediately
+- bounded upward bubbling before the host takes over
+- agent-only resolution paths that fail instead of reaching the user
+- per-callback resolver allow-lists when only one parent should decide
 
 ---
 
@@ -438,11 +528,11 @@ Lazy-imports `llm_trace_logging` and calls `attach_to_host(self, target=target, 
 class AgentHostProtocol(Protocol):
     def get_model_driver(self, agent: "Agent") -> "ModelDriver": ...
     def get_agent(self, agent_id: str, *, base_dir: Path | None = None) -> "Agent": ...
-    def request_user_input(self, prompt: str) -> str: ...
+    def request_user_input(self, prompt: str, **kwargs) -> str: ...
     def call_subagent(self, *, caller: "Agent", callee_id: str, parameters: dict) -> "AgentResult": ...
     def execute_tool(self, tool_name: str, parameters: dict) -> str: ...
     def get_tool(self, tool_name: str): ...
-    def resolve_callback(self, *, caller_id: str, callee: "Agent", prompt: str) -> str: ...
+    def resolve_callback(self, *, caller_id: str, callee: "Agent", prompt: str, **kwargs) -> str: ...
     def open_context(self, *, caller_id: str, callee_id: str, kind: str) -> "CallContext": ...
     def run_pre_model_hooks(self, event: "ModelStartEvent") -> None: ...
     def run_post_model_hooks(self, event: "ModelEndEvent") -> None: ...

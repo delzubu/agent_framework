@@ -2,16 +2,14 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
     DEFAULT_RESPONSE_MODE,
-    DriverCapabilities,
     ModelContext,
-    ModelResponse,
     merge_runtime_system_into_messages,
 )
 
@@ -45,7 +43,13 @@ def _make_response_payload(content: str, finish_reason: str = "stop") -> dict:
                 "finish_reason": finish_reason,
             }
         ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": {"cached_tokens": 3},
+            "completion_tokens_details": {"cached_tokens": 0},
+        },
     }
 
 
@@ -168,7 +172,21 @@ class TestDecideSuccess:
 
         assert result.raw_text == "Hello world"
         assert result.finish_reason == "stop"
-        assert result.usage == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        assert result.usage is not None
+        assert result.usage.to_dict() == {
+            "input_tokens": 10,
+            "input_cached_tokens": 3,
+            "output_tokens": 5,
+            "output_cached_tokens": 0,
+            "total_tokens": 15,
+        }
+        assert result.raw_usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": {"cached_tokens": 3},
+            "completion_tokens_details": {"cached_tokens": 0},
+        }
         body = mock_client.post.call_args.kwargs["json"]
         assert "response_format" not in body
 
@@ -260,6 +278,35 @@ class TestDecideSuccess:
         assert result.tool_calls is not None
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0]["function"]["name"] == "search"
+
+    @pytest.mark.asyncio
+    async def test_json_object_tool_call_response_is_translated_to_call_tool(self):
+        driver = _make_driver()
+        ctx = _make_context(response_mode=DEFAULT_RESPONSE_MODE)
+        payload = _make_tool_call_payload("memory_get", '{"uri": "mem://session/s1/deck/full"}')
+
+        mock_resp = _mock_httpx_response(200, payload)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        driver._client = mock_client
+
+        result = await driver.decide(
+            agent_id="a1",
+            provider_name="dial",
+            model_names=("gpt-4o",),
+            temperature=0.2,
+            context=ctx,
+        )
+
+        assert result.payload == {
+            "kind": "call_tool",
+            "tool_name": "memory_get",
+            "parameters": {"uri": "mem://session/s1/deck/full"},
+            "message": "",
+        }
+        assert result.tool_calls is not None
+        assert len(result.tool_calls) == 1
+        assert result.finish_reason == "tool_calls"
 
     @pytest.mark.asyncio
     async def test_request_trace_callback_fires(self):
@@ -376,6 +423,51 @@ class TestDecideErrors:
         assert seen[0].parsed_payload is not None
         assert seen[0].parsed_payload.get("error") is True
         assert seen[0].parsed_payload.get("status_code") == 404
+
+    @pytest.mark.asyncio
+    async def test_parse_error_emits_raw_response_trace_before_raise(self):
+        driver = _make_driver()
+        ctx = _make_context()
+        seen: list = []
+
+        def on_response(event):
+            seen.append(event)
+
+        driver.set_trace_callbacks(on_response=on_response)
+
+        payload = _make_response_payload("not json at all")
+        mock_resp = _mock_httpx_response(200, payload)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        driver._client = mock_client
+
+        with pytest.raises(ModelDriverError, match="structured response is not valid JSON"):
+            await driver.decide(
+                agent_id="a1",
+                provider_name="dial",
+                model_names=("gpt-4o",),
+                temperature=0.2,
+                context=ctx,
+            )
+
+        assert len(seen) == 1
+        assert seen[0].parsed_payload is None
+        assert seen[0].raw_text == mock_resp.text
+        assert seen[0].usage is not None
+        assert seen[0].usage.to_dict() == {
+            "input_tokens": 10,
+            "input_cached_tokens": 3,
+            "output_tokens": 5,
+            "output_cached_tokens": 0,
+            "total_tokens": 15,
+        }
+        assert seen[0].raw_usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": {"cached_tokens": 3},
+            "completion_tokens_details": {"cached_tokens": 0},
+        }
 
     @pytest.mark.asyncio
     async def test_transport_error_raises_502(self):
@@ -502,6 +594,110 @@ class TestResponseFormatRetry:
             )
 
         assert exc_info.value.status_code == 400
+
+
+class TestRateLimitRetry:
+    @pytest.mark.asyncio
+    async def test_retries_transient_429_inside_driver(self, monkeypatch: pytest.MonkeyPatch):
+        driver = _make_driver(
+            retry_on_rate_limit=True,
+            rate_limit_max_attempts=3,
+            rate_limit_initial_delay_seconds=0.01,
+            rate_limit_max_delay_seconds=0.01,
+        )
+        ctx = _make_context()
+        success_payload = _make_response_payload('{"result": "ok"}')
+        success_text = json.dumps(success_payload)
+
+        async def fake_sleep(delay: float):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        call_count = 0
+
+        async def fake_post(url, *, json=None, **kwargs):
+            nonlocal call_count
+            import json as _json
+            call_count += 1
+            resp = MagicMock()
+            if call_count == 1:
+                resp.status_code = 429
+                resp.text = _json.dumps({
+                    "error": {
+                        "message": "Hit token rate limit. Minute limit reached.",
+                        "code": "429",
+                    }
+                })
+                resp.headers = {}
+                return resp
+            resp.status_code = 200
+            resp.json.return_value = success_payload
+            resp.text = success_text
+            resp.headers = {}
+            return resp
+
+        mock_client = AsyncMock()
+        mock_client.post = fake_post
+        driver._client = mock_client
+
+        result = await driver.decide(
+            agent_id="a1",
+            provider_name="dial",
+            model_names=("gpt-4o",),
+            temperature=0.2,
+            context=ctx,
+        )
+
+        assert call_count == 2
+        assert result.payload == {"result": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_permanent_monthly_429(self, monkeypatch: pytest.MonkeyPatch):
+        driver = _make_driver(
+            retry_on_rate_limit=True,
+            rate_limit_max_attempts=3,
+            rate_limit_initial_delay_seconds=0.01,
+            rate_limit_max_delay_seconds=0.01,
+        )
+        ctx = _make_context()
+
+        async def fake_sleep(delay: float):
+            raise AssertionError("sleep should not be called for permanent monthly quota errors")
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        call_count = 0
+
+        async def fake_post(url, *, json=None, **kwargs):
+            nonlocal call_count
+            import json as _json
+            call_count += 1
+            resp = MagicMock()
+            resp.status_code = 429
+            resp.text = _json.dumps({
+                "error": {
+                    "message": "Hit token rate limit. Month limit reached.",
+                    "display_message": "You've exceeded your monthly token limit",
+                    "code": "429",
+                }
+            })
+            resp.headers = {}
+            return resp
+
+        mock_client = AsyncMock()
+        mock_client.post = fake_post
+        driver._client = mock_client
+
+        with pytest.raises(ModelDriverError) as exc_info:
+            await driver.decide(
+                agent_id="a1",
+                provider_name="dial",
+                model_names=("gpt-4o",),
+                temperature=0.2,
+                context=ctx,
+            )
+
+        assert call_count == 1
+        assert exc_info.value.status_code == 429
 
 
 # ---------------------------------------------------------------------------

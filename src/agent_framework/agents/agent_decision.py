@@ -10,7 +10,7 @@ from agent_framework.model import ModelResponse
 
 _LOGGER = logging.getLogger(__name__)
 
-# After alias normalization (callback intents, legacy names → callback).
+# After alias normalization (callback intents, legacy names → callback family).
 _ALLOWED_DECISION_KINDS: Final[frozenset[str]] = frozenset(
     {
         "final_message",
@@ -18,6 +18,9 @@ _ALLOWED_DECISION_KINDS: Final[frozenset[str]] = frozenset(
         "call_subagent",
         "call_subagents",
         "callback",
+        "callback_to_caller",
+        "request_user_input",
+        "request_resolution",
         "invoke_skill",
     }
 )
@@ -81,12 +84,13 @@ class AgentDecision:
             "policy_or_approval",
             "guardrail_trip",
         }
-        if raw_kind in {"request_parameter", "request_user_input", "callback_to_caller"}:
-            normalized_kind = "callback"
+        if raw_kind == "request_parameter":
+            normalized_kind = "request_user_input"
             callback_intent = "information_request"
             _LOGGER.info(
-                "Decision kind alias: mapped top-level kind %r to callback (intent=%r)",
+                "Decision kind alias: mapped top-level kind %r to %r (intent=%r)",
                 raw_kind,
+                normalized_kind,
                 callback_intent,
             )
         elif raw_kind in callback_kinds:

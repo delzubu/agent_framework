@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -123,6 +122,21 @@ class TestConsoleUserCommunication:
         with patch("builtins.input", return_value="my answer"):
             result = await console.read_user_input("Enter: ")
         assert result == "my answer"
+
+    @pytest.mark.asyncio
+    async def test_read_user_input_includes_metadata_prefix(self):
+        from agent_framework.console_communication import ConsoleUserCommunication
+        console = ConsoleUserCommunication()
+        prompts: list[str] = []
+        with patch("builtins.input", side_effect=lambda prompt: prompts.append(prompt) or "answer"):
+            result = await console.read_user_input(
+                "Who is the audience?\n> ",
+                prompt_id="pid-1",
+                metadata={"agent_id": "intake", "caller_id": "root", "intent": "information_request"},
+            )
+        assert result == "answer"
+        assert prompts
+        assert "[intake <- root | information_request]" in prompts[0]
 
     @pytest.mark.asyncio
     async def test_read_user_input_returns_none_on_eof(self):

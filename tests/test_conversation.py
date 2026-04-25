@@ -5,7 +5,6 @@ import time
 import pytest
 
 from agent_framework.conversation import (
-    AsyncConversationStore,
     ConversationStore,
     InMemoryConversationStore,
 )

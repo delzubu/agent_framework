@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -31,8 +32,12 @@ def test_evaluator_cli_has_web_and_run_subcommands() -> None:
     assert args.env == "custom/.env"
     assert args.agent == "myagent"
     assert args.initializer == "seed.py"
+    assert args.agent_model_override is None
+    assert args.agent_model_override_scope == "root_only"
     args = parser.parse_args(["run", "--agent", "root", "--prompt", "hi"])
     assert args.command == "run"
+    assert args.agent_model_override is None
+    assert args.agent_model_override_scope == "root_only"
 
 
 def test_create_app_exists() -> None:
@@ -528,10 +533,152 @@ def test_ws_run_handler_persists_last_run_result(monkeypatch: pytest.MonkeyPatch
     assert rec.last_run_result == fake_payload
 
 
+def test_ws_run_handler_returns_usage_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_framework_evaluator.session_manager import session_manager
+
+    fake_payload = {"status": "completed", "message": "hello"}
+    fake_summary = {
+        "session_totals": {
+            "input_tokens": 10,
+            "input_cached_tokens": 2,
+            "output_tokens": 5,
+            "output_cached_tokens": 0,
+            "total_tokens": 15,
+        },
+        "agents": {},
+        "runs": {},
+    }
+
+    def fake_run_once(self, **_: object) -> dict[str, object]:
+        return fake_payload
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+    rec = session_manager.get(sid)
+    assert rec is not None
+    rec.usage_tracker = type("FakeUsageTracker", (), {"reset": lambda self: None, "snapshot": lambda self: fake_summary})()
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.send_json({"type": "run", "agent_id": "root", "prompt": "test prompt", "case_run_mode": "standard"})
+        result_msg = None
+        for _ in range(20):
+            msg = ws.receive_json()
+            if msg.get("type") == "result":
+                result_msg = msg
+                break
+
+    assert result_msg is not None
+    assert result_msg["usage_summary"]["session_totals"]["total_tokens"] == 15
+
+
+def test_ws_run_handler_returns_usage_summary_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_framework_evaluator.session_manager import session_manager
+
+    fake_summary = {
+        "session_totals": {
+            "input_tokens": 10,
+            "input_cached_tokens": 2,
+            "output_tokens": 5,
+            "output_cached_tokens": 0,
+            "total_tokens": 15,
+        },
+        "agents": {
+            "agent_reviewer": {
+                "agent_id": "agent_reviewer",
+                "run_ids": ["run-1"],
+                "self_totals": {
+                    "input_tokens": 4,
+                    "input_cached_tokens": 1,
+                    "output_tokens": 2,
+                    "output_cached_tokens": 0,
+                    "total_tokens": 6,
+                },
+                "inclusive_totals": {
+                    "input_tokens": 10,
+                    "input_cached_tokens": 2,
+                    "output_tokens": 5,
+                    "output_cached_tokens": 0,
+                    "total_tokens": 15,
+                },
+            }
+        },
+        "runs": {
+            "run-1": {
+                "agent_id": "agent_reviewer",
+                "run_id": "run-1",
+                "parent_run_id": None,
+                "self_totals": {
+                    "input_tokens": 4,
+                    "input_cached_tokens": 1,
+                    "output_tokens": 2,
+                    "output_cached_tokens": 0,
+                    "total_tokens": 6,
+                },
+                "inclusive_totals": {
+                    "input_tokens": 10,
+                    "input_cached_tokens": 2,
+                    "output_tokens": 5,
+                    "output_cached_tokens": 0,
+                    "total_tokens": 15,
+                },
+                "llm_calls": [],
+            }
+        },
+    }
+
+    def fake_run_once(self, **_: object) -> dict[str, object]:
+        self._last_usage_summary = fake_summary
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+    rec = session_manager.get(sid)
+    assert rec is not None
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.send_json({"type": "run", "agent_id": "root", "prompt": "test prompt", "case_run_mode": "standard"})
+        error_msg = None
+        for _ in range(20):
+            msg = ws.receive_json()
+            if msg.get("type") == "error":
+                error_msg = msg
+                break
+
+    assert error_msg is not None
+    assert error_msg["usage_summary"]["session_totals"]["total_tokens"] == 15
+    assert error_msg["usage_summary"]["runs"]["run-1"]["inclusive_totals"]["total_tokens"] == 15
+    assert rec.last_usage_summary == fake_summary
+
+
+def test_api_usage_summary_returns_last_summary() -> None:
+    from agent_framework_evaluator.session_manager import session_manager
+
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+    rec = session_manager.get(sid)
+    assert rec is not None
+    rec.last_usage_summary = {
+        "session_totals": {
+            "input_tokens": 1,
+            "input_cached_tokens": 0,
+            "output_tokens": 2,
+            "output_cached_tokens": 0,
+            "total_tokens": 3,
+        },
+        "agents": {},
+        "runs": {},
+    }
+
+    r = client.get(f"/api/sessions/{sid}/usage-summary")
+    assert r.status_code == 200
+    assert r.json()["session_totals"]["total_tokens"] == 3
+
+
 def test_ws_run_handler_applies_no_callbacks_postfix(monkeypatch: pytest.MonkeyPatch) -> None:
     """WebSocket 'run' handler appends CASE_NO_CALLBACKS_POSTFIX when case_run_mode=no_callbacks."""
     from agent_framework_evaluator.evaluation import CASE_NO_CALLBACKS_POSTFIX
-    from agent_framework_evaluator.session_manager import session_manager
 
     received_prompts: list[str] = []
 
@@ -561,6 +708,37 @@ def test_ws_run_handler_applies_no_callbacks_postfix(monkeypatch: pytest.MonkeyP
     assert CASE_NO_CALLBACKS_POSTFIX.strip() in received_prompts[0]
 
 
+def test_ws_run_handler_passes_agent_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_once(self: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    client = TestClient(create_app())
+    sid = client.post("/api/sessions", json={}).json()["session_id"]
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.send_json(
+            {
+                "type": "run",
+                "agent_id": "root",
+                "prompt": "original prompt",
+                "case_run_mode": "standard",
+                "agent_model_override": "gpt-4o",
+                "agent_model_override_scope": "all_agents",
+            }
+        )
+        for _ in range(20):
+            msg = ws.receive_json()
+            if msg.get("type") == "result":
+                break
+
+    assert captured["agent_model_override"] == "gpt-4o"
+    assert captured["agent_model_override_scope"] == "all_agents"
+
+
 def test_api_evaluate_batch_applies_case_run_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -576,7 +754,6 @@ def test_api_evaluate_batch_applies_case_run_mode(
 
     from agent_framework_evaluator.app import create_app
     from agent_framework_evaluator.evaluation import CASE_NO_CALLBACKS_POSTFIX
-    from agent_framework_evaluator.initializer_catalog import load_raw_test_cases
     from agent_framework_evaluator.runtime.session_runner import SessionRunner
     from agent_framework_evaluator.session_manager import session_manager
 
@@ -765,6 +942,8 @@ def test_api_evaluator_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_ENV_PATH", "/abs/env")
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_AGENT", "agent-x")
     monkeypatch.setenv("AGENT_EVAL_DEFAULT_INITIALIZER", "init.py")
+    monkeypatch.setenv("AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE", "gpt-4o")
+    monkeypatch.setenv("AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE", "all_agents")
     client = TestClient(create_app())
     r = client.get("/api/evaluator-defaults")
     assert r.status_code == 200
@@ -772,6 +951,40 @@ def test_api_evaluator_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert data["env_path"] == "/abs/env"
     assert data["agent"] == "agent-x"
     assert data["initializer"] == "init.py"
+    assert data["agent_model_override"] == "gpt-4o"
+    assert data["agent_model_override_scope"] == "all_agents"
+
+
+def test_web_command_keeps_relative_env_path_for_ui_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENT_EVAL_DEFAULT_ENV_PATH", raising=False)
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+
+    code = main(["web", "--env", ".env"])
+
+    assert code == 0
+    assert os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] == ".env"
+
+
+def test_web_command_sets_agent_model_override_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+
+    code = main(
+        [
+            "web",
+            "--env",
+            ".env",
+            "--agent-model-override",
+            "gpt-4o",
+            "--agent-model-override-scope",
+            "all_agents",
+        ]
+    )
+
+    assert code == 0
+    assert os.environ["AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE"] == "gpt-4o"
+    assert os.environ["AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE"] == "all_agents"
 
 
 def test_api_initializers_and_template(tmp_path) -> None:
@@ -780,7 +993,9 @@ def test_api_initializers_and_template(tmp_path) -> None:
     init_d.mkdir()
     (init_d / "seed.py").write_text(
         'PROMPT_TEMPLATE = "hello seed"\nEVALUATOR_CRITERIA = "check output"\n'
-        'DEFAULT_AGENT = "seed-agent"\n',
+        'DEFAULT_AGENT = "seed-agent"\n'
+        'DEFAULT_AGENT_MODEL_OVERRIDE = "gpt-4.1"\n'
+        'DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE = "all_agents"\n',
         encoding="utf-8",
     )
     sub = init_d / "pkg"
@@ -810,6 +1025,8 @@ def test_api_initializers_and_template(tmp_path) -> None:
     assert "evaluator_criteria" in tj
     assert tj["evaluator_criteria"] == "check output"
     assert tj.get("agent") == "seed-agent"
+    assert tj.get("agent_model_override") == "gpt-4.1"
+    assert tj.get("agent_model_override_scope") == "all_agents"
 
     ao = client.get(
         "/api/initializer-template",
@@ -820,6 +1037,7 @@ def test_api_initializers_and_template(tmp_path) -> None:
     assert aoj["agent"] == "solo-agent"
     assert aoj.get("template") == ""
     assert aoj.get("evaluator_criteria") == ""
+    assert aoj.get("agent_model_override") == ""
 
     tn = client.get(
         "/api/initializer-template",
@@ -830,6 +1048,17 @@ def test_api_initializers_and_template(tmp_path) -> None:
     assert tnj["template"] == "nested"
     assert tnj.get("evaluator_criteria") == ""
     assert tnj.get("agent") == "nested-agent"
+
+
+def test_api_evaluator_model_options_reads_default_model_list(tmp_path: Path) -> None:
+    env_f = tmp_path / ".env"
+    env_f.write_text("DEFAULT_MODEL=gpt-4.1,gpt-4o-mini,o3-mini\n", encoding="utf-8")
+    client = TestClient(create_app())
+
+    response = client.get("/api/evaluator-model-options", params={"env_path": str(env_f)})
+
+    assert response.status_code == 200
+    assert response.json()["model_options"] == ["gpt-4.1", "gpt-4o-mini", "o3-mini"]
 
 
 def test_cli_run_supports_prompt_file(tmp_path: Path, monkeypatch) -> None:
@@ -845,6 +1074,110 @@ def test_cli_run_supports_prompt_file(tmp_path: Path, monkeypatch) -> None:
     code = main(["run", "--agent", "root", "--prompt-file", str(prompt_path)])
     assert code == 0
     assert captured.get("prompt") == "hello"
+
+
+def test_cli_run_passes_agent_model_override(tmp_path: Path, monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_run_once(self, **kwargs):
+        captured.update(kwargs)
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+
+    code = main(
+        [
+            "run",
+            "--agent",
+            "root",
+            "--prompt",
+            "hello",
+            "--agent-model-override",
+            "gpt-4o",
+            "--agent-model-override-scope",
+            "all_agents",
+        ]
+    )
+
+    assert code == 0
+    assert captured["agent_model_override"] == "gpt-4o"
+    assert captured["agent_model_override_scope"] == "all_agents"
+
+
+def test_cli_run_outputs_usage_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    def fake_run_once(self, **kwargs):
+        self._last_usage_summary = {
+            "session_totals": {
+                "input_tokens": 10,
+                "input_cached_tokens": 2,
+                "output_tokens": 5,
+                "output_cached_tokens": 0,
+                "total_tokens": 15,
+            },
+            "agents": {},
+            "runs": {},
+        }
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+
+    code = main(["run", "--agent", "root", "--prompt", "hello"])
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["usage_summary"]["session_totals"]["total_tokens"] == 15
+
+
+def test_cli_run_defaults_env_to_current_directory_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_once(self, **kwargs):
+        captured["env_path"] = self.env_path
+        captured.update(kwargs)
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+
+    code = main(["run", "--agent", "root", "--prompt", "hello"])
+
+    assert code == 0
+    assert captured["env_path"] == Path(".env")
+
+
+def test_cli_evaluate_defaults_env_to_current_directory_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_f = tmp_path / ".env"
+    env_f.write_text(f"AGENT_EVAL_INITIALIZER_DIR={tmp_path.as_posix()}\n", encoding="utf-8")
+    _make_case_md(tmp_path, title="default-env")
+    init_f = tmp_path / "init.py"
+    init_f.write_text(
+        "from pathlib import Path\n"
+        "from agent_framework_evaluator.case_markdown import MarkdownCaseLoader\n"
+        "def get_test_cases():\n"
+        "    return MarkdownCaseLoader(Path(__file__).parent, '*.md').get_test_cases()\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_once(self, **kwargs):
+        captured["env_path"] = self.env_path
+        return {"status": "completed", "message": "ok"}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    monkeypatch.setattr("agent_framework_evaluator.evaluation.run_evaluation", _fake_run_evaluation)
+
+    code = main(["evaluate", "--initializer", "init.py", "--case", "0"])
+
+    assert code == 0
+    assert captured["env_path"] == Path(".env")
 
 
 # ---------------------------------------------------------------------------
@@ -866,6 +1199,17 @@ def _make_fake_run_once(message: str = "result-text"):
     """Return a fake SessionRunner.run_once that always returns {message: message}."""
 
     def fake(self, **kwargs):
+        self._last_usage_summary = {
+            "session_totals": {
+                "input_tokens": 6,
+                "input_cached_tokens": 1,
+                "output_tokens": 3,
+                "output_cached_tokens": 0,
+                "total_tokens": 9,
+            },
+            "agents": {},
+            "runs": {},
+        }
         return {"status": "completed", "message": message}
 
     return fake
@@ -916,6 +1260,8 @@ def test_cli_evaluate_case_file_writes_output(
     data = json.loads(out_path.read_text(encoding="utf-8"))
     assert "average_score" in data
     assert "run_result" in data
+    assert "usage_summary" in data
+    assert "session_usage_totals" in data
 
 
 def test_cli_evaluate_initializer_single_case(
@@ -941,6 +1287,52 @@ def test_cli_evaluate_initializer_single_case(
     assert code == 0
 
 
+def test_cli_evaluate_passes_agent_model_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_f = tmp_path / ".env"
+    env_f.write_text(f"AGENT_EVAL_INITIALIZER_DIR={tmp_path.as_posix()}\n", encoding="utf-8")
+    case_md = _make_case_md(tmp_path, title="c1")
+    init_f = tmp_path / "init.py"
+    init_f.write_text(
+        "from pathlib import Path\n"
+        "from agent_framework_evaluator.case_markdown import MarkdownCaseLoader\n"
+        f"CASES_GLOB = '{case_md.name}'\n"
+        "def get_test_cases():\n"
+        "    return MarkdownCaseLoader(Path(__file__).parent, CASES_GLOB).get_test_cases()\n",
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_once(self, **kwargs):
+        captured.update(kwargs)
+        self._last_usage_summary = {"session_totals": {}, "agents": {}, "runs": {}}
+        return {"status": "completed", "message": "answer"}
+
+    monkeypatch.setattr(SessionRunner, "run_once", fake_run_once)
+    monkeypatch.setattr("agent_framework_evaluator.evaluation.run_evaluation", _fake_run_evaluation)
+
+    code = main(
+        [
+            "evaluate",
+            "--env",
+            str(env_f),
+            "--initializer",
+            "init.py",
+            "--case",
+            "0",
+            "--agent-model-override",
+            "gpt-4o",
+            "--agent-model-override-scope",
+            "root_only",
+        ]
+    )
+
+    assert code == 0
+    assert captured["agent_model_override"] == "gpt-4o"
+    assert captured["agent_model_override_scope"] == "root_only"
+
+
 def test_cli_evaluate_batch_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
@@ -964,6 +1356,7 @@ def test_cli_evaluate_batch_summary(
     assert code == 0
     out = capsys.readouterr().out
     assert "alpha" in out or "beta" in out
+    assert "tokens=" in out
 
 
 def test_cli_evaluate_batch_returns_nonzero_when_all_cases_error(
@@ -1058,7 +1451,6 @@ def test_case_markdown_missing_ref_left_unchanged(tmp_path: Path) -> None:
 def test_case_markdown_custom_resolver(tmp_path: Path) -> None:
     from pathlib import Path as P
 
-    from agent_framework.file_reference import FileReferenceResolver
     from agent_framework_evaluator.case_markdown import parse_case_markdown_file
 
     class UpperResolver:

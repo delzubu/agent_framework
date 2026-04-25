@@ -10,11 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Awaitable, Callable, ClassVar, Final, Protocol
-
-from openai import OpenAI
+from typing import Any, Awaitable, Callable, Final, Protocol
 
 from agent_framework.errors import ModelDriverError
 from agent_framework.tool import ToolDefinition
@@ -473,6 +471,132 @@ class ModelContext:
     response_format: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LlmUsage:
+    """Normalized cross-provider token accounting for one model response."""
+
+    input_tokens: int = 0
+    input_cached_tokens: int = 0
+    output_tokens: int = 0
+    output_cached_tokens: int = 0
+    total_tokens: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        """Return a JSON-serializable mapping."""
+        return {
+            "input_tokens": self.input_tokens,
+            "input_cached_tokens": self.input_cached_tokens,
+            "output_tokens": self.output_tokens,
+            "output_cached_tokens": self.output_cached_tokens,
+            "total_tokens": self.total_tokens,
+        }
+
+
+def _coerce_usage_int(value: Any) -> int:
+    """Best-effort integer coercion for provider token fields."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_openai_usage(raw: Any) -> LlmUsage | None:
+    """Normalize OpenAI Responses API usage into the shared contract."""
+    if raw is None:
+        return None
+    if isinstance(raw, LlmUsage):
+        return raw
+    if isinstance(raw, dict):
+        payload = dict(raw)
+    elif hasattr(raw, "model_dump"):
+        dumped = raw.model_dump()
+        if not isinstance(dumped, dict):
+            return None
+        payload = dumped
+    elif hasattr(raw, "to_dict"):
+        dumped = raw.to_dict()
+        if not isinstance(dumped, dict):
+            return None
+        payload = dumped
+    else:
+        payload = {}
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "input_tokens_details",
+            "output_tokens_details",
+        ):
+            value = getattr(raw, name, None)
+            if value is not None:
+                payload[name] = value
+    if not payload:
+        return None
+
+    input_details = payload.get("input_tokens_details")
+    input_cached_tokens = (
+        _coerce_usage_int(input_details.get("cached_tokens"))
+        if isinstance(input_details, dict)
+        else _coerce_usage_int(getattr(input_details, "cached_tokens", 0))
+    )
+    input_tokens = _coerce_usage_int(payload.get("input_tokens"))
+    output_tokens = _coerce_usage_int(payload.get("output_tokens"))
+    total_tokens = _coerce_usage_int(payload.get("total_tokens")) or (input_tokens + output_tokens)
+    return LlmUsage(
+        input_tokens=input_tokens,
+        input_cached_tokens=input_cached_tokens,
+        output_tokens=output_tokens,
+        output_cached_tokens=0,
+        total_tokens=total_tokens,
+    )
+
+
+def normalize_chat_completions_usage(raw: Any) -> LlmUsage | None:
+    """Normalize chat-completions usage into the shared contract."""
+    if raw is None:
+        return None
+    if isinstance(raw, LlmUsage):
+        return raw
+    if not isinstance(raw, dict):
+        if hasattr(raw, "model_dump"):
+            dumped = raw.model_dump()
+            if not isinstance(dumped, dict):
+                return None
+            raw = dumped
+        elif hasattr(raw, "to_dict"):
+            dumped = raw.to_dict()
+            if not isinstance(dumped, dict):
+                return None
+            raw = dumped
+        else:
+            raw = {
+                "prompt_tokens": getattr(raw, "prompt_tokens", None),
+                "completion_tokens": getattr(raw, "completion_tokens", None),
+                "total_tokens": getattr(raw, "total_tokens", None),
+                "prompt_tokens_details": getattr(raw, "prompt_tokens_details", None),
+                "completion_tokens_details": getattr(raw, "completion_tokens_details", None),
+            }
+    payload = dict(raw)
+    if not payload:
+        return None
+    input_details = payload.get("prompt_tokens_details")
+    input_cached_tokens = (
+        _coerce_usage_int(input_details.get("cached_tokens"))
+        if isinstance(input_details, dict)
+        else _coerce_usage_int(getattr(input_details, "cached_tokens", 0))
+    )
+    input_tokens = _coerce_usage_int(payload.get("prompt_tokens"))
+    output_tokens = _coerce_usage_int(payload.get("completion_tokens"))
+    total_tokens = _coerce_usage_int(payload.get("total_tokens")) or (input_tokens + output_tokens)
+    return LlmUsage(
+        input_tokens=input_tokens,
+        input_cached_tokens=input_cached_tokens,
+        output_tokens=output_tokens,
+        output_cached_tokens=0,
+        total_tokens=total_tokens,
+    )
+
+
 def resolved_response_format_dict(context: ModelContext) -> dict[str, Any] | None:
     """Return the effective chat-completions-style ``response_format`` dict.
 
@@ -536,15 +660,18 @@ class ModelResponse:
             drivers), or None if not applicable.
         finish_reason: Stop reason reported by the provider (e.g. ``"stop"``,
             ``"tool_calls"``, ``"length"``).
-        usage: Token usage reported by the provider, keyed by
-            ``"prompt_tokens"``, ``"completion_tokens"``, etc.
+        usage: Normalized token usage keyed by ``input_tokens``,
+            ``input_cached_tokens``, ``output_tokens``,
+            ``output_cached_tokens``, and ``total_tokens``.
+        raw_usage: Provider-native usage payload preserved for audit/tracing.
     """
 
     payload: dict[str, object]
     raw_text: str
     tool_calls: tuple[dict[str, Any], ...] | None = None
     finish_reason: str | None = None
-    usage: dict[str, int] | None = None
+    usage: LlmUsage | None = None
+    raw_usage: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,6 +695,8 @@ class ProviderResponseTrace:
     model_name: str
     raw_text: str
     parsed_payload: dict[str, object] | None = None
+    usage: LlmUsage | None = None
+    raw_usage: dict[str, Any] | None = None
     run_id: str | None = None
 
 
@@ -710,125 +839,6 @@ class AsyncToSyncAdapter:
         self._driver.set_trace_callbacks(on_request=on_request, on_response=on_response)
 
 
-@dataclass(slots=True)
-class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
-    """OpenAI-backed model driver for the first draft runtime.
-
-    Attributes:
-        api_key: API key used to construct the OpenAI client lazily per call.
-        _fallback_state: Per-model-list fallback index map (managed by
-            ``_FallbackMixin``).  Call ``reset_model_fallback()`` to restart
-            from the first model.
-    """
-
-    capabilities: ClassVar[DriverCapabilities] = DriverCapabilities(
-        is_async=False,
-        supports_multimodal=False,
-        supports_response_format=True,
-        supports_tools=False,
-    )
-
-    api_key: str
-    on_request_trace: Any | None = None
-    on_response_trace: Any | None = None
-    _fallback_state: dict[tuple[str, ...], int] = field(default_factory=dict, repr=False)
-    _client: Any = field(default=None, repr=False)
-
-    def set_trace_callbacks(
-        self,
-        *,
-        on_request: Any | None = None,
-        on_response: Any | None = None,
-    ) -> None:
-        """Attach optional trace callbacks for exact provider I/O logging."""
-        self.on_request_trace = on_request
-        self.on_response_trace = on_response
-
-    def _get_client(self) -> OpenAI:
-        """Return a cached OpenAI client, constructing it lazily on first use."""
-        if self._client is None:
-            self._client = OpenAI(api_key=self.api_key)
-        return self._client
-
-    def decide(
-        self,
-        *,
-        agent_id: str | None,
-        provider_name: str,
-        model_names: tuple[str, ...],
-        temperature: float,
-        context: ModelContext,
-    ) -> ModelResponse:
-        """Request a structured decision from the OpenAI Responses API.
-
-        Tries each model in ``model_names`` in order, starting from the last
-        known-good index.  Falls back to the next model on any error.
-        """
-        if provider_name != "openai":
-            raise ValueError(f"Unsupported provider: {provider_name}")
-        if not self.api_key:
-            raise ValueError("OPENAI_API_KEY is required for OpenAI-backed agents.")
-
-        if context.exact_input_payload is not None:
-            model_input = context.exact_input_payload
-        elif context.messages:
-            model_input = list(context.messages)
-        else:
-            model_input = [
-                {"role": "system", "content": context.system_prompt},
-                {"role": "user", "content": context.user_prompt},
-            ]
-
-        def _try_model(model_name: str) -> ModelResponse:
-            client = self._get_client()
-            fmt_dict = resolved_response_format_dict(context)
-            request_trace_payload: Any = model_input
-            if fmt_dict is not None:
-                request_trace_payload = {
-                    "input": model_input,
-                    "text": {"format": openai_responses_text_format_field(fmt_dict)},
-                }
-            if callable(self.on_request_trace):
-                self.on_request_trace(
-                    ProviderRequestTrace(
-                        agent_id=agent_id,
-                        provider_name=provider_name,
-                        model_name=model_name,
-                        input_payload=request_trace_payload,
-                        temperature=temperature,
-                        run_id=context.run_id,
-                    )
-                )
-            create_kwargs: dict[str, Any] = {
-                "model": model_name,
-                "temperature": temperature,
-                "input": model_input,
-            }
-            if fmt_dict is not None:
-                create_kwargs["text"] = {
-                    "format": openai_responses_text_format_field(fmt_dict),
-                }
-            response = client.responses.create(**create_kwargs)
-            raw_text = response.output_text.strip()
-            if callable(self.on_response_trace):
-                self.on_response_trace(
-                    ProviderResponseTrace(
-                        agent_id=agent_id,
-                        provider_name=provider_name,
-                        model_name=model_name,
-                        raw_text=raw_text,
-                        parsed_payload=None,
-                        run_id=context.run_id,
-                    )
-                )
-            if context.response_mode == "text":
-                return ModelResponse(payload={"kind": "final_message", "message": raw_text}, raw_text=raw_text)
-            normalized_text = _normalize_json_text(raw_text)
-            payload = json.loads(normalized_text)
-            return ModelResponse(payload=payload, raw_text=normalized_text)
-
-        return self._fallback_decide(model_names, _try_model)
-
 __all__ = [
     "AsyncModelDriver",
     "AsyncToSyncAdapter",
@@ -836,13 +846,15 @@ __all__ = [
     "CapabilityParameter",
     "DEFAULT_RESPONSE_MODE",
     "DriverCapabilities",
+    "LlmUsage",
     "ModelContext",
     "ModelDriverBase",
     "merge_runtime_system_into_messages",
+    "normalize_chat_completions_usage",
+    "normalize_openai_usage",
     "openai_responses_text_format_field",
     "ModelDriver",
     "ModelResponse",
-    "OpenAiModelDriver",
     "parse_json_object_model_output",
     "resolved_response_format_dict",
     "ProviderRequestTrace",
@@ -861,7 +873,7 @@ def _normalize_json_text(raw_text: str) -> str:
     """Extract JSON text from plain or fenced model responses.
 
     Delegates to ``agent_framework.validation._normalize_json_text`` which is
-    the canonical implementation.  Kept here for backward compatibility.
+    the canonical implementation.
     """
     from agent_framework.validation import _normalize_json_text as _impl
 

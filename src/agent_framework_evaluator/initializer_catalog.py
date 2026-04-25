@@ -186,6 +186,38 @@ def load_initializer_default_eval_model(env_file: Path, initializer_ref: str) ->
     return ""
 
 
+def load_initializer_default_agent_model_override(env_file: Path, initializer_ref: str) -> str:
+    """Return preferred agent-under-test model override from initializer defaults."""
+    path = resolve_setup_path_for_run(env_file, initializer_ref)
+    if path is None or not path.is_file():
+        return ""
+    module = load_setup_module(path)
+    raw = getattr(module, "DEFAULT_AGENT_MODEL_OVERRIDE", None)
+    if raw is not None and isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if hasattr(module, "get_default_agent_model_override"):
+        g = module.get_default_agent_model_override()
+        if isinstance(g, str) and g.strip():
+            return g.strip()
+    return ""
+
+
+def load_initializer_default_agent_model_override_scope(env_file: Path, initializer_ref: str) -> str:
+    """Return override scope for the agent-under-test model, if any."""
+    path = resolve_setup_path_for_run(env_file, initializer_ref)
+    if path is None or not path.is_file():
+        return ""
+    module = load_setup_module(path)
+    raw = getattr(module, "DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE", None)
+    if raw is not None and isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if hasattr(module, "get_default_agent_model_override_scope"):
+        g = module.get_default_agent_model_override_scope()
+        if isinstance(g, str) and g.strip():
+            return g.strip()
+    return ""
+
+
 def load_raw_test_cases(env_file: Path, initializer_ref: str) -> list[dict[str, Any]]:
     """Load test case dicts from initializer (includes ``code_evaluator`` callables when present)."""
     path = resolve_setup_path_for_run(env_file, initializer_ref)

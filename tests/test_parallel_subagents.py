@@ -6,16 +6,12 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any
-from uuid import uuid4
 
 import pytest
 
 from agent_framework.agents.agent_decision import AgentDecision, SubagentCallSpec
 from agent_framework.agents.agent_result import AgentResult
-from agent_framework.agents.agent_run import AgentRun
-from agent_framework.host import AgentHost, SubagentBatchItemResult
-from agent_framework.config import HostConfig
+from agent_framework.host import AgentHost
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +482,7 @@ def test_callback_resume_restores_history(tmp_path: Path):
     with mock.patch.object(Agent, "run", patched_run):
         root = host.get_agent("root")
 
-        def fake_resolve_callback(*, caller_id, callee, prompt):
+        def fake_resolve_callback(*, caller_id, callee, prompt, intent="information_request", run_id="", parent_run_id=None):
             return "the answer is 42"
 
         with mock.patch.object(AgentHost, "resolve_callback", side_effect=fake_resolve_callback):
@@ -667,7 +663,6 @@ def test_contextvars_propagate_to_executor_workers():
 def test_timed_out_orphan_cannot_write_checkpoint(tmp_path: Path):
     """A child thread that completes after the parent's wait times out must not
     be able to write a checkpoint via save_checkpoint (tombstone guard)."""
-    import concurrent.futures
 
     host = make_host(tmp_path)
 

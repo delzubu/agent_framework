@@ -21,6 +21,17 @@
         <input id="initializer-select" type="text" list="initializer-list" placeholder="e.g. seed.py (from AGENT_EVAL_INITIALIZER_DIR) or full path" autocomplete="off" spellcheck="false">
         <datalist id="initializer-list"></datalist>
       </label>
+      <label>Agent model override
+        <select id="agent-model-override">
+          <option value="">Configured default</option>
+        </select>
+      </label>
+      <label>Override scope
+        <select id="agent-model-override-scope">
+          <option value="root_only">Tested agent only</option>
+          <option value="all_agents">Whole run</option>
+        </select>
+      </label>
       <div id="case-list-section" class="case-list-section" hidden>
         <div class="case-list-header">
           <span class="case-list-title">Test cases</span>
@@ -95,6 +106,7 @@
               <div class="batch-summary-header">
                 <span class="batch-summary-title">Run summary</span>
               </div>
+              <div id="run-usage-summary" class="run-usage-summary" hidden></div>
               <div class="batch-summary-overall">
                 <span class="batch-summary-overall-label">Overall score</span>
                 <div class="batch-summary-avg-wrap">
@@ -108,6 +120,7 @@
                     <tr>
                       <th scope="col">Test case</th>
                       <th scope="col" class="batch-summary-th-score">Score</th>
+                      <th scope="col" class="batch-summary-th-usage">Usage</th>
                     </tr>
                   </thead>
                   <tbody id="batch-summary-table-body"></tbody>
@@ -200,6 +213,8 @@
     </div>
   </dialog>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="/static/scripts/trace-detail-modal.js"></script>
+  <script src="/static/scripts/evaluation-rendering.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

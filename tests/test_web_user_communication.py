@@ -37,6 +37,31 @@ async def test_web_user_communication_waits_for_answer() -> None:
     assert "prompt_id" in drained[0]
 
 
+@pytest.mark.asyncio
+async def test_web_user_communication_preserves_host_metadata() -> None:
+    comm = WebUserCommunication(session_id="sess-1")
+
+    async def answer_later() -> None:
+        await asyncio.sleep(0.01)
+        assert comm.submit_user_input("hello", prompt_id="pid-123") is True
+
+    task = asyncio.create_task(
+        comm.read_user_input(
+            "Question? ",
+            prompt_id="pid-123",
+            metadata={"agent_id": "deck_review_intake", "run_id": "run-1", "intent": "information_request"},
+        )
+    )
+    await answer_later()
+    result = await task
+    assert result == "hello"
+    drained = comm.drain_outbox()
+    assert drained[0]["prompt_id"] == "pid-123"
+    assert drained[0]["agent_id"] == "deck_review_intake"
+    assert drained[0]["run_id"] == "run-1"
+    assert drained[0]["intent"] == "information_request"
+
+
 def test_web_user_communication_cross_thread_submit() -> None:
     """Worker thread runs asyncio.run(read_user_input); main thread submits (evaluator pattern)."""
     comm = WebUserCommunication(session_id="sess-x")

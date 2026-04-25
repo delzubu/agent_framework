@@ -287,9 +287,19 @@ You do not write this JSON.  The bundled system prompt templates teach the model
 
 If the model produces an invalid decision — wrong `kind`, missing required field, both `tool_name` and `subagent_id` set — the framework raises a `ValueError`.  It does not try to guess what the model meant.  This strictness is documented in `CLAUDE.md` and intentional: silent repair would hide prompt bugs.
 
-### The five decision kinds
+### Decision kinds and interaction modes
 
-Every loop iteration ends with exactly one decision of one of these five kinds:
+Every loop iteration ends with exactly one decision. The runtime supports these primary kinds:
+
+- `final_message`
+- `call_tool`
+- `call_subagent`
+- `call_subagents`
+- `callback`
+- `callback_to_caller`
+- `request_user_input`
+- `request_resolution`
+- `invoke_skill`
 
 **`final_message`** — The agent is done.  The `message` field contains the answer.  The loop ends and `AgentResult` is returned to the caller.
 
@@ -327,7 +337,20 @@ Every loop iteration ends with exactly one decision of one of these five kinds:
 }
 ```
 
-**`callback`** — Ask a question.  Callbacks can go to the host (a human at the console, a web user) or to the caller agent.  The `intent` field clarifies what kind of question is being asked.  The answer comes back as a user message and the loop continues.
+**`call_subagents`** — Dispatch multiple children in one decision, either sequentially or in parallel.  Parallel children still cannot synchronously block on direct user input; a blocked child is checkpointed and resumed later.
+
+```json
+{
+  "kind": "call_subagents",
+  "mode": "parallel",
+  "calls": [
+    {"subagent_id": "researcher", "parameters": {"topic": "X"}, "output_key": "research"},
+    {"subagent_id": "critic", "parameters": {"topic": "X"}, "output_key": "critique"}
+  ]
+}
+```
+
+**`callback`** — Generic interaction request.  This is still used for intent-style kinds such as `information_request` and `proposal_review`, but newer runtimes also expose more specific routing kinds below.
 
 ```json
 {
@@ -336,6 +359,41 @@ Every loop iteration ends with exactly one decision of one of these five kinds:
   "message": "What is the customer's preferred shipping address?",
   "parameters": {
     "parameter_name": "shipping_address"
+  }
+}
+```
+
+**`callback_to_caller`** — Ask the caller side to try resolving first.  Use this when the parent may already know the answer or should mediate approvals.
+
+```json
+{
+  "kind": "callback_to_caller",
+  "intent": "information_request",
+  "message": "Need caller-side resolution for retry mode.",
+  "parameters": {}
+}
+```
+
+**`request_user_input`** — Ask the user directly.  Use this when bubbling through parent agents would only waste tokens.
+
+```json
+{
+  "kind": "request_user_input",
+  "intent": "information_request",
+  "message": "Which audience should this deck target?",
+  "parameters": {}
+}
+```
+
+**`request_resolution`** — Resolve through agents, tools, memory, or system state only.  The host/user must not be asked.  If unresolved, the run fails or takes another explicit path.
+
+```json
+{
+  "kind": "request_resolution",
+  "intent": "information_request",
+  "message": "Resolve the customer id from current system state.",
+  "parameters": {
+    "resolvable_by": ["account_lookup_specialist"]
   }
 }
 ```
@@ -353,7 +411,7 @@ Every loop iteration ends with exactly one decision of one of these five kinds:
 
 ### Callback intents
 
-Callbacks carry an `intent` that tells the caller (human or parent agent) what kind of response is needed.  Intents can appear either as the `kind` field directly (the model emits `information_request` as the top-level kind) or as the `intent` field inside a `callback` decision — the framework normalises both forms.
+Callbacks carry an `intent` that tells the caller, host, or user what kind of response is needed.  Intents can appear either as the `kind` field directly (the model emits `information_request` as the top-level kind) or as the `intent` field inside a callback-family decision — the framework normalises both forms.
 
 | Intent | When to use |
 |--------|-------------|
@@ -363,6 +421,31 @@ Callbacks carry an `intent` that tells the caller (human or parent agent) what k
 | `delegation_return` | Child agent returning to parent with a result or question |
 | `policy_or_approval` | Agent needs authorisation for a sensitive action |
 | `guardrail_trip` | Agent encountered a policy violation and is stopping to report it |
+
+### Choosing the right interaction path
+
+Use `callback_to_caller` when:
+
+- the caller may already know the answer
+- the caller should transform, approve, or contextualise the request
+- upward escalation adds value
+
+Use `request_user_input` when:
+
+- the answer must come from the user
+- a specialist child owns the clarification loop
+- parent mediation would only burn tokens
+
+Use `request_resolution` when:
+
+- the user must not be asked
+- the answer should come from tools, memory, or another agent only
+- unresolved state should fail loudly instead of drifting into UI interaction
+
+Use generic `callback` only when:
+
+- the prompt is written against an older runtime contract, or
+- the distinction truly does not matter for the current host
 
 ### Terminal tools
 
@@ -1531,8 +1614,68 @@ Run your agent in the UI.  Open the Spans pane.  Set the log level to `debug`.  
 - Sub-agent calls nested under the parent agent
 - LLM request and response events (with the full message list if you expand them)
 - Evaluator trace events when you click Evaluate
+- Normalized token usage summaries for the session and for each completed agent run
 
 This is much faster than reading JSONL files.  See [Using the agent evaluator](using-agent-evaluator.md) for the full UI guide.
+
+The evaluator can also override the model used by the agent under test without changing `.env` or adjacent agent runtime files.  This is separate from `DEFAULT_EVAL_MODEL`, which still controls the evaluator/scoring LLM.
+
+Two override scopes are supported:
+
+- `root_only` — only the tested/top-level agent uses the selected override model
+- `all_agents` — every agent invoked during that run uses the selected override model
+
+The UI dropdown is populated from `.env` `DEFAULT_MODEL` and remains empty by default.  Initializers can prefill it with `DEFAULT_AGENT_MODEL_OVERRIDE` / `get_default_agent_model_override()` and `DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE` / `get_default_agent_model_override_scope()`.
+
+```bash
+python -m agent_framework_evaluator web \
+  --env .env \
+  --agent-model-override gpt-4.1 \
+  --agent-model-override-scope root_only
+
+python -m agent_framework_evaluator evaluate \
+  --env .env \
+  --initializer eval/initializers/customer_support_init.py \
+  --agent-model-override gpt-4.1 \
+  --agent-model-override-scope all_agents
+```
+
+### Understanding evaluator token usage
+
+LLM usage is normalized at the provider boundary before it enters the runtime trace.  OpenAI Responses and DIAL chat completions use different native field names, but the framework converts both into the same shape:
+
+```json
+{
+  "input_tokens": 120,
+  "input_cached_tokens": 80,
+  "output_tokens": 32,
+  "output_cached_tokens": 0,
+  "total_tokens": 152
+}
+```
+
+The evaluator treats trace events as the source of truth.  Per-call evidence comes from `llm.response`, while the UI and CLI prefer the already-aggregated totals published by the runtime:
+
+- `runtime.agent_finished.usage_self`: tokens used directly by that agent run
+- `runtime.agent_finished.usage_inclusive`: that run plus all descendant sub-agent runs
+- `runtime.session_finished.usage_session_totals`: totals for the whole session, available immediately after execution
+
+`output_cached_tokens` is currently `0` for OpenAI Responses and DIAL unless a provider later exposes a real output-cache metric.  The framework does not infer unsupported provider metrics.
+
+In the evaluator:
+
+- the Run summary shows session totals immediately after a run
+- the trace-side usage panel can show either session totals or the selected run's totals
+- the Flow tab shows compact inclusive totals next to each agent node
+- CLI `run` / `evaluate` output includes the same normalized session usage summary
+
+### Running deterministic programmatic workflows
+
+Some controller agents should not spend an LLM turn deciding the next step.  Typical examples are "run intake, then parallel specialists, then consolidate" or approval chains whose branching is fixed in code.  The supported pattern for that is `AgentBehavior.before_run(...)` plus `Agent.execute_programmatic_workflow(...)`.
+
+The workflow API is framework-owned, not a host-side shortcut, so parent-side subagent tracing and callback semantics are preserved.
+
+For the full developer reference, examples, step model, and current limits, see [Programmatic Workflow Agents]({{ '/reference/programmatic-workflow-agents/' | relative_url }}).
 
 ### Diagnosing common problems
 
@@ -1560,6 +1703,48 @@ The bundled system templates instruct the model to output JSON decisions.  If pa
 - The model returned markdown-fenced JSON (```json ... ```) — the framework strips fences, but check the LLM trace to confirm.
 - The model returned a `kind` value not in the allowed set — this is a prompt issue; the model was not given the right instructions.
 - The model is using a `response_mode` that does not match (check the driver's capabilities).
+
+If the provider returns multiple JSON documents in one structured reply, the runtime now rewrites the generic parse failure into a more specific contract error.  For example, a response like:
+
+```text
+{"kind":"call_subagents", ...}
+{"kind":"call_subagent", ...}
+```
+
+will surface as "returned more than one JSON value in a single structured response" rather than a bare `Extra data` parse error.  The framework still rejects the response — it does not try to guess which object the model intended.
+
+### Runtime model validation
+
+Structured-output validation is no longer hard-coded into the agent loop.  `AgentHost` owns a runtime validation chain that runs:
+
+- exception validators after a model-call failure
+- response validators after a parsed `ModelResponse` is returned
+
+The default chain includes a validator that explains the common "multiple JSON objects in one response" failure.  You can add more validators at runtime without editing `agent.py`:
+
+```python
+from agent_framework.host import AgentHost
+
+class MyResponseValidator:
+    def validate_response(self, response, *, context) -> None:
+        if response.payload.get("kind") == "final_message" and not response.payload.get("message"):
+            raise ValueError("final_message must include a non-empty message")
+
+host = AgentHost.from_env(".env")
+host.register_model_response_validator(MyResponseValidator())
+```
+
+For driver-side parse failures or contract-specific rewrites, register an exception validator instead:
+
+```python
+class MyExceptionValidator:
+    def validate_exception(self, exc, *, context):
+        return None  # return a replacement exception to rewrite the error
+
+host.register_model_exception_validator(MyExceptionValidator())
+```
+
+This keeps the execution loop small while leaving room for project-specific validation and diagnostics.
 
 **A sub-agent never receives the right parameters:**
 
@@ -1846,6 +2031,19 @@ python -m agent_framework_evaluator web --env .env --open-browser
 | `behaviors` | list | `[]` | Behavior ids to attach |
 | `can_query_caller` | bool | `true` | Allow callbacks to caller agent |
 | `can_use_host_interaction` | bool | `true` | Allow callbacks to host/user |
+| `callback_policy` | object | `{}` | Default bubbling/passthrough policy for child callbacks |
+
+`callback_policy` supports:
+
+```json
+{
+  "passthrough_child_callbacks": true,
+  "max_bubble_hops": 1,
+  "fallback_target": "user"
+}
+```
+
+Use it when orchestration layers should forward child clarifications instead of processing them themselves.
 
 ### Decision kinds
 
@@ -1854,7 +2052,11 @@ python -m agent_framework_evaluator web --env .env --open-browser
 | `final_message` | Yes | `message` |
 | `call_tool` | No | `tool_name`, `parameters` |
 | `call_subagent` | No | `subagent_id`, `parameters` |
+| `call_subagents` | No | `mode`, `calls` |
 | `callback` | No | `intent`, `message` |
+| `callback_to_caller` | No | `intent`, `message` |
+| `request_user_input` | No | `intent`, `message` |
+| `request_resolution` | No | `intent`, `message` |
 | `invoke_skill` | No | `skill_name` |
 
 ### Environment variables
@@ -1881,8 +2083,10 @@ python -m agent_framework_evaluator web --env .env --open-browser
 ## Further reading
 
 - [Architecture overview](../architecture/overview.md)
+- [Using Memory](./using-memory.md)
 - [Using the agent evaluator](using-agent-evaluator.md)
 - [Using DIAL](using-dial.md)
+- [Memory System](../architecture/memory-system.md)
 - [ADR: Model context and drivers](../architecture/adr-model-context-and-drivers.md)
 - [Agent evaluator and web runtime](../architecture/agent-evaluator-web-runtime.md)
 - [Tracing and evaluation](../architecture/tracing-evaluation.md)

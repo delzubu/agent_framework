@@ -5,7 +5,7 @@ import pytest
 from agent_framework.config import HostConfig
 from agent_framework.conversation import InMemoryConversationStore
 from agent_framework.host import AgentHost, run_tool_loop
-from agent_framework.model import ModelContext, ModelResponse
+from agent_framework.model import ModelResponse
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,6 @@ class TestCreate:
         assert host.model_driver is driver
 
     def test_create_with_custom_config(self):
-        from pathlib import Path
         config = HostConfig(default_model=("gpt-test",))
         driver = FakeDriver(ModelResponse(payload={}, raw_text=""))
         host = AgentHost.create(model_driver=driver, config=config)
@@ -240,3 +239,50 @@ class TestRunToolLoop:
                 tools=[],
                 max_iterations=3,
             )
+
+    @pytest.mark.asyncio
+    async def test_return_on_max_iterations_instead_of_raise(self):
+        always_tool = ModelResponse(
+            payload={},
+            raw_text="",
+            tool_calls=(
+                {"id": "c1", "type": "function", "function": {"name": "loop", "arguments": "{}"}},
+            ),
+            finish_reason="tool_calls",
+        )
+        host = _make_host(FakeAsyncDriver([always_tool] * 20))
+        msgs = [{"role": "user", "content": "start"}]
+        result = await run_tool_loop(
+            host,
+            messages=msgs,
+            tools=[],
+            max_iterations=2,
+            return_on_max_iterations=True,
+        )
+        assert result.finish_reason == "max_iterations"
+        assert len(msgs) >= 2
+
+    @pytest.mark.asyncio
+    async def test_terminal_tool_leaves_assistant_turn_in_messages(self):
+        tool_call_response = ModelResponse(
+            payload={},
+            raw_text="",
+            tool_calls=(
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "ask_clarification", "arguments": '{"q":"what?"}'},
+                },
+            ),
+            finish_reason="tool_calls",
+        )
+        host = _make_host(FakeAsyncDriver([tool_call_response]))
+        msgs = [{"role": "user", "content": "go"}]
+        await run_tool_loop(
+            host,
+            messages=msgs,
+            tools=[],
+            terminal_tools=["ask_clarification"],
+        )
+        assert msgs[-1]["role"] == "assistant"
+        assert msgs[-1].get("tool_calls")

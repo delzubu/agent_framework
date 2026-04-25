@@ -26,8 +26,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
+from datetime import datetime, timezone
 
 from agent_framework.errors import ModelDriverError
 from agent_framework.model import (
@@ -39,6 +41,7 @@ from agent_framework.model import (
     ProviderRequestTrace,
     ProviderResponseTrace,
     _FallbackMixin,
+    normalize_chat_completions_usage,
     parse_json_object_model_output,
     resolved_response_format_dict,
 )
@@ -50,7 +53,6 @@ _LOGGER = logging.getLogger(__name__)
 try:
     import httpx
     from aidial_sdk.chat_completion.request import (
-        ChatCompletionRequest,
         Function,
         ImageURL,
         Message,
@@ -247,6 +249,10 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
     api_key: str = ""
     custom_fields: dict[str, Any] | None = None
     retry_without_response_format: bool = True
+    retry_on_rate_limit: bool = True
+    rate_limit_max_attempts: int = 3
+    rate_limit_initial_delay_seconds: float = 5.0
+    rate_limit_max_delay_seconds: float = 60.0
     timeout: float = 120.0
     on_request_trace: Any | None = None
     on_response_trace: Any | None = None
@@ -278,6 +284,8 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
                     "status_code": exc.status_code,
                     "message": str(exc),
                 },
+                usage=None,
+                raw_usage=None,
                 run_id=context.run_id,
             )
         )
@@ -319,7 +327,7 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
                 )
 
             try:
-                response_data = await self._post(endpoint, body)
+                response = await self._post(endpoint, body)
             except ModelDriverError as exc:
                 self._emit_provider_response_error_trace(
                     agent_id=agent_id,
@@ -330,11 +338,11 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
                 )
                 raise
 
-            if response_data is None:
+            if response is None:
                 # HTTP 400 with response_format — retry without it
                 body_no_fmt = {k: v for k, v in body.items() if k != "response_format"}
                 try:
-                    response_data = await self._post(endpoint, body_no_fmt, allow_retry=False)
+                    response = await self._post(endpoint, body_no_fmt, allow_retry=False)
                 except ModelDriverError as exc:
                     self._emit_provider_response_error_trace(
                         agent_id=agent_id,
@@ -345,7 +353,29 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
                     )
                     raise
 
-            result = self._parse_response(response_data, context)
+            assert response is not None
+            response_data, raw_response_text = response
+            response_raw_usage = response_data.get("usage")
+            if not isinstance(response_raw_usage, dict):
+                response_raw_usage = None
+            response_usage = normalize_chat_completions_usage(response_raw_usage)
+            try:
+                result = self._parse_response(response_data, context)
+            except Exception:
+                if callable(self.on_response_trace):
+                    self.on_response_trace(
+                        ProviderResponseTrace(
+                            agent_id=agent_id,
+                            provider_name=provider_name,
+                            model_name=model,
+                            raw_text=raw_response_text,
+                            parsed_payload=None,
+                            usage=response_usage,
+                            raw_usage=response_raw_usage,
+                            run_id=context.run_id,
+                        )
+                    )
+                raise
 
             if callable(self.on_response_trace):
                 self.on_response_trace(
@@ -353,8 +383,10 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
                         agent_id=agent_id,
                         provider_name=provider_name,
                         model_name=model,
-                        raw_text=result.raw_text,
+                        raw_text=raw_response_text,
                         parsed_payload=dict(result.payload) if result.payload else None,
+                        usage=result.usage,
+                        raw_usage=result.raw_usage,
                         run_id=context.run_id,
                     )
                 )
@@ -446,7 +478,7 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
         body: dict[str, Any],
         *,
         allow_retry: bool = True,
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any], str] | None:
         """POST to the DIAL endpoint.
 
         Returns the parsed response dict, or ``None`` if HTTP 400 was returned
@@ -457,39 +489,119 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
             ModelDriverError: On HTTP error or transport failure.
         """
         client = await self._acquire_client()
-        try:
-            resp = await client.post(endpoint, json=body)
-        except httpx.TransportError as exc:
-            _LOGGER.error("DIAL transport error for %s: %s", self.base_url, exc)
-            raise ModelDriverError(
-                f"Cannot reach DIAL at {self.base_url!r}: {exc}. "
-                "Check network connectivity and VPN access to the DIAL endpoint.",
-                status_code=502,
-                upstream_body=None,
-            ) from exc
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                resp = await client.post(endpoint, json=body)
+            except httpx.TransportError as exc:
+                _LOGGER.error("DIAL transport error for %s: %s", self.base_url, exc)
+                raise ModelDriverError(
+                    f"Cannot reach DIAL at {self.base_url!r}: {exc}. "
+                    "Check network connectivity and VPN access to the DIAL endpoint.",
+                    status_code=502,
+                    upstream_body=None,
+                ) from exc
 
-        if resp.status_code == 400 and "response_format" in body and allow_retry and self.retry_without_response_format:
-            _LOGGER.warning(
-                "DIAL HTTP 400 with response_format on %s; retrying without response_format",
-                endpoint,
-            )
+            if resp.status_code == 400 and "response_format" in body and allow_retry and self.retry_without_response_format:
+                _LOGGER.warning(
+                    "DIAL HTTP 400 with response_format on %s; retrying without response_format",
+                    endpoint,
+                )
+                return None
+
+            if resp.status_code == 429:
+                upstream = resp.text[:2000] if resp.text else None
+                retry_delay = self._dial_retry_delay_seconds(resp, attempt=attempt)
+                if retry_delay is not None:
+                    _LOGGER.warning(
+                        "DIAL HTTP 429 %s: retrying in %.2fs (attempt %s/%s)",
+                        endpoint,
+                        retry_delay,
+                        attempt,
+                        self.rate_limit_max_attempts,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+                _LOGGER.warning(
+                    "DIAL HTTP 429 %s: %s",
+                    endpoint,
+                    (upstream or "")[:500],
+                )
+                raise ModelDriverError(
+                    "DIAL returned HTTP 429",
+                    status_code=429,
+                    upstream_body=upstream,
+                )
+
+            if resp.status_code >= 400:
+                upstream = resp.text[:2000] if resp.text else None
+                _LOGGER.warning(
+                    "DIAL HTTP %s %s: %s",
+                    resp.status_code,
+                    endpoint,
+                    (upstream or "")[:500],
+                )
+                raise ModelDriverError(
+                    f"DIAL returned HTTP {resp.status_code}",
+                    status_code=resp.status_code,
+                    upstream_body=upstream,
+                )
+
+            return resp.json(), resp.text
+
+    def _dial_retry_delay_seconds(self, resp: Any, *, attempt: int) -> float | None:
+        """Return retry delay for transient 429s, or ``None`` when not retryable."""
+        if not self.retry_on_rate_limit or attempt >= self.rate_limit_max_attempts:
+            return None
+        upstream = resp.text or ""
+        payload = self._try_parse_error_payload(upstream)
+        display_message = str((payload.get("error") or {}).get("display_message") or "").strip().lower()
+        message = str((payload.get("error") or {}).get("message") or "").strip().lower()
+        if any(token in display_message for token in ("monthly", "daily", "weekly")):
+            return None
+        if any(token in message for token in ("monthly token limit", "daily token limit", "weekly token limit")):
             return None
 
-        if resp.status_code >= 400:
-            upstream = resp.text[:2000] if resp.text else None
-            _LOGGER.warning(
-                "DIAL HTTP %s %s: %s",
-                resp.status_code,
-                endpoint,
-                (upstream or "")[:500],
-            )
-            raise ModelDriverError(
-                f"DIAL returned HTTP {resp.status_code}",
-                status_code=resp.status_code,
-                upstream_body=upstream,
-            )
+        retry_after = self._parse_retry_after_seconds(getattr(resp, "headers", None))
+        if retry_after is not None:
+            return min(retry_after, self.rate_limit_max_delay_seconds)
 
-        return resp.json()
+        delay = self.rate_limit_initial_delay_seconds * (2 ** max(attempt - 1, 0))
+        return min(delay, self.rate_limit_max_delay_seconds)
+
+    @staticmethod
+    def _try_parse_error_payload(raw_text: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _parse_retry_after_seconds(headers: Any) -> float | None:
+        if headers is None:
+            return None
+        value = None
+        if hasattr(headers, "get"):
+            value = headers.get("Retry-After") or headers.get("retry-after")
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            delay = float(text)
+            return max(delay, 0.0)
+        except ValueError:
+            pass
+        try:
+            when = parsedate_to_datetime(text)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return max((when - datetime.now(timezone.utc)).total_seconds(), 0.0)
+        except Exception:
+            return None
 
     def _parse_response(
         self,
@@ -514,12 +626,57 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
 
         # Usage
         raw_usage = data.get("usage")
-        usage: dict[str, int] | None = None
-        if raw_usage:
-            usage = {k: v for k, v in raw_usage.items() if isinstance(v, int)}
+        if not isinstance(raw_usage, dict):
+            raw_usage = None
+        usage = normalize_chat_completions_usage(raw_usage)
 
         # Build payload
-        if context.response_mode == DEFAULT_RESPONSE_MODE:
+        if tool_calls:
+            if len(tool_calls) != 1:
+                raise ModelDriverError(
+                    "DIAL returned multiple native tool calls in one response; "
+                    "agent_framework decision mode expects exactly one tool target per turn.",
+                    status_code=None,
+                    upstream_body=json.dumps(data)[:2000],
+                )
+            tool_call = tool_calls[0]
+            function_payload = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+            tool_name = str(function_payload.get("name", "")).strip()
+            if not tool_name:
+                raise ModelDriverError(
+                    "DIAL returned a native tool call without a function name.",
+                    status_code=None,
+                    upstream_body=json.dumps(data)[:2000],
+                )
+            raw_arguments = function_payload.get("arguments", "{}")
+            if not isinstance(raw_arguments, str):
+                raise ModelDriverError(
+                    "DIAL native tool call arguments must be a JSON object string.",
+                    status_code=None,
+                    upstream_body=json.dumps(data)[:2000],
+                )
+            try:
+                parsed_arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError as exc:
+                raise ModelDriverError(
+                    f"DIAL native tool call arguments are not valid JSON: {exc}",
+                    status_code=None,
+                    upstream_body=raw_arguments[:2000],
+                ) from exc
+            if not isinstance(parsed_arguments, dict):
+                raise ModelDriverError(
+                    "DIAL native tool call arguments must decode to a JSON object.",
+                    status_code=None,
+                    upstream_body=raw_arguments[:2000],
+                )
+            payload = {
+                "kind": "call_tool",
+                "tool_name": tool_name,
+                "parameters": parsed_arguments,
+                "message": "",
+            }
+            raw_text = raw_content
+        elif context.response_mode == DEFAULT_RESPONSE_MODE:
             payload, raw_text = parse_json_object_model_output(
                 raw_content, provider_label="DIAL"
             )
@@ -533,6 +690,7 @@ class DialChatCompletionsDriver(ModelDriverBase, _FallbackMixin):
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
+            raw_usage=raw_usage,
         )
 
 

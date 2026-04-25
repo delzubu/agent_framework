@@ -4,10 +4,22 @@ from pathlib import Path
 
 import pytest
 
-from agent_framework.agent import Agent, AgentBehavior, AgentEndHookDecision, AgentHookDecision, AgentParameter, AgentResult
+from agent_framework.agent import (
+    Agent,
+    AgentBehavior,
+    AgentEndHookDecision,
+    AgentHookDecision,
+    AgentParameter,
+    AgentResult,
+)
+from agent_framework.agents.agent import CallbackRoutingPolicy
 from agent_framework.config import load_host_config
 from agent_framework.host import AgentHost
+from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
 from agent_framework.model import ModelContext, ModelResponse
+from agent_framework.model import LlmUsage
+from agent_framework.model_validation import ModelValidationContext
+from agent_framework.tracing import CompositeRuntimeTracer, TraceEvent
 
 
 
@@ -24,6 +36,52 @@ class FakeModelDriver:
     def decide(self, *, agent_id, provider_name, model_names, temperature, context: ModelContext):
         payload = self._payloads.pop(0)
         return ModelResponse(payload=payload, raw_text=str(payload))
+
+
+class FakeUsageDriver(FakeModelDriver):
+    def __init__(self, payloads, usages):
+        super().__init__(payloads)
+        self._usages = list(usages)
+
+    def decide(self, *, agent_id, provider_name, model_names, temperature, context: ModelContext):
+        response = super().decide(
+            agent_id=agent_id,
+            provider_name=provider_name,
+            model_names=model_names,
+            temperature=temperature,
+            context=context,
+        )
+        response_usage = self._usages.pop(0)
+        event = type(
+            "RespTrace",
+            (),
+            {
+                "agent_id": agent_id,
+                "provider_name": provider_name,
+                "model_name": model_names[0],
+                "raw_text": response.raw_text,
+                "parsed_payload": dict(response.payload),
+                "usage": response_usage,
+                "raw_usage": response_usage.to_dict(),
+                "run_id": context.run_id,
+            },
+        )()
+        if callable(self.on_response_trace):
+            self.on_response_trace(event)
+        return ModelResponse(
+            payload=response.payload,
+            raw_text=response.raw_text,
+            usage=response_usage,
+            raw_usage=response_usage.to_dict(),
+        )
+
+
+class _TraceRecorder:
+    def __init__(self) -> None:
+        self.events: list[TraceEvent] = []
+
+    def consume(self, event: TraceEvent) -> None:
+        self.events.append(event)
 
 
 def write_env(path: Path, root_agent: str = 'root') -> None:
@@ -180,6 +238,414 @@ You are the root narrator.
     )
     result = host.run_root(initial_instruction='test instruction')
     assert result.message == 'ok'
+
+
+def test_host_runtime_usage_totals_include_subagent_usage(tmp_path: Path) -> None:
+    host, _ = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="parser",
+        decisions=[
+            {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
+            {"kind": "final_message", "message": "child done"},
+            {"kind": "final_message", "message": "parent done"},
+        ],
+    )
+    recorder = _TraceRecorder()
+    usage_driver = FakeUsageDriver(
+        payloads=[
+            {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
+            {"kind": "final_message", "message": "child done"},
+            {"kind": "final_message", "message": "parent done"},
+        ],
+        usages=[
+            LlmUsage(input_tokens=10, input_cached_tokens=2, output_tokens=5, total_tokens=15),
+            LlmUsage(input_tokens=7, input_cached_tokens=1, output_tokens=3, total_tokens=10),
+            LlmUsage(input_tokens=4, input_cached_tokens=0, output_tokens=2, total_tokens=6),
+        ],
+    )
+    host.model_driver = usage_driver
+    host.runtime_tracer = CompositeRuntimeTracer(subscribers=[recorder])
+    host._llm_traces_wired = False
+    wire_llm_traces_to_runtime_tracer(host)
+    host.run_root(initial_instruction="go")
+
+    parent_run_id = next(run_id for run_id, reg in host._run_registry.items() if reg.agent_id == "orchestrator")
+    child_run_id = next(run_id for run_id, reg in host._run_registry.items() if reg.agent_id == "parser")
+
+    parent_usage = host.finish_runtime_usage(run_id=parent_run_id)
+    child_usage = host.finish_runtime_usage(run_id=child_run_id)
+    session_totals = host.session_usage_totals()
+
+    assert child_usage["usage_self"]["total_tokens"] == 10
+    assert child_usage["usage_inclusive"]["total_tokens"] == 10
+    assert parent_usage["usage_self"]["total_tokens"] == 21
+    assert parent_usage["usage_inclusive"]["total_tokens"] == 31
+    assert session_totals["total_tokens"] == 31
+    audit_finished = [e for e in recorder.events if e.kind == "runtime.audit.agent_call_finished"]
+    assert len(audit_finished) == 2
+    assert all(isinstance(e.payload.get("usage_self"), dict) for e in audit_finished)
+    assert all(isinstance(e.payload.get("usage_inclusive"), dict) for e in audit_finished)
+    child_audit = next(e for e in audit_finished if e.payload["run_id"] == child_run_id)
+    parent_audit = next(e for e in audit_finished if e.payload["run_id"] == parent_run_id)
+    assert child_audit.payload["usage_self"]["total_tokens"] == 10
+    assert child_audit.payload["usage_inclusive"]["total_tokens"] == 10
+    assert parent_audit.payload["usage_self"]["total_tokens"] == 21
+    assert parent_audit.payload["usage_inclusive"]["total_tokens"] == 31
+
+
+def test_programmatic_single_subagent_workflow_matches_native_trace_contract(tmp_path: Path) -> None:
+    from agent_framework.agents.workflow import ProgrammaticWorkflow, WorkflowCallSubagentStep, WorkflowReturnStep
+
+    class ProgrammaticBehavior(AgentBehavior):
+        def __init__(self) -> None:
+            self.last_run = None
+
+        def attach(self, agent: Agent) -> None:
+            return None
+
+        def before_run(self, agent, host, *, run, caller_id):
+            self.last_run = run
+            workflow = ProgrammaticWorkflow(
+                entry_step="delegate",
+                steps={
+                    "delegate": WorkflowCallSubagentStep(
+                        step_id="delegate",
+                        subagent_id="parser",
+                        parameters={"topic": "go"},
+                        next_step="finish",
+                    ),
+                    "finish": WorkflowReturnStep(
+                        step_id="finish",
+                        value=lambda state: AgentResult(
+                            status="completed",
+                            message=state.require_step_result("delegate").message,
+                        ),
+                    ),
+                },
+            )
+            result = agent.execute_programmatic_workflow(
+                host=host,
+                run=run,
+                caller_id=caller_id,
+                workflow=workflow,
+            )
+            return AgentHookDecision(final_result=result)
+
+    host, _ = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="parser",
+        decisions=[{"kind": "final_message", "message": "child done"}],
+    )
+    recorder = _TraceRecorder()
+    host.runtime_tracer = CompositeRuntimeTracer(subscribers=[recorder])
+    parent = host.get_agent("orchestrator")
+    behavior = ProgrammaticBehavior()
+    parent.behaviors = (behavior,)
+
+    result = host.run_root(initial_instruction="go")
+
+    assert result.message == "child done"
+    parent_run_id = next(run_id for run_id, reg in host._run_registry.items() if reg.agent_id == "orchestrator")
+    named = [
+        e.payload["event"]["type"]
+        for e in recorder.events
+        if e.kind == "runtime.audit.named_event" and e.context.run_id == parent_run_id
+    ]
+    assert "subagent_call" in named
+    assert "subagent_result" in named
+    assert behavior.last_run is not None
+    assert "before_subagent:parser" in behavior.last_run.history
+    assert "after_subagent:parser" in behavior.last_run.history
+    assert any("<subagent_call id=\"parser\">" in item for item in behavior.last_run.transcript_entries)
+    assert any("<subagent_result id=\"parser\">" in item for item in behavior.last_run.prompt_fragments)
+
+
+def test_programmatic_parallel_workflow_matches_native_batch_trace_contract(tmp_path: Path) -> None:
+    from agent_framework.agents import SubagentCallSpec
+    from agent_framework.agents.workflow import ProgrammaticWorkflow, WorkflowCallSubagentsStep, WorkflowReturnStep
+
+    class ProgrammaticBatchBehavior(AgentBehavior):
+        def __init__(self) -> None:
+            self.last_run = None
+
+        def attach(self, agent: Agent) -> None:
+            return None
+
+        def before_run(self, agent, host, *, run, caller_id):
+            self.last_run = run
+            workflow = ProgrammaticWorkflow(
+                entry_step="delegate",
+                steps={
+                    "delegate": WorkflowCallSubagentsStep(
+                        step_id="delegate",
+                        calls=(
+                            SubagentCallSpec(subagent_id="parser", parameters={"topic": "a"}, output_key="first"),
+                            SubagentCallSpec(subagent_id="parser", parameters={"topic": "b"}, output_key="second"),
+                        ),
+                        mode="parallel",
+                        next_step="finish",
+                    ),
+                    "finish": WorkflowReturnStep(
+                        step_id="finish",
+                        value=lambda state: AgentResult(
+                            status="completed",
+                            message=str(len(state.require_step_result("delegate"))),
+                        ),
+                    ),
+                },
+            )
+            result = agent.execute_programmatic_workflow(
+                host=host,
+                run=run,
+                caller_id=caller_id,
+                workflow=workflow,
+            )
+            return AgentHookDecision(final_result=result)
+
+    host, _ = _make_subagent_host(
+        tmp_path,
+        parent_id="orchestrator",
+        child_id="parser",
+        decisions=[
+            {"kind": "final_message", "message": "child one"},
+            {"kind": "final_message", "message": "child two"},
+        ],
+    )
+    recorder = _TraceRecorder()
+    host.runtime_tracer = CompositeRuntimeTracer(subscribers=[recorder])
+    parent = host.get_agent("orchestrator")
+    behavior = ProgrammaticBatchBehavior()
+    parent.behaviors = (behavior,)
+
+    result = host.run_root(initial_instruction="go")
+
+    assert result.message == "2"
+    parent_run_id = next(run_id for run_id, reg in host._run_registry.items() if reg.agent_id == "orchestrator")
+    named_events = [
+        e.payload["event"]
+        for e in recorder.events
+        if e.kind == "runtime.audit.named_event" and e.context.run_id == parent_run_id
+    ]
+    assert any(evt["type"] == "subagent_batch_started" for evt in named_events)
+    assert any(evt["type"] == "subagent_batch_finished" for evt in named_events)
+    assert behavior.last_run is not None
+    assert any("<subagent_results>" in item for item in behavior.last_run.transcript_entries)
+    assert any(msg["content"].startswith("<subagent_results>") for msg in behavior.last_run.conversation_messages)
+
+
+def test_agent_decision_preserves_callback_to_caller_kind() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "callback_to_caller",
+                "intent": "information_request",
+                "message": "Need caller help",
+                "parameters": {},
+            },
+            raw_text="",
+        )
+    )
+    assert decision.kind == "callback_to_caller"
+    assert decision.callback_intent == "information_request"
+
+
+def test_agent_decision_preserves_request_user_input_kind() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "request_user_input",
+                "intent": "information_request",
+                "message": "Ask the user",
+                "parameters": {},
+            },
+            raw_text="",
+        )
+    )
+    assert decision.kind == "request_user_input"
+    assert decision.callback_intent == "information_request"
+
+
+def test_agent_decision_alias_request_parameter_maps_to_request_user_input() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "request_parameter",
+                "message": "Need one field",
+                "parameters": {},
+            },
+            raw_text="",
+        )
+    )
+    assert decision.kind == "request_user_input"
+    assert decision.callback_intent == "information_request"
+
+
+def test_agent_decision_preserves_request_resolution_kind() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "request_resolution",
+                "intent": "information_request",
+                "message": "Resolve internally",
+                "parameters": {},
+            },
+            raw_text="",
+        )
+    )
+    assert decision.kind == "request_resolution"
+    assert decision.callback_intent == "information_request"
+
+
+def test_request_user_input_bypasses_caller_resolution() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    class _Host:
+        def __init__(self) -> None:
+            self.resolve_calls = 0
+            self.input_calls = 0
+
+        def open_context(self, *, caller_id, callee_id, kind):
+            class _Ctx:
+                status = "open"
+            return _Ctx()
+
+        def resolve_callback(self, **kwargs):
+            self.resolve_calls += 1
+            return "caller-answer"
+
+        def request_user_input(self, prompt, **kwargs):
+            self.input_calls += 1
+            return "user-answer"
+
+    agent = Agent(
+        agent_id="child",
+        role="tester",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="Hello",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+    host = _Host()
+    run = agent._create_run({}, run_id="run-1", parent_run_id="root-run")
+    decision = AgentDecision(
+        kind="request_user_input",
+        callback_intent="information_request",
+        message="Ask the user directly",
+    )
+
+    result = agent.handle_callback(host=host, run=run, decision=decision, caller_id="parent")
+    assert result is None
+    assert host.resolve_calls == 0
+    assert host.input_calls == 1
+
+
+def test_callback_to_caller_passthrough_policy_redirects_to_host() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    class _Host:
+        def __init__(self) -> None:
+            self.resolve_calls = 0
+            self.input_calls = 0
+
+        def open_context(self, *, caller_id, callee_id, kind):
+            class _Ctx:
+                status = "open"
+            return _Ctx()
+
+        def resolve_callback(self, **kwargs):
+            self.resolve_calls += 1
+            return "caller-answer"
+
+        def request_user_input(self, prompt, **kwargs):
+            self.input_calls += 1
+            return "user-answer"
+
+    agent = Agent(
+        agent_id="workflow_step",
+        role="tester",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="Hello",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+        callback_routing_policy=CallbackRoutingPolicy(
+            passthrough_child_callbacks=True,
+            max_bubble_hops=None,
+            fallback_target="user",
+        ),
+    )
+    host = _Host()
+    run = agent._create_run({}, run_id="run-1", parent_run_id="root-run")
+    decision = AgentDecision(
+        kind="callback_to_caller",
+        callback_intent="information_request",
+        message="Forward this upward",
+        parameters={},
+    )
+
+    result = agent.handle_callback(host=host, run=run, decision=decision, caller_id="controller")
+    assert result is None
+    assert host.resolve_calls == 0
+    assert host.input_calls == 1
+
+
+def test_callback_to_caller_hop_limit_redirects_to_host() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    class _Host:
+        def __init__(self) -> None:
+            self.resolve_calls = 0
+            self.input_calls = 0
+
+        def open_context(self, *, caller_id, callee_id, kind):
+            class _Ctx:
+                status = "open"
+            return _Ctx()
+
+        def resolve_callback(self, **kwargs):
+            self.resolve_calls += 1
+            return "caller-answer"
+
+        def request_user_input(self, prompt, **kwargs):
+            self.input_calls += 1
+            return "user-answer"
+
+    agent = Agent(
+        agent_id="controller",
+        role="tester",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="Hello",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+    )
+    host = _Host()
+    run = agent._create_run({}, run_id="run-1", parent_run_id="root-run")
+    decision = AgentDecision(
+        kind="callback_to_caller",
+        callback_intent="information_request",
+        message="Hop-limited escalation",
+        parameters={"bubble_hops": 1, "max_bubble_hops": 1, "fallback_target": "user"},
+    )
+
+    result = agent.handle_callback(host=host, run=run, decision=decision, caller_id="hosting_parent")
+    assert result is None
+    assert host.resolve_calls == 0
+    assert host.input_calls == 1
 
 
 def test_skill_definition_is_frozen(tmp_path: Path) -> None:
@@ -469,6 +935,210 @@ def test_parse_json_object_model_output_rejects_non_object() -> None:
         parse_json_object_model_output("[1,2]", provider_label="Test")
 
 
+def test_host_rewrites_multiple_json_documents_error(tmp_path: Path) -> None:
+    from agent_framework.errors import ModelDriverError
+
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "root.md").write_text(
+        """---
+id: root
+role: tester
+---
+You are a tester.
+---
+Say hi
+""",
+        encoding="utf-8",
+    )
+
+    class InvalidJsonDriver:
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            raise ModelDriverError(
+                "DIAL structured response is not valid JSON: Extra data: line 45 column 1 (char 7447).",
+                upstream_body='{"kind":"call_subagents"}{"kind":"call_subagent"}',
+            )
+
+    host = AgentHost.from_env(env_path, model_driver=InvalidJsonDriver())
+
+    with pytest.raises(ModelDriverError, match="more than one JSON value") as exc_info:
+        host.run_agent("root", initial_instruction="hello")
+
+    assert "exactly one top-level JSON object per turn" in str(exc_info.value)
+
+
+def test_host_accepts_runtime_model_response_validator(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "root.md").write_text(
+        """---
+id: root
+role: tester
+---
+You are a tester.
+---
+Say hi
+""",
+        encoding="utf-8",
+    )
+
+    class CustomResponseValidator:
+        def validate_response(self, response: ModelResponse, *, context: ModelValidationContext) -> None:
+            del response, context
+            raise ValueError("custom runtime validator blocked this response")
+
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=FakeModelDriver([{"kind": "final_message", "message": "ok"}]),
+    )
+    host.register_model_response_validator(CustomResponseValidator())
+
+    with pytest.raises(ValueError, match="custom runtime validator blocked this response"):
+        host.run_agent("root", initial_instruction="hello")
+
+
+def test_host_root_model_override_only_affects_tested_agent_run(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    with env_path.open("a", encoding="utf-8") as fh:
+        fh.write("\nAGENT_MODELS=root=env-root-model|child=env-child-model\n")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "root.md").write_text(
+        """---
+id: root
+role: tester
+subagents:
+  - child
+---
+You are a tester.
+---
+Say hi
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "child.md").write_text(
+        """---
+id: child
+role: child
+---
+You are a child.
+---
+Work
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "root.json").write_text('{"model": "root-sidecar-model"}', encoding="utf-8")
+    (agents_dir / "child.json").write_text('{"model": "child-sidecar-model"}', encoding="utf-8")
+
+    class RecordingDriver:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str | None, tuple[str, ...]]] = []
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            del provider_name, temperature, context
+            self.calls.append((agent_id, tuple(model_names)))
+            if agent_id == "root" and len([c for c in self.calls if c[0] == "root"]) == 1:
+                return ModelResponse(
+                    payload={"kind": "call_subagent", "subagent_id": "child", "parameters": {}},
+                    raw_text='{"kind":"call_subagent","subagent_id":"child","parameters":{}}',
+                )
+            return ModelResponse(
+                payload={"kind": "final_message", "message": f"{agent_id}-done"},
+                raw_text='{"kind":"final_message","message":"done"}',
+            )
+
+    driver = RecordingDriver()
+    host = AgentHost.from_env(env_path, model_driver=driver)
+
+    result = host.run_agent("root", initial_instruction="hello", model_override="override-model")
+
+    assert result.message == "root-done"
+    assert [models for agent_id, models in driver.calls if agent_id == "root"] == [
+        ("override-model",),
+        ("override-model",),
+    ]
+    assert [models for agent_id, models in driver.calls if agent_id == "child"] == [
+        ("env-child-model",),
+    ]
+    assert host.get_agent("root").model_names == ("env-root-model",)
+    assert host.get_agent("child").model_names == ("env-child-model",)
+
+
+def test_host_all_agents_model_override_supersedes_configured_agent_models(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    write_env(env_path)
+    with env_path.open("a", encoding="utf-8") as fh:
+        fh.write("\nAGENT_MODELS=root=env-root-model|child=env-child-model\n")
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "root.md").write_text(
+        """---
+id: root
+role: tester
+subagents:
+  - child
+---
+You are a tester.
+---
+Say hi
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "child.md").write_text(
+        """---
+id: child
+role: child
+---
+You are a child.
+---
+Work
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "root.json").write_text('{"model": "root-sidecar-model"}', encoding="utf-8")
+    (agents_dir / "child.json").write_text('{"model": "child-sidecar-model"}', encoding="utf-8")
+
+    class RecordingDriver:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str | None, tuple[str, ...]]] = []
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            del provider_name, temperature, context
+            self.calls.append((agent_id, tuple(model_names)))
+            if agent_id == "root" and len([c for c in self.calls if c[0] == "root"]) == 1:
+                return ModelResponse(
+                    payload={"kind": "call_subagent", "subagent_id": "child", "parameters": {}},
+                    raw_text='{"kind":"call_subagent","subagent_id":"child","parameters":{}}',
+                )
+            return ModelResponse(
+                payload={"kind": "final_message", "message": f"{agent_id}-done"},
+                raw_text='{"kind":"final_message","message":"done"}',
+            )
+
+    driver = RecordingDriver()
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=driver,
+        all_agents_model_override="override-model",
+    )
+
+    result = host.run_agent("root", initial_instruction="hello")
+
+    assert result.message == "root-done"
+    assert [models for _, models in driver.calls] == [
+        ("override-model",),
+        ("override-model",),
+        ("override-model",),
+    ]
+    assert host.get_agent("root").model_names == ("override-model",)
+    assert host.get_agent("child").model_names == ("override-model",)
+
+
 def test_agent_decision_extracts_skill_name() -> None:
     from agent_framework.agents.agent_decision import AgentDecision
     from agent_framework.model import ModelResponse
@@ -641,7 +1311,8 @@ def test_no_skills_catalog_message_when_no_skills(tmp_path: Path) -> None:
 
 def test_capability_metadata_does_not_include_skills_section() -> None:
     """_capability_metadata no longer returns skills_section key."""
-    from agent_framework.model import OpenAiModelDriver, CapabilityDefinition
+    from agent_framework.drivers import OpenAiModelDriver
+    from agent_framework.model import CapabilityDefinition
     skills = (CapabilityDefinition(capability_id="my-skill", description="Does things"),)
     metadata = OpenAiModelDriver._capability_metadata(tools=(), subagents=(), skills=skills)
     assert "skills_section" not in metadata
@@ -649,13 +1320,12 @@ def test_capability_metadata_does_not_include_skills_section() -> None:
 
 def test_capability_metadata_has_no_skills_section_key_when_empty() -> None:
     """_capability_metadata no longer returns skills_section key even when no skills."""
-    from agent_framework.model import OpenAiModelDriver
+    from agent_framework.drivers import OpenAiModelDriver
     metadata = OpenAiModelDriver._capability_metadata(tools=(), subagents=(), skills=())
     assert "skills_section" not in metadata
 
 
 def test_agent_build_context_populates_skills_from_registry(tmp_path: Path) -> None:
-    from agent_framework.skill import SkillRegistry
     skills_dir = tmp_path / "skills"
     _write_skill(skills_dir, "my-skill", "Does useful things")
 
@@ -821,8 +1491,11 @@ def test_skill_invocation_record_serializes(tmp_path: Path) -> None:
 
 
 def test_skill_events_importable_from_top_level_agent_module() -> None:
-    from agent_framework.agent import SkillStartEvent, SkillEndEvent  # noqa: F401
-    from agent_framework.agents import SkillStartEvent, SkillEndEvent  # noqa: F401
+    from agent_framework.agent import SkillStartEvent as AgentSkillStartEvent, SkillEndEvent as AgentSkillEndEvent
+    from agent_framework.agents import SkillStartEvent as PackageSkillStartEvent, SkillEndEvent as PackageSkillEndEvent
+
+    assert AgentSkillStartEvent is PackageSkillStartEvent
+    assert AgentSkillEndEvent is PackageSkillEndEvent
 
 
 # ---------------------------------------------------------------------------
@@ -1218,6 +1891,150 @@ def test_call_subagent_ignore_mode_drops_parameters(tmp_path: Path) -> None:
     assert last_user_msg is not None
     content = last_user_msg.split("Subagent result parser: ", 1)[1]
     assert content == "summary only"
+
+
+def test_subagent_call_exception_is_reported_without_secondary_type_error() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    class RaisingHost:
+        config = type("Config", (), {"skills_catalog_max_tokens": 2000, "memory_builtin_tools_enabled": True})()
+
+        def resolve_model_tool_definitions(self, tool_names, *, agent_id=None, run_id=None):
+            return ()
+
+        def get_agent(self, agent_id, *, base_dir=None):
+            raise AssertionError("get_agent should not be used in this test")
+
+        def get_tool(self, name):
+            raise AssertionError("get_tool should not be used in this test")
+
+        def call_subagent(self, *, caller, callee_id, parameters, parent_run_id=None, **kwargs):
+            raise RuntimeError("boom")
+
+    agent = Agent(
+        agent_id="orchestrator",
+        role="orchestrator",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="go",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+        allowed_child_agents=("child",),
+    )
+    host = RaisingHost()
+    run = agent._create_run({})
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "call_subagent",
+                "subagent_id": "child",
+                "parameters": {"topic": "x"},
+            },
+            raw_text="",
+        )
+    )
+    outcome = agent.handle_subagent_call(host=host, run=run, decision=decision, caller_id="host")
+
+    assert outcome is None
+    assert any(
+        item["content"] == "Subagent error child: RuntimeError: boom"
+        for item in run.conversation_messages
+    )
+    assert any(
+        "<subagent_error id=\"child\">RuntimeError: boom</subagent_error>" in item
+        for item in run.prompt_fragments
+    )
+
+
+def test_call_subagents_with_memory_normalization_builds_specs_without_name_error() -> None:
+    from agent_framework.agents.agent_decision import AgentDecision
+
+    captured: dict[str, object] = {}
+
+    class BatchHost:
+        config = type("Config", (), {"skills_catalog_max_tokens": 2000, "memory_builtin_tools_enabled": True})()
+
+        def resolve_model_tool_definitions(self, tool_names, *, agent_id=None, run_id=None):
+            return ()
+
+        def get_agent(self, agent_id, *, base_dir=None):
+            raise AssertionError("get_agent should not be used in this test")
+
+        def get_tool(self, name):
+            raise AssertionError("get_tool should not be used in this test")
+
+        def normalize_memory_parameters(
+            self,
+            *,
+            agent_id,
+            run_id,
+            parameters,
+            child_agent_id=None,
+        ):
+            captured["normalize_call"] = {
+                "agent_id": agent_id,
+                "run_id": run_id,
+                "parameters": dict(parameters),
+                "child_agent_id": child_agent_id,
+            }
+            return {"normalized": True, **parameters}
+
+        def call_subagent_batch(
+            self,
+            *,
+            caller,
+            specs,
+            mode,
+            timeout_seconds,
+            parent_run_id=None,
+        ):
+            captured["specs"] = specs
+            captured["mode"] = mode
+            captured["timeout_seconds"] = timeout_seconds
+            captured["parent_run_id"] = parent_run_id
+            return []
+
+    agent = Agent(
+        agent_id="orchestrator",
+        role="orchestrator",
+        description="",
+        system_prompt="sys",
+        user_prompt_template="go",
+        parameters=(),
+        provider_name="openai",
+        model_names=("gpt-4o-mini",),
+        allowed_child_agents=("child",),
+    )
+    host = BatchHost()
+    run = agent._create_run({})
+
+    decision = AgentDecision.from_model_response(
+        ModelResponse(
+            payload={
+                "kind": "call_subagents",
+                "mode": "parallel",
+                "calls": [
+                    {
+                        "subagent_id": "child",
+                        "output_key": "child_out",
+                        "parameters": {"topic": "x"},
+                    }
+                ],
+            },
+            raw_text="",
+        )
+    )
+
+    outcome = agent.handle_subagent_calls(host=host, run=run, decision=decision, caller_id="host")
+
+    assert outcome is None
+    specs = captured["specs"]
+    assert len(specs) == 1
+    assert specs[0].subagent_id == "child"
+    assert specs[0].output_key == "child_out"
+    assert specs[0].parameters == {"normalized": True, "topic": "x"}
 
 
 def _make_subagent_host(tmp_path: Path, parent_id: str, child_id: str, decisions: list) -> tuple:

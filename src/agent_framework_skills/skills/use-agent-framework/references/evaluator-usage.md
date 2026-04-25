@@ -10,12 +10,16 @@ python -m agent_framework_evaluator web \
   --env .env \
   --agent my_agent \
   --initializer my_initializer.py \
+  --agent-model-override gpt-4.1 \
+  --agent-model-override-scope root_only \
   --host 127.0.0.1 \
   --port 8123 \
   --open-browser
 ```
 - `--agent` — default agent id (overridable in the UI)
 - `--initializer` — initializer `.py` filename (relative to `AGENT_EVAL_INITIALIZER_DIR` from `.env`)
+- `--agent-model-override` — optional default model override for the tested agent
+- `--agent-model-override-scope` — `root_only` (tested agent only) or `all_agents` (whole run)
 - Default URL: `http://127.0.0.1:8123/`
 
 ### `run` — headless single-agent invocation
@@ -23,6 +27,8 @@ python -m agent_framework_evaluator web \
 python -m agent_framework_evaluator run \
   --env .env \
   --agent my_agent \
+  --agent-model-override gpt-4.1 \
+  --agent-model-override-scope all_agents \
   --prompt "Hello" \
   --prompt-file prompt.txt \
   --setup my_initializer.py \
@@ -31,6 +37,8 @@ python -m agent_framework_evaluator run \
   --trace-llm-dir logs/
 ```
 - `--prompt` or `--prompt-file`: source of the prompt (or `get_prompt_template()` from `--setup`)
+- `--agent-model-override`: optional run-scoped override for the agent under test
+- `--agent-model-override-scope`: `root_only` or `all_agents`
 - `--output`: writes `{"status": ..., "message": ...}` JSON; defaults to stdout
 - `--trace-jsonl`: append unified runtime trace events (JSONL)
 - `--trace-llm-dir`: per-agent LLM request/response logs under the directory
@@ -42,6 +50,8 @@ python -m agent_framework_evaluator evaluate \
   --env .env \
   --initializer my_initializer.py \
   --agent my_agent \
+  --agent-model-override gpt-4.1 \
+  --agent-model-override-scope root_only \
   --output results.json \
   --verbose
 
@@ -71,6 +81,8 @@ AGENT_EVAL_INITIALIZER_DIR=path/to/initializers   # directory scanned for *.py i
 
 All other `.env` keys are inherited from `agent_framework` (see framework-usage.md).
 
+The evaluator UI model dropdown is populated from `.env` `DEFAULT_MODEL`. If `DEFAULT_MODEL` contains `gpt-4.1,gpt-4o-mini`, the UI exposes those as separate choices and leaves the selection empty by default.
+
 ---
 
 ## Initializer module
@@ -83,6 +95,8 @@ from agent_framework_evaluator.case_markdown import MarkdownCaseLoader
 
 DEFAULT_AGENT = "my_agent"
 DEFAULT_EVAL_MODEL = "gpt-4o"   # optional; model used to score outputs
+DEFAULT_AGENT_MODEL_OVERRIDE = "gpt-4.1"          # optional; model used to run the agent under test
+DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE = "root_only"  # optional; root_only | all_agents
 
 def get_test_cases():
     """Return list of case dicts for batch evaluation."""
@@ -96,10 +110,26 @@ def get_prompt_template() -> str:
     """Default prompt for `run` subcommand (optional)."""
     return "Summarise {{instruction}}"
 
+def get_default_agent_model_override() -> str:
+    return "gpt-4.1"
+
+def get_default_agent_model_override_scope() -> str:
+    return "root_only"
+
 def setup(host):
     """Called before each run. Inject state, register tools, etc. (optional)."""
     pass
 ```
+
+Keep the two model concepts separate:
+
+- `DEFAULT_EVAL_MODEL` selects the evaluator/scoring LLM
+- `DEFAULT_AGENT_MODEL_OVERRIDE` selects the model used to run the tested agent
+
+### Agent model override scopes
+
+- `root_only` — only the tested/top-level agent uses the override; subagents keep their configured models
+- `all_agents` — every agent invoked during that run uses the override, superseding `.env` defaults, `.env` `AGENT_MODELS`, and adjacent runtime `.json` `model` declarations
 
 ### `MarkdownCaseLoader`
 ```python

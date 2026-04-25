@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 _LOGGER = logging.getLogger(__name__)
+DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES = 32768
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,10 @@ class HostConfig:
             skips that tool for the model API and prompt metadata but logs and
             emits a trace event; ``strict`` fails the run when resolving tools.
             Loaded from ``MISSING_TOOL_POLICY`` (default: graceful).
+        memory_*: Configuration for the scoped memory subsystem. These fields
+            control whether memory is enabled, when large parameters are
+            auto-stored, which read tools are injected by default, and which
+            extra non-session scopes are visible to runs.
     """
 
     openai_api_key: str = ""
@@ -69,6 +74,17 @@ class HostConfig:
     mcp_config_path: Path | None = None
     mcp_enabled: bool = True
     missing_tool_policy: Literal["graceful", "strict"] = "graceful"
+    memory_enabled: bool = True
+    memory_auto_store_threshold_bytes: int = DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES
+    memory_builtin_tools_enabled: bool = True
+    memory_default_projection_mode: str = "catalog_and_selected_content"
+    memory_backend_kind: str = "memory"
+    memory_query_provider_kind: str = "catalog"
+    memory_projector_kind: str = "xml"
+    memory_global_scopes: tuple[str, ...] = ()
+    memory_group_scopes: tuple[str, ...] = ()
+    memory_use_case_scopes: tuple[str, ...] = ()
+    memory_enable_agent_scope: bool = False
 
     def model_for(self, agent_id: str, fallback: tuple[str, ...] | None = None) -> tuple[str, ...]:
         """Return the configured model list for an agent.
@@ -162,6 +178,27 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         missing_tool_policy: Literal["graceful", "strict"] = "strict"
     else:
         missing_tool_policy = "graceful"
+    memory_enabled = values.get("MEMORY_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+    raw_memory_threshold = values.get("MEMORY_AUTO_STORE_THRESHOLD_BYTES", "").strip()
+    memory_auto_store_threshold_bytes = (
+        int(raw_memory_threshold) if raw_memory_threshold else DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES
+    )
+    memory_builtin_tools_enabled = (
+        values.get("MEMORY_BUILTIN_TOOLS_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+    )
+    memory_default_projection_mode = (
+        values.get("MEMORY_DEFAULT_PROJECTION_MODE", "catalog_and_selected_content").strip()
+        or "catalog_and_selected_content"
+    )
+    memory_backend_kind = values.get("MEMORY_BACKEND", "memory").strip() or "memory"
+    memory_query_provider_kind = values.get("MEMORY_QUERY_PROVIDER", "catalog").strip() or "catalog"
+    memory_projector_kind = values.get("MEMORY_PROJECTOR", "xml").strip() or "xml"
+    memory_global_scopes = _parse_csv_values(values.get("MEMORY_GLOBAL_SCOPES", ""))
+    memory_group_scopes = _parse_csv_values(values.get("MEMORY_GROUP_SCOPES", ""))
+    memory_use_case_scopes = _parse_csv_values(values.get("MEMORY_USE_CASE_SCOPES", ""))
+    memory_enable_agent_scope = (
+        values.get("MEMORY_ENABLE_AGENT_SCOPE", "false").strip().lower() in ("true", "1", "yes", "on")
+    )
     return HostConfig(
         openai_api_key=values.get("OPENAI_API_KEY", ""),
         default_provider=default_provider,
@@ -180,6 +217,17 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
         mcp_config_path=mcp_config_path,
         mcp_enabled=mcp_enabled,
         missing_tool_policy=missing_tool_policy,
+        memory_enabled=memory_enabled,
+        memory_auto_store_threshold_bytes=memory_auto_store_threshold_bytes,
+        memory_builtin_tools_enabled=memory_builtin_tools_enabled,
+        memory_default_projection_mode=memory_default_projection_mode,
+        memory_backend_kind=memory_backend_kind,
+        memory_query_provider_kind=memory_query_provider_kind,
+        memory_projector_kind=memory_projector_kind,
+        memory_global_scopes=memory_global_scopes,
+        memory_group_scopes=memory_group_scopes,
+        memory_use_case_scopes=memory_use_case_scopes,
+        memory_enable_agent_scope=memory_enable_agent_scope,
     )
 
 
@@ -230,6 +278,19 @@ def _parse_agent_models(raw_value: str) -> dict[str, tuple[str, ...]]:
     return mappings
 
 
+def _parse_csv_values(raw_value: str) -> tuple[str, ...]:
+    """Parse a comma-separated configuration value into a deduplicated tuple."""
+    seen: set[str] = set()
+    values: list[str] = []
+    for item in raw_value.split(","):
+        value = item.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        values.append(value)
+    return tuple(values)
+
+
 def _strip_quotes(value: str) -> str:
     """Remove matching single or double quotes around a value."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
@@ -250,4 +311,9 @@ def read_optional_path_relative_to_env_file(env_file: Path, key: str) -> Path | 
     return _resolve_config_path(env_file, raw, default_relative=".")
 
 
-__all__ = ["HostConfig", "load_host_config", "read_optional_path_relative_to_env_file"]
+__all__ = [
+    "DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES",
+    "HostConfig",
+    "load_host_config",
+    "read_optional_path_relative_to_env_file",
+]

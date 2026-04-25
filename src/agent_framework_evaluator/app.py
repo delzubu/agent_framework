@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from agent_framework.agent_registry import AgentRegistry, normalize_agent_id
 from agent_framework.agents.helpers import AgentMarkdownError
 from agent_framework.config import load_host_config
+from agent_framework.model_overrides import normalize_agent_model_override_scope
 from agent_framework.tracing import TraceContext, make_trace_event
 from agent_framework.tracing_bridge import active_tracer_scope
 from agent_framework_evaluator.auto_user_reply import reply_text_for_outbox_item
@@ -33,6 +34,8 @@ from agent_framework_evaluator.initializer_catalog import (
     evaluator_initializer_root,
     list_initializer_scripts,
     load_initializer_default_agent,
+    load_initializer_default_agent_model_override,
+    load_initializer_default_agent_model_override_scope,
     load_initializer_default_evaluator_criteria,
     load_initializer_default_prompt,
     load_initializer_default_eval_model,
@@ -41,7 +44,6 @@ from agent_framework_evaluator.initializer_catalog import (
     resolve_env_path,
     resolve_setup_path_for_run,
 )
-from agent_framework_evaluator.runtime.session_runner import SessionRunner
 from agent_framework_evaluator.runtime.setup_loader import load_setup_module
 from agent_framework_evaluator.session_manager import session_manager
 
@@ -82,6 +84,8 @@ class EvaluateBatchBody(BaseModel):
     case_indices: list[int] | None = None
     log_level: str = "warning"
     case_run_mode: str = "standard"
+    agent_model_override: str = ""
+    agent_model_override_scope: str = "root_only"
 
 
 def _normalize_log_level(value: Any) -> str:
@@ -211,12 +215,24 @@ def _evaluation_trace_scope(rec: Any, session_id: str):
 class _AsyncQueueSubscriber:
     """Forward trace events from a sync worker thread into an asyncio queue."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue[Any]) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        queue: asyncio.Queue[Any],
+        *,
+        usage_tracker: Any | None = None,
+    ) -> None:
         self._loop = loop
         self._queue = queue
+        self._usage_tracker = usage_tracker
 
     def consume(self, event: Any) -> None:
         data = asdict(event)
+        if self._usage_tracker is not None:
+            try:
+                self._usage_tracker.consume_trace_event(data)
+            except Exception:
+                pass
 
         def put() -> None:
             try:
@@ -250,6 +266,15 @@ def _error_payload_for_evaluator(exc: BaseException) -> dict[str, Any]:
         "error_type": type(exc).__name__,
         "message": str(exc),
     }
+
+
+def _current_usage_summary(rec: Any) -> dict[str, Any] | None:
+    summary = getattr(rec.runner, "_last_usage_summary", None)
+    if isinstance(summary, dict):
+        return summary
+    if rec.usage_tracker is not None:
+        return rec.usage_tracker.snapshot()
+    return None
 
 
 def _publish_evaluator_run_failure(tracer: Any, session_id: str, exc: BaseException) -> None:
@@ -303,7 +328,16 @@ def create_app() -> FastAPI:
             "env_path": os.environ.get("AGENT_EVAL_DEFAULT_ENV_PATH", ".env"),
             "agent": os.environ.get("AGENT_EVAL_DEFAULT_AGENT", ""),
             "initializer": os.environ.get("AGENT_EVAL_DEFAULT_INITIALIZER", ""),
+            "agent_model_override": os.environ.get("AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE", ""),
+            "agent_model_override_scope": normalize_agent_model_override_scope(
+                os.environ.get("AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE", "root_only")
+            ),
         }
+
+    @app.get("/api/evaluator-model-options")
+    def evaluator_model_options(env_path: str = ".env") -> dict[str, Any]:
+        cfg = load_host_config(resolve_env_path(env_path))
+        return {"model_options": list(cfg.default_model)}
 
     @app.post("/api/sessions")
     def create_session(
@@ -562,6 +596,17 @@ def create_app() -> FastAPI:
             "user_messages": [str(x) for x in um],
         }
 
+    @app.get("/api/sessions/{session_id}/usage-summary")
+    def usage_summary(session_id: str) -> dict[str, Any]:
+        rec = session_manager.get(session_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        if rec.last_usage_summary is not None:
+            return rec.last_usage_summary
+        if rec.usage_tracker is not None:
+            return rec.usage_tracker.snapshot()
+        return {"session_totals": {}, "agents": {}, "runs": {}}
+
     @app.get("/api/initializers")
     def list_initializers(env_path: str = ".env") -> dict[str, Any]:
         env_file = resolve_env_path(env_path)
@@ -583,9 +628,19 @@ def create_app() -> FastAPI:
             text = load_initializer_default_prompt(env_file, initializer)
             criteria = load_initializer_default_evaluator_criteria(env_file, initializer)
             agent = load_initializer_default_agent(env_file, initializer)
+            agent_model_override = load_initializer_default_agent_model_override(env_file, initializer)
+            agent_model_override_scope = load_initializer_default_agent_model_override_scope(
+                env_file, initializer
+            )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not text and not criteria and not agent:
+        if (
+            not text
+            and not criteria
+            and not agent
+            and not agent_model_override
+            and not agent_model_override_scope
+        ):
             cases = load_test_cases(env_file, initializer)
             if not cases:
                 raise HTTPException(
@@ -598,7 +653,15 @@ def create_app() -> FastAPI:
             c0 = cases[0]
             text = str(c0.get("prompt", "") or "")
             criteria = str(c0.get("criteria", "") or "")
-        return {"template": text or "", "evaluator_criteria": criteria or "", "agent": agent or ""}
+        return {
+            "template": text or "",
+            "evaluator_criteria": criteria or "",
+            "agent": agent or "",
+            "agent_model_override": agent_model_override or "",
+            "agent_model_override_scope": normalize_agent_model_override_scope(
+                agent_model_override_scope or "root_only"
+            ),
+        }
 
     @app.get("/api/setup-template")
     def setup_template(path: str) -> dict[str, Any]:
@@ -677,11 +740,19 @@ def create_app() -> FastAPI:
                         runtime_tracer=rec.tracer,
                         session_id=body.session_id,
                         on_first_llm_call=_on_llm,
+                        agent_model_override=body.agent_model_override or None,
+                        agent_model_override_scope=body.agent_model_override_scope,
+                        on_first_llm_call=_on_llm,
                     )
 
                 try:
+                    if rec.usage_tracker is not None:
+                        rec.usage_tracker.reset()
                     run_result = await loop.run_in_executor(_executor, run_case)
                     rec.last_run_result = run_result
+                    rec.last_usage_summary = (
+                        rec.usage_tracker.snapshot() if rec.usage_tracker is not None else None
+                    )
                     agent_msg = select_agent_result_field(run_result, result_field)
                     if agent_msg is None:
                         raise ValueError(f"result_field '{result_field}' not present in agent result")
@@ -715,12 +786,14 @@ def create_app() -> FastAPI:
                         "llm_result": llm,
                         "code_results": code_results,
                         "average_score": average,
+                        "usage_summary": rec.last_usage_summary,
                     }) + "\n"
                 except Exception as exc:
                     yield json.dumps({
                         "case_index": idx,
                         "title": case.get("title", f"Case {idx}"),
                         "error": str(exc),
+                        "usage_summary": _current_usage_summary(rec),
                     }) + "\n"
 
         return StreamingResponse(stream(), media_type="application/x-ndjson")
@@ -735,7 +808,7 @@ def create_app() -> FastAPI:
 
         loop = asyncio.get_running_loop()
         trace_queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=2000)
-        bridge = _AsyncQueueSubscriber(loop, trace_queue)
+        bridge = _AsyncQueueSubscriber(loop, trace_queue, usage_tracker=rec.usage_tracker)
         rec.tracer.subscribe(bridge)
         stop = asyncio.Event()
 
@@ -809,6 +882,9 @@ def create_app() -> FastAPI:
                         "user_messages": [],
                     }
                     rec.last_run_result = None
+                    rec.last_usage_summary = None
+                    if rec.usage_tracker is not None:
+                        rec.usage_tracker.reset()
 
                     def on_first_llm_call(trace: Any) -> None:
                         payload = getattr(trace, "input_payload", None)
@@ -827,15 +903,28 @@ def create_app() -> FastAPI:
                             runtime_tracer=rec.tracer,
                             session_id=session_id,
                             on_first_llm_call=on_first_llm_call,
+                            agent_model_override=(
+                                str(msg.get("agent_model_override", "")).strip() or None
+                            ),
+                            agent_model_override_scope=str(
+                                msg.get("agent_model_override_scope", "root_only")
+                            ),
                         )
 
                     try:
                         result = await asyncio.get_running_loop().run_in_executor(_executor, work)
                         rec.last_run_result = result
+                        rec.last_usage_summary = (
+                            rec.usage_tracker.snapshot() if rec.usage_tracker is not None else None
+                        )
                     except Exception as exc:
+                        rec.last_usage_summary = _current_usage_summary(rec)
                         _publish_evaluator_run_failure(rec.tracer, session_id, exc)
+                        payload = _error_payload_for_evaluator(exc)
+                        if rec.last_usage_summary is not None:
+                            payload["usage_summary"] = rec.last_usage_summary
                         await websocket.send_text(
-                            json.dumps(_error_payload_for_evaluator(exc), ensure_ascii=False)
+                            json.dumps(payload, ensure_ascii=False)
                         )
                         continue
                     try:
@@ -853,6 +942,7 @@ def create_app() -> FastAPI:
                                         "instruction_entered": "",
                                         "user_messages": [],
                                     },
+                                    "usage_summary": rec.last_usage_summary,
                                 },
                                 ensure_ascii=False,
                             )

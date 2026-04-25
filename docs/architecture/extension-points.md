@@ -1,7 +1,7 @@
 # Extension Points & Hooks
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Host & Orchestration](./host-orchestration.md) · [Model Abstraction](./model-abstraction.md) · [Interface Specifications](./interfaces.md)
+> See also: [Overview](./overview.md) · [Agent Runtime](./agent-runtime.md) · [Host & Orchestration](./host-orchestration.md) · [Model Abstraction](./model-abstraction.md) · [Memory System](./memory-system.md) · [Interface Specifications](./interfaces.md)
 
 ---
 
@@ -16,8 +16,29 @@ The framework provides four extension mechanisms, ordered from most to least inv
 | Custom `Tool` | None to agent code | New capabilities accessible to agents |
 | Custom `ModelDriver` | None to agent code | New LLM provider support |
 | `RuntimeTracer` / `TraceSubscriber` | Low — subscribe or replace `host.runtime_tracer` | Unified trace pipeline (JSONL, debugger UI, custom sinks) |
+| Memory factories on `AgentHost` | Low — override documented factory methods | Storage, discovery, projection, and scope visibility for shared memory |
 
 All extension points are designed so that agent Markdown definitions and the core loop in `Agent.run()` need not be modified.
+
+---
+
+## 1.1 Memory-specific extension seams
+
+The memory subsystem is intentionally decomposed into host-owned factories rather than hardcoded classes. The main seams are:
+
+- `create_memory_backend()`
+- `create_memory_query_provider()`
+- `create_memory_projector()`
+- `create_memory_scope_resolver()`
+
+These allow applications to extend:
+
+- storage persistence
+- discovery strategy
+- prompt serialization
+- visibility policy
+
+without modifying agent contracts or the core decision loop.
 
 ---
 

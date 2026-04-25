@@ -25,12 +25,46 @@ class InstallTarget(NamedTuple):
     exists: bool
 
 
+def _resolve_known_target(raw: str) -> tuple[Path, Path]:
+    """Resolve a configured target path and its installation marker directory.
+
+    The first path segment after the anchor is treated as the installation
+    marker. If that marker exists, the agentic tool is considered installed and
+    any missing trailing directories may be created during installation.
+    """
+    if raw.startswith("~/"):
+        anchor = Path.home()
+        relative = Path(raw[2:])
+    elif raw.startswith("./"):
+        anchor = Path.cwd()
+        relative = Path(raw[2:])
+    else:
+        expanded = Path(raw).expanduser()
+        if expanded.is_absolute():
+            anchor = Path(expanded.anchor)
+            relative = Path(*expanded.parts[1:])
+        else:
+            anchor = Path.cwd()
+            relative = expanded
+
+    destination = (anchor / relative).resolve()
+    if not relative.parts:
+        return destination, destination
+    indicator = (anchor / relative.parts[0]).resolve()
+    return destination, indicator
+
+
 def list_targets() -> list[InstallTarget]:
-    """Return all known targets with their resolved paths and existence status."""
+    """Return all known targets with resolved paths and availability status.
+
+    Availability is based on the marker directory for the agentic tool, not the
+    full skills directory. For example, ``~/.cursor`` is enough to treat
+    ``~/.cursor/skills`` as installable.
+    """
     targets = []
     for label, raw in _KNOWN_DIRS:
-        p = Path(raw).expanduser().resolve()
-        targets.append(InstallTarget(label=label, path=p, exists=p.exists()))
+        destination, indicator = _resolve_known_target(raw)
+        targets.append(InstallTarget(label=label, path=destination, exists=indicator.exists()))
     return targets
 
 

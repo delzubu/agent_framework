@@ -1,7 +1,7 @@
 # Architecture Overview
 
 > This document is part of the `agent_framework` architecture reference.
-> See also: [ADR: Model context & drivers](./adr-model-context-and-drivers.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Extension Points](./extension-points.md) · [Tracing & Evaluation](./tracing-evaluation.md) · [Interface Specifications](./interfaces.md) · [Agent Evaluator & Web Runtime](./agent-evaluator-web-runtime.md) · User guides: [Using the agent framework](../guides/using-agent-framework.md) · [Using the agent evaluator](../guides/using-agent-evaluator.md)
+> See also: [ADR: Model context & drivers](./adr-model-context-and-drivers.md) · [Agent Runtime](./agent-runtime.md) · [Model Abstraction](./model-abstraction.md) · [Host & Orchestration](./host-orchestration.md) · [Drivers](./drivers.md) · [Conversation Model](./conversation-model.md) · [Memory System](./memory-system.md) · [Extension Points](./extension-points.md) · [Tracing & Evaluation](./tracing-evaluation.md) · [Interface Specifications](./interfaces.md) · [Agent Evaluator & Web Runtime](./agent-evaluator-web-runtime.md) · User guides: [Using the agent framework](../guides/using-agent-framework.md) · [Using the agent evaluator](../guides/using-agent-evaluator.md) · [Using Memory](../guides/using-memory.md) · Public reference: [Programmatic Workflow Agents](../pages/reference/programmatic-workflow-agents.md)
 
 ---
 
@@ -14,6 +14,7 @@ The framework ships with an `OpenAiModelDriver` (synchronous, Responses API) and
 **What it is:**
 - A runtime for executing markdown-defined agents with a structured decision loop
 - An orchestration host managing agent registries, tool execution, and multi-agent call hierarchies
+- A scoped memory subsystem for URI-addressed shared runtime resources and deterministic memory projection
 - A tracing and audit system for recording LLM calls, decisions, and agent interactions
 - A **unified runtime tracer** (`tracing.py`) for structured `TraceEvent` streams with pluggable subscribers (JSONL, LLM log files, debugger bridges) and logging ingress via `LoggingTraceHandler`
 - A separate **`agent_framework_evaluator`** package (CLI `agent-eval`, local FastAPI + WebSocket UI) for interactive debugging and headless runs on top of the same `AgentHost`
@@ -55,6 +56,35 @@ Eight `SequentialHook` instances on `Agent` (pre/post for agent, tool, subagent,
 ### 2.6 Hierarchical Agent Orchestration
 
 Agents invoke other agents as subagents via the host. The call tree is explicit, not emergent: each agent has a declared `allowed_child_agents` allowlist, and `CallContext` objects track each call edge with correlation IDs. Subagents can be invoked synchronously (`call_subagent`) or asynchronously via a shared thread pool (`call_subagent_async`).
+
+### 2.6c Programmatic workflow orchestration
+
+Not all parent orchestration should consume an LLM turn. The runtime now exposes an agent-owned deterministic workflow surface through `Agent.execute_programmatic_workflow(...)` and the `ProgrammaticWorkflow*` step types.
+
+This is intentionally not a host shortcut. The workflow runner reuses the same parent-side subagent orchestration internals that back model-driven `call_subagent` and `call_subagents` decisions. That preserves:
+
+- parent hook execution around subagent calls
+- parent transcript and prompt-fragment updates
+- audit events for single-child and batch-child orchestration
+- callback routing and blocked-batch resume behavior already implemented in the host
+
+Architecturally, this keeps deterministic controller logic at the agent layer while avoiding a second, divergent orchestration stack in `host.py`.
+
+### 2.6d Run-scoped evaluator model overrides
+
+The evaluator can now override the model used by the agent under test without editing `.env` or adjacent runtime `.json` files. This is intentionally implemented as a runtime concern, not as evaluator-only branching.
+
+Two scopes exist:
+
+- `root_only` — only the tested/top-level agent is overridden for that run
+- `all_agents` — every agent loaded and executed during that run is overridden
+
+The split is architectural, not cosmetic:
+
+- `root_only` is applied at root invocation time in `AgentHost.run_agent(...)` by cloning the resolved root agent with replacement `model_names`
+- `all_agents` is applied at agent-load time through `AgentRegistry`, so it supersedes `.env` `DEFAULT_MODEL`, `.env` `AGENT_MODELS`, and adjacent runtime `.json` `model` declarations for the host instance used by that evaluator run
+
+This keeps the semantics in the same layers that already own model resolution. The evaluator UI and CLI only transport the override contract; they do not implement a second model-selection system.
 
 ### 2.6b Skills as a Third Capability Pillar
 
@@ -184,6 +214,7 @@ Infrastructure layer — entry points, orchestration, and cross-cutting concerns
 | `agent.py` | Compatibility facade — re-exports everything from `agents/` |
 | `config.py` | Configuration loading — `HostConfig` dataclass, `.env` parser |
 | `host.py` | `AgentHost` — central orchestrator, headless invocation, `run_tool_loop()` |
+| `model_overrides.py` | Typed run-scoped model override helpers used by host/evaluator surfaces |
 | `model.py` | `ModelDriver`/`AsyncModelDriver` protocols, `ModelContext`, `ModelResponse`, `DriverCapabilities`, `ModelDriverBase`, `merge_runtime_system_into_messages`, `OpenAiModelDriver`, adapters, system prompt templates |
 | `tool.py` | `Tool` base class, `ToolDefinition`, markdown-based tool loading |
 | `errors.py` | `ModelDriverError`, `ConversationNotFoundError` — structured error types |
@@ -205,6 +236,13 @@ Infrastructure layer — entry points, orchestration, and cross-cutting concerns
 ### Evaluator package (`src/agent_framework_evaluator/`)
 
 Shipped next to the core package (same distribution, `[web]` extra): local **FastAPI** app, **WebSocket** trace streaming, **`SessionRunner`** (setup modules + `run_agent`), and **`agent-eval`** / `python -m agent_framework_evaluator` CLI. User-facing guide: [Using the agent evaluator](../guides/using-agent-evaluator.md).
+
+The evaluator now transports an explicit agent-run model override contract:
+
+- selected override model name
+- override scope: `root_only` or `all_agents`
+
+UI defaults can come from initializer hooks, but the runtime remains the source of truth for how those scopes are applied.
 
 ### Drivers Subpackage (`src/agent_framework/drivers/`)
 

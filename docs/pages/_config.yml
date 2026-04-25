@@ -1,6 +1,10 @@
 title: agent_framework
 description: Markdown-defined agent runtime, orchestration host, tracing, and evaluator utilities.
 baseurl: /agent_framework
+permalink: pretty
 markdown: kramdown
+include:
+  - build
 exclude:
   - README.md
+  - sdk

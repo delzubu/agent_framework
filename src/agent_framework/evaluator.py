@@ -285,20 +285,40 @@ class RecordingAgentHost(AgentHost):
         )
         return result
 
-    def resolve_callback(self, *, caller_id: str, callee, prompt: str) -> str:
+    def resolve_callback(
+        self,
+        *,
+        caller_id: str,
+        callee,
+        prompt: str,
+        intent: str = "information_request",
+        run_id: str = "",
+        parent_run_id: str | None = None,
+        allow_user_fallback: bool = True,
+        callback_parameters: dict[str, Any] | None = None,
+    ) -> str:
         """Record a callback request and avoid interactive roundtrips at the host boundary."""
         self.recorded_interactions.append(
             RecordedInteraction(
                 kind="callback_request",
                 caller_id=callee.agent_id,
                 callee_id=caller_id,
-                payload={"prompt": prompt},
+                payload={"prompt": prompt, "intent": intent, "run_id": run_id},
             )
         )
         if caller_id == "host":
             answer = self.auto_input_response
         else:
-            answer = super().resolve_callback(caller_id=caller_id, callee=callee, prompt=prompt)
+            answer = super().resolve_callback(
+                caller_id=caller_id,
+                callee=callee,
+                prompt=prompt,
+                intent=intent,
+                run_id=run_id,
+                parent_run_id=parent_run_id,
+                allow_user_fallback=allow_user_fallback,
+                callback_parameters=callback_parameters,
+            )
         self.recorded_interactions.append(
             RecordedInteraction(
                 kind="callback_response",
@@ -309,21 +329,38 @@ class RecordingAgentHost(AgentHost):
         )
         return answer
 
-    def request_user_input(self, prompt: str) -> str:
+    def request_user_input(
+        self,
+        prompt: str,
+        *,
+        intent: str = "information_request",
+        run_id: str = "",
+        agent_id: str = "",
+        caller_id: str | None = None,
+        parent_run_id: str | None = None,
+        interaction_kind: str = "direct_user_input",
+    ) -> str:
         """Record direct user-input requests without interactive prompting."""
         self.recorded_interactions.append(
             RecordedInteraction(
                 kind="host_input_request",
-                caller_id="agent",
+                caller_id=agent_id or "agent",
                 callee_id="host",
-                payload={"prompt": prompt},
+                payload={
+                    "prompt": prompt,
+                    "intent": intent,
+                    "run_id": run_id,
+                    "caller_id": caller_id,
+                    "parent_run_id": parent_run_id,
+                    "interaction_kind": interaction_kind,
+                },
             )
         )
         self.recorded_interactions.append(
             RecordedInteraction(
                 kind="host_input_response",
                 caller_id="host",
-                callee_id="agent",
+                callee_id=agent_id or "agent",
                 payload={"message": self.auto_input_response},
             )
         )

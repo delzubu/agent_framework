@@ -10,13 +10,19 @@ from pathlib import Path
 from agent_framework_evaluator.evaluation import CASE_NO_CALLBACKS_POSTFIX
 from agent_framework_evaluator.runtime.session_runner import SessionRunner
 
+DEFAULT_ENV_ARGUMENT = ".env"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Agent evaluator and debugger.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     web = subparsers.add_parser("web")
-    web.add_argument("--env", default=".env", help="Path to .env (default for the web UI; overridable in the UI).")
+    web.add_argument(
+        "--env",
+        default=DEFAULT_ENV_ARGUMENT,
+        help="Path to .env (default: ./.env; overridable in the UI).",
+    )
     web.add_argument(
         "--agent",
         default=None,
@@ -28,16 +34,33 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Default initializer .py (under AGENT_EVAL_INITIALIZER_DIR from .env); overridable in the UI.",
     )
+    web.add_argument(
+        "--agent-model-override",
+        default=None,
+        help="Default model override for the tested agent (or all agents when paired with --agent-model-override-scope).",
+    )
+    web.add_argument(
+        "--agent-model-override-scope",
+        choices=("root_only", "all_agents"),
+        default="root_only",
+        help="Scope for --agent-model-override in the UI defaults.",
+    )
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8123)
     web.add_argument("--open-browser", action="store_true")
 
     run = subparsers.add_parser("run")
-    run.add_argument("--env", default=".env")
+    run.add_argument("--env", default=DEFAULT_ENV_ARGUMENT)
     run.add_argument("--agent", default=None)
     run.add_argument("--setup")
     run.add_argument("--prompt")
     run.add_argument("--prompt-file")
+    run.add_argument("--agent-model-override")
+    run.add_argument(
+        "--agent-model-override-scope",
+        choices=("root_only", "all_agents"),
+        default="root_only",
+    )
     run.add_argument("--output")
     run.add_argument(
         "--trace-jsonl",
@@ -56,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
         "evaluate",
         help="Run and evaluate test cases without the web UI.",
     )
-    evaluate.add_argument("--env", default=".env", help="Path to .env file.")
+    evaluate.add_argument("--env", default=DEFAULT_ENV_ARGUMENT, help="Path to .env file (default: ./.env).")
     src = evaluate.add_mutually_exclusive_group(required=True)
     src.add_argument(
         "--initializer",
@@ -80,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Agent id to run (default: initializer DEFAULT_AGENT or 'root').",
     )
+    evaluate.add_argument("--agent-model-override")
+    evaluate.add_argument(
+        "--agent-model-override-scope",
+        choices=("root_only", "all_agents"),
+        default="root_only",
+    )
     evaluate.add_argument("--output", metavar="FILE", help="Write full JSON result to file.")
     evaluate.add_argument(
         "--verbose",
@@ -90,17 +119,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ensure_default_env_argument(args: argparse.Namespace) -> None:
+    """Treat omitted/empty ``--env`` as if the caller had passed ``--env .env``."""
+    if hasattr(args, "env") and not getattr(args, "env", None):
+        args.env = DEFAULT_ENV_ARGUMENT
+
+
 def _cmd_web(args: argparse.Namespace) -> int:
     import uvicorn
 
-    env_abs = str(Path(args.env).resolve())
-    os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] = env_abs
-    for key in ("AGENT_EVAL_DEFAULT_AGENT", "AGENT_EVAL_DEFAULT_INITIALIZER"):
+    os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] = str(args.env)
+    for key in (
+        "AGENT_EVAL_DEFAULT_AGENT",
+        "AGENT_EVAL_DEFAULT_INITIALIZER",
+        "AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE",
+        "AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE",
+    ):
         os.environ.pop(key, None)
     if args.agent:
         os.environ["AGENT_EVAL_DEFAULT_AGENT"] = args.agent
     if args.initializer:
         os.environ["AGENT_EVAL_DEFAULT_INITIALIZER"] = args.initializer
+    if args.agent_model_override:
+        os.environ["AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE"] = args.agent_model_override
+        os.environ["AGENT_EVAL_DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE"] = (
+            args.agent_model_override_scope
+        )
 
     url = f"http://{args.host}:{args.port}/"
     if args.open_browser:
@@ -156,12 +200,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
             prompt=prompt,
             setup_path=Path(args.setup) if args.setup else None,
             runtime_tracer=merged_tracer,
+            agent_model_override=args.agent_model_override,
+            agent_model_override_scope=args.agent_model_override_scope,
         )
+        usage_summary = getattr(runner, "_last_usage_summary", None)
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    payload = {"status": result["status"], "message": result["message"]}
+    payload = {
+        "status": result["status"],
+        "message": result["message"],
+        "usage_summary": usage_summary or {"session_totals": {}, "agents": {}, "runs": {}},
+    }
     text = json.dumps(payload, indent=2, ensure_ascii=False)
     if args.output:
         Path(args.output).write_text(text + "\n", encoding="utf-8")
@@ -203,7 +254,10 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             agent_id=agent_id,
             prompt=prompt.rstrip() + CASE_NO_CALLBACKS_POSTFIX,
             setup_path=setup_path,
+            agent_model_override=args.agent_model_override,
+            agent_model_override_scope=args.agent_model_override_scope,
         )
+        usage_summary = getattr(runner, "_last_usage_summary", None)
         selected = select_agent_result_field(run_result, result_field)
         if selected is None:
             print(
@@ -228,6 +282,12 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             "average_score": average,
             "selected_payload": selected,
             "result_field": result_field,
+            "usage_summary": usage_summary or {"session_totals": {}, "agents": {}, "runs": {}},
+            "session_usage_totals": (
+                dict((usage_summary or {}).get("session_totals") or {})
+                if isinstance(usage_summary, dict)
+                else {}
+            ),
         }
 
     if args.case_file:
@@ -325,7 +385,9 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             )
             avg = result["average_score"]
             verdict = "PASS" if float(avg) >= 7.0 else "FAIL"
-            print(f"  score={float(avg):.1f}  {verdict}")
+            totals = result.get("session_usage_totals") or {}
+            tokens = totals.get("total_tokens", "—") if isinstance(totals, dict) else "—"
+            print(f"  score={float(avg):.1f}  tokens={tokens}  {verdict}")
             if args.verbose:
                 print(f"  run_result={json.dumps(result['run_result'], ensure_ascii=False, default=str)}")
             batch_results.append({"case_index": i, "title": title, **result})
@@ -345,6 +407,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _ensure_default_env_argument(args)
     if args.command == "web":
         return _cmd_web(args)
     if args.command == "run":

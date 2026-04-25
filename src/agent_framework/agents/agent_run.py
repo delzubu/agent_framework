@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from agent_framework.memory import MemoryRef, MemoryScope
+
 from .call_context import CallContext
 
 
@@ -13,6 +15,7 @@ class AgentRun:
     """Mutable per-invocation runtime state."""
 
     run_id: str
+    parent_run_id: str | None
     rendered_prompt: str
     seed_parameters: dict[str, Any]
     parameter_values: dict[str, Any]
@@ -24,6 +27,9 @@ class AgentRun:
     conversation_messages: list[dict[str, str]] = field(default_factory=list)
     contexts: list[CallContext] = field(default_factory=list)
     history: list[str] = field(default_factory=list)
+    visible_memory_scopes: tuple[MemoryScope, ...] = ()
+    resolved_memory_refs: tuple[MemoryRef, ...] = ()
+    memory_projection_requests: tuple[str, ...] = ()
     in_parallel_batch: bool = False
 
 __all__ = ["AgentRun"]

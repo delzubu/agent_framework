@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Protocol, TYPE_CHECKING
 
 from agent_framework.model import ModelDriver
+from agent_framework.model_validation import ModelValidationContext
 
 from .agent_decision import SubagentCallSpec
 from .agent_result import AgentResult
@@ -26,7 +27,17 @@ class AgentHostProtocol(Protocol):
     def get_agent(self, agent_id: str, *, base_dir: Path | None = None) -> "Agent":
         raise NotImplementedError
 
-    def request_user_input(self, prompt: str) -> str:
+    def request_user_input(
+        self,
+        prompt: str,
+        *,
+        intent: str = "information_request",
+        run_id: str = "",
+        agent_id: str = "",
+        caller_id: str | None = None,
+        parent_run_id: str | None = None,
+        interaction_kind: str = "direct_user_input",
+    ) -> str:
         raise NotImplementedError
 
     def call_subagent(
@@ -65,7 +76,18 @@ class AgentHostProtocol(Protocol):
     def get_tool(self, tool_name: str):
         raise NotImplementedError
 
-    def resolve_callback(self, *, caller_id: str, callee: "Agent", prompt: str) -> str:
+    def resolve_callback(
+        self,
+        *,
+        caller_id: str,
+        callee: "Agent",
+        prompt: str,
+        intent: str = "information_request",
+        run_id: str = "",
+        parent_run_id: str | None = None,
+        allow_user_fallback: bool = True,
+        callback_parameters: dict[str, Any] | None = None,
+    ) -> str:
         raise NotImplementedError
 
     def open_context(self, *, caller_id: str, callee_id: str, kind: str) -> CallContext:
@@ -75,6 +97,22 @@ class AgentHostProtocol(Protocol):
         raise NotImplementedError
 
     def run_post_model_hooks(self, event: ModelEndEvent) -> None:
+        raise NotImplementedError
+
+    def validate_model_exception(
+        self,
+        exc: BaseException,
+        *,
+        validation_context: ModelValidationContext,
+    ) -> BaseException:
+        raise NotImplementedError
+
+    def validate_model_response(
+        self,
+        response: Any,
+        *,
+        validation_context: ModelValidationContext,
+    ) -> None:
         raise NotImplementedError
 
     def get_skill_registry(self) -> "Any":

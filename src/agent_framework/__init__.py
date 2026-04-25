@@ -18,6 +18,14 @@ from agent_framework.agent import (
     ToolEndEvent,
     ToolHookDecision,
     ToolStartEvent,
+    ProgrammaticWorkflow,
+    ProgrammaticWorkflowState,
+    ProgrammaticWorkflowStep,
+    WorkflowBranchStep,
+    WorkflowCallSubagentStep,
+    WorkflowCallSubagentsStep,
+    WorkflowRaiseStep,
+    WorkflowReturnStep,
 )
 from agent_framework.config import HostConfig, load_host_config
 from agent_framework.conversation import (
@@ -49,6 +57,21 @@ from agent_framework.messages import (
     ImageUrl,
     ToolCallMessage,
 )
+from agent_framework.memory import (
+    CatalogMemoryQueryProvider,
+    ConfiguredMemoryScopeResolver,
+    InMemoryMemoryBackend,
+    MemoryEntry,
+    MemoryQueryHit,
+    MemoryRef,
+    MemoryScope,
+    MemoryScopeResolver,
+    XmlMemoryProjector,
+    build_memory_uri,
+    find_memory_uris,
+    is_memory_uri,
+    parse_memory_uri,
+)
 from agent_framework.model import (
     AsyncModelDriver,
     AsyncToSyncAdapter,
@@ -58,7 +81,6 @@ from agent_framework.model import (
     ModelDriver,
     ModelDriverBase,
     ModelResponse,
-    OpenAiModelDriver,
     ProviderRequestTrace,
     ProviderResponseTrace,
     SyncToAsyncAdapter,
@@ -66,6 +88,13 @@ from agent_framework.model import (
     merge_runtime_system_into_messages,
     parse_json_object_model_output,
     resolved_response_format_dict,
+)
+from agent_framework.model_validation import (
+    ModelExceptionValidator,
+    ModelResponseValidator,
+    ModelValidationChain,
+    ModelValidationContext,
+    MultipleStructuredJsonDocumentsValidator,
 )
 
 __all__ = [
@@ -88,6 +117,14 @@ __all__ = [
     "ToolEndEvent",
     "ToolHookDecision",
     "ToolStartEvent",
+    "ProgrammaticWorkflow",
+    "ProgrammaticWorkflowState",
+    "ProgrammaticWorkflowStep",
+    "WorkflowBranchStep",
+    "WorkflowCallSubagentStep",
+    "WorkflowCallSubagentsStep",
+    "WorkflowRaiseStep",
+    "WorkflowReturnStep",
     # Configuration
     "HostConfig",
     "load_host_config",
@@ -110,6 +147,20 @@ __all__ = [
     "FunctionCall",
     "ImageUrl",
     "ToolCallMessage",
+    # Memory
+    "CatalogMemoryQueryProvider",
+    "ConfiguredMemoryScopeResolver",
+    "InMemoryMemoryBackend",
+    "MemoryEntry",
+    "MemoryQueryHit",
+    "MemoryRef",
+    "MemoryScope",
+    "MemoryScopeResolver",
+    "XmlMemoryProjector",
+    "build_memory_uri",
+    "find_memory_uris",
+    "is_memory_uri",
+    "parse_memory_uri",
     # Tracing & web runtime
     "CompositeRuntimeTracer",
     "NullRuntimeTracer",
@@ -127,8 +178,12 @@ __all__ = [
     "ModelDriver",
     "ModelDriverBase",
     "ModelResponse",
+    "ModelExceptionValidator",
+    "ModelResponseValidator",
+    "ModelValidationChain",
+    "ModelValidationContext",
+    "MultipleStructuredJsonDocumentsValidator",
     "merge_runtime_system_into_messages",
-    "OpenAiModelDriver",
     "parse_json_object_model_output",
     "ProviderRequestTrace",
     "ProviderResponseTrace",

@@ -10,7 +10,6 @@ outbound UI messages and resolves input asynchronously via
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal, Protocol, runtime_checkable
 
@@ -68,8 +67,19 @@ class UserCommunication(Protocol):
         """Ask whether a gated action is allowed."""
         ...
 
-    async def read_user_input(self, prompt: str = "") -> str | None:
-        """Read a line of input from the user.  Returns None on EOF / disconnect."""
+    async def read_user_input(
+        self,
+        prompt: str = "",
+        *,
+        prompt_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> str | None:
+        """Read a line of input from the user.
+
+        `prompt_id` and `metadata` let the host preserve routing identity and
+        provenance across transports. Console implementations may ignore them;
+        web implementations should surface them to the client.
+        """
         ...
 
     async def stream_text(self, chunks: AsyncIterator[str]) -> None:
@@ -106,7 +116,13 @@ class NullUserCommunication:
     async def request_permission(self, request: PermissionRequest) -> PermissionDecision:
         return PermissionDecision(allowed=True, remember_for_session=False)
 
-    async def read_user_input(self, prompt: str = "") -> str | None:
+    async def read_user_input(
+        self,
+        prompt: str = "",
+        *,
+        prompt_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> str | None:
         return None
 
     async def stream_text(self, chunks: AsyncIterator[str]) -> None:

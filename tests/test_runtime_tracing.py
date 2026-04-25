@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from agent_framework.llm_trace_logging import build_llm_trace_event
-from agent_framework.model import ProviderRequestTrace
+from agent_framework.model import ProviderRequestTrace, ProviderResponseTrace
 from agent_framework.tracing import (
     CompositeRuntimeTracer,
     NullRuntimeTracer,
@@ -225,3 +225,33 @@ def test_build_llm_trace_event_maps_provider_request() -> None:
     assert event.payload["agent_id"] == "root"
     assert event.parent_span_id == "r1"
     assert event.span_id is not None
+
+
+def test_build_llm_trace_event_maps_provider_response_usage() -> None:
+    event = build_llm_trace_event(
+        ProviderResponseTrace(
+            run_id="r2",
+            agent_id="root",
+            provider_name="dial",
+            model_name="gpt-4o",
+            raw_text='{"choices":[]}',
+            parsed_payload={"kind": "final_message", "message": "ok"},
+            usage={
+                "input_tokens": 10,
+                "input_cached_tokens": 3,
+                "output_tokens": 5,
+                "output_cached_tokens": 0,
+                "total_tokens": 15,
+            },
+            raw_usage={
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "prompt_tokens_details": {"cached_tokens": 3},
+            },
+        ),
+        kind="llm.response",
+    )
+    assert event.kind == "llm.response"
+    assert event.payload["usage"]["input_tokens"] == 10
+    assert event.payload["raw_usage"]["prompt_tokens"] == 10

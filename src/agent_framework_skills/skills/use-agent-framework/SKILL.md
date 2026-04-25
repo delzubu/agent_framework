@@ -14,7 +14,13 @@ Load reference files on demand as your work requires:
 | Reference | When to load |
 |-----------|-------------|
 | `references/framework-usage.md` | Before writing or modifying any agent, tool, behavior, or host code |
+| `references/agent-usage.md` | Before creating or editing an agent `.md`, adjacent agent `.json`, or Python `AgentBehavior` |
+| `references/workflow-agents.md` | Before building deterministic controller agents that orchestrate subagents from `before_run(...)` |
+| `references/tool-authoring.md` | Before creating or changing a custom tool `.md` / `.py` pair |
 | `references/evaluator-usage.md` | Before writing evaluations, case files, initializers, or running the evaluator |
+| `references/memory-usage.md` | When the agent handles large/shared payloads, `mem://...` refs, or memory tools |
+| `references/callback-handling.md` | When the agent or host must handle clarification, approval, escalation, passthrough, or user-input routing |
+| `references/env-reference.md` | When editing `.env`, debugging configuration resolution, or checking supported keys |
 | `assets/agent-prompt-design-research.md` | When you want a broad survey of how other frameworks design agentic prompts, and the rationale behind patterns |
 | `references/agent-prompt-patterns.md` | Before writing a new agent's system prompt — quick checklist + pattern selector |
 | `assets/agent-prompt-organization.md` | When writing or reviewing a structured agent system prompt — recommended section order (Responsibilities → Boundaries → Workflow → Output Shape → Specific Rules) with rationale, examples, and copy-ready template |
@@ -22,7 +28,7 @@ Load reference files on demand as your work requires:
 ## Quick orientation
 
 - **Agents** are `.md` files with YAML frontmatter + system prompt + user prompt template
-- **Decisions** are JSON objects emitted by the model each loop iteration (`final_message`, `call_tool`, `call_subagent`, `call_subagents`, `callback`, `invoke_skill`)
+- **Decisions** are JSON objects emitted by the model each loop iteration. For interaction routing, distinguish caller escalation, direct user input, and agent-only resolution instead of treating every question as a generic callback.
 - **Tools** are `.md` files with a Python sibling that exports `build_tool(definition)`
 - **The evaluator** runs agents against test cases and scores the output with a second LLM
 - **Case files** are three-section `.md` files: frontmatter / prompt / criteria
@@ -33,7 +39,13 @@ The `references/` folder is in the same directory as this file. Load any referen
 
 ```
 references/framework-usage.md
+references/agent-usage.md
+references/workflow-agents.md
+references/tool-authoring.md
 references/evaluator-usage.md
+references/memory-usage.md
+references/callback-handling.md
+references/env-reference.md
 assets/agent-prompt-design-research.md
 assets/agent-prompt-organization.md
 references/agent-prompt-patterns.md

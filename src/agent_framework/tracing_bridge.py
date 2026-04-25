@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from typing import Any, Iterator, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent_framework.tracing import RuntimeTracer, TraceContext
+    from agent_framework.tracing import TraceContext
 
 _active: ContextVar[tuple[Any, Any] | None] = ContextVar("agent_framework_active_tracer", default=None)
 
