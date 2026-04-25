@@ -742,7 +742,6 @@ def create_app() -> FastAPI:
                         on_first_llm_call=_on_llm,
                         agent_model_override=body.agent_model_override or None,
                         agent_model_override_scope=body.agent_model_override_scope,
-                        on_first_llm_call=_on_llm,
                     )
 
                 try:
