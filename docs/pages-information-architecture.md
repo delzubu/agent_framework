@@ -37,7 +37,9 @@ Primary pages:
 
 - `Getting Started`
 - `Core Concepts`
+- `Three Kinds of Agents`
 - `Authoring Agents`
+- `Creating a Planning Agent`
 - `Tools`
 - `Skills`
 - `MCP Integration`
@@ -115,6 +117,8 @@ Start Here
 Learn
   Agentic AI Learning Hub
   Core Agentic AI Concepts
+  Three Kinds of Agents
+  How Agents Plan
   Agent Runtime Patterns
   Prompt and Decision Design
   Evaluation Concepts
@@ -127,6 +131,7 @@ Build
   Installation
   Configuration
   Authoring Agents
+  Creating a Planning Agent
   Creating Tools
   Using Skills
   Multi-Agent Orchestration
@@ -218,6 +223,8 @@ Pages:
 
 - `Agentic AI Learning Hub`: curated entry point with beginner, intermediate, and advanced learning paths.
 - `Core Agentic AI Concepts`: agents, tools, memory/conversation, planning, evaluation, orchestration.
+- `Three Kinds of Agents`: comparison of standalone agents, programmatic workflow executors, and planning agents — when to use each, tradeoffs, and how they compose.
+- `How Agents Plan`: narrative deep-dive into agent planning — from ReAct and Plan-and-Solve through Reflexion, two-ledger patterns, and parallel batch execution; final section describes agent_framework's implementation.
 - `Agent Runtime Patterns`: loops, delegation, callbacks, tool execution, terminal tools.
 - `Prompt and Decision Design`: structured output, JSON contracts, prompt organization, failure modes.
 - `Evaluation Concepts`: regression testing, criteria, traces, human review, LLM-as-judge caveats.
@@ -230,6 +237,11 @@ Purpose: help users succeed with practical implementation.
 
 Pages should be task-oriented and include runnable snippets.
 
+Key pages:
+
+- `Authoring Agents`: agent markdown structure, YAML frontmatter, system/user prompts, parameters, terminal tools.
+- `Creating a Planning Agent`: step-by-step guide — frontmatter `planning:` block, plan-phase prompt, execute/reflect contract, `{{ref}}` tokens, callback handling, testing and debugging.
+
 Key source material:
 
 - `README.md`
@@ -237,6 +249,7 @@ Key source material:
 - `docs/guides/using-agent-evaluator.md`
 - `docs/guides/using-dial.md`
 - `docs/guides/debugging-with-vscode.md`
+- `docs/architecture/adr-planning.md`
 
 ### Reference
 

@@ -13,6 +13,8 @@ Use this section to build conceptual grounding before jumping into implementatio
 
 - [Agentic AI Learning Hub]({{ '/learn/agentic-ai-learning-hub/' | relative_url }})
 - [Core Agentic AI Concepts]({{ '/learn/core-agentic-ai-concepts/' | relative_url }})
+- [Three Kinds of Agents]({{ '/learn/three-kinds-of-agents/' | relative_url }})
+- [How Agents Plan]({{ '/learn/how-agents-plan/' | relative_url }})
 - [Agent Runtime Patterns]({{ '/learn/agent-runtime-patterns/' | relative_url }})
 - [Prompt and Decision Design]({{ '/learn/prompt-and-decision-design/' | relative_url }})
 - [Evaluation Concepts]({{ '/learn/evaluation-concepts/' | relative_url }})

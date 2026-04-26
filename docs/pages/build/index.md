@@ -16,6 +16,7 @@ This section is task-oriented. Pages should include runnable snippets, prerequis
 - [Installation]({{ '/build/installation/' | relative_url }})
 - [Configuration]({{ '/build/configuration/' | relative_url }})
 - [Authoring Agents]({{ '/build/authoring-agents/' | relative_url }})
+- [Creating a Planning Agent]({{ '/build/creating-planning-agents/' | relative_url }})
 - [Creating Tools]({{ '/build/creating-tools/' | relative_url }})
 - [Using Skills]({{ '/build/using-skills/' | relative_url }})
 - [Bundled Skills]({{ '/build/bundled-skills/' | relative_url }})
