@@ -13,7 +13,10 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait as _futures_wait
 from datetime import datetime, timezone
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Sequence, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent_framework.planning.step_reference import StepReferenceResolver
 from uuid import uuid4
 
 from agent_framework.agent import Agent, AgentResult, CallContext, ModelEndEvent, ModelStartEvent, SequentialHook
@@ -164,6 +167,7 @@ class AgentHost:
     file_ref_resolver: FileReferenceResolver | None = field(
         default_factory=DefaultFileReferenceResolver, repr=False
     )
+    step_ref_resolver: "StepReferenceResolver | None" = field(default=None, repr=False)
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=8))
     _command_fallback: Callable[[str, str], Awaitable[str | None]] | None = None
     _started: bool = False
