@@ -28,6 +28,10 @@ from agent_framework.model import (
 from agent_framework.model_validation import ModelValidationContext
 
 from .agent_behavior import AgentBehavior
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from agent_framework.planning.config import PlanningConfig
 from .agent_decision import AgentDecision, SubagentCallSpec
 from .agent_end_event import AgentEndEvent
 from .agent_end_hook_decision import AgentEndHookDecision
@@ -122,6 +126,29 @@ def _parse_parameters_injection(raw: Any, source_path: Path | None = None) -> st
     return value
 
 
+def _parse_planning_config(raw: Any, source_path: Path | None = None) -> "PlanningConfig | None":
+    """Parse the optional `planning:` frontmatter block into a PlanningConfig."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        from agent_framework.agents.helpers import AgentMarkdownError
+        raise AgentMarkdownError(
+            source_path=source_path or Path("<unknown>"),
+            detail=f"'planning' must be a YAML mapping, got {type(raw).__name__!r}.",
+            hint="Example: planning:\\n  enabled: true",
+        )
+    from agent_framework.planning.config import PlanningConfig
+    try:
+        return PlanningConfig.from_frontmatter(raw)
+    except ValueError as exc:
+        from agent_framework.agents.helpers import AgentMarkdownError
+        raise AgentMarkdownError(
+            source_path=source_path or Path("<unknown>"),
+            detail=str(exc),
+            hint="Check the 'planning:' block in the agent frontmatter.",
+        ) from exc
+
+
 def _subagent_result_payload(
     message: str,
     parameters: dict[str, Any] | None,
@@ -212,6 +239,7 @@ class Agent:
     source_path: Path | None = None
     terminal_tools: tuple[str, ...] = ()
     parameters_injection: str = "override"
+    planning_config: "PlanningConfig | None" = None
 
     @classmethod
     def from_markdown(
@@ -275,6 +303,7 @@ class Agent:
             parameters_injection=_parse_parameters_injection(
                 metadata.get("parameters_injection"), source_path
             ),
+            planning_config=_parse_planning_config(metadata.get("planning"), source_path),
         )
         agent._validate_template_contract()
         agent._attach_behaviors()
@@ -344,20 +373,26 @@ class Agent:
         """Choose a TurnDriver for this invocation.
 
         Resolution order:
-            1. planning_override (True/False) wins if not None.
-            2. self.planning_config (set by FEAT: PlanningConfig) decides otherwise.
-            3. Default: StandardTurnDriver.
+            1. planning_override=False wins unconditionally → StandardTurnDriver.
+            2. planning_override=True → planning active (config defaults if no frontmatter).
+            3. self.planning_config.enabled → planning active with frontmatter config.
+            4. Default → StandardTurnDriver.
         """
         from .turn_driver import StandardTurnDriver  # local import avoids circular
 
-        # TODO(FEAT: PlanningConfig): wire planning_config check here once
-        # PlanningConfig is introduced. For now always return StandardTurnDriver.
-        if planning_override is True:
+        if planning_override is False:
+            return StandardTurnDriver()
+
+        planning_active = planning_override is True or (
+            self.planning_config is not None and self.planning_config.enabled
+        )
+        if planning_active:
             # PlanningTurnDriver will be imported here once FEAT: PlanningTurnDriver lands.
+            # TODO(FEAT #63: PlanningTurnDriver): replace fallback with real driver.
             _LOGGER.info(
-                "planning_override=True requested for agent %s but PlanningTurnDriver"
-                " is not yet implemented; falling back to StandardTurnDriver",
-                self.agent_id,
+                "Planning active for agent %s (override=%s, config=%r) but "
+                "PlanningTurnDriver is not yet implemented; falling back to StandardTurnDriver",
+                self.agent_id, planning_override, self.planning_config,
             )
         return StandardTurnDriver()
 
