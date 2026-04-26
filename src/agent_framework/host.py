@@ -1598,6 +1598,7 @@ class AgentHost:
         conversation_messages: tuple[dict[str, str], ...] | None = None,
         prompt_fragments: tuple[str, ...] | None = None,
         model_override: str | tuple[str, ...] | None = None,
+        planning_override: bool | None = None,
     ) -> AgentResult:
         """Run a specific agent id as a top-level invocation."""
         if initial_instruction and self.file_ref_resolver is not None:
@@ -1623,6 +1624,7 @@ class AgentHost:
                 conversation_messages=conversation_messages,
                 prompt_fragments=prompt_fragments,
                 run_id=root_run_id,
+                planning_override=planning_override,
             )
 
     def run_console(self) -> AgentResult:

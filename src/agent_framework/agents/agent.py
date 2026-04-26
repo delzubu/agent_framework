@@ -16,6 +16,7 @@ from jsonschema import validate as validate_json_schema
 import yaml
 
 from agent_framework.errors import ModelDriverError
+from agent_framework.file_reference import expand_file_refs
 from agent_framework.model import (
     CapabilityDefinition,
     ModelContext,
@@ -339,6 +340,27 @@ class Agent:
         except ValueError:
             return None
 
+    def _select_turn_driver(self, *, planning_override: bool | None) -> "TurnDriver":
+        """Choose a TurnDriver for this invocation.
+
+        Resolution order:
+            1. planning_override (True/False) wins if not None.
+            2. self.planning_config (set by FEAT: PlanningConfig) decides otherwise.
+            3. Default: StandardTurnDriver.
+        """
+        from .turn_driver import StandardTurnDriver  # local import avoids circular
+
+        # TODO(FEAT: PlanningConfig): wire planning_config check here once
+        # PlanningConfig is introduced. For now always return StandardTurnDriver.
+        if planning_override is True:
+            # PlanningTurnDriver will be imported here once FEAT: PlanningTurnDriver lands.
+            _LOGGER.info(
+                "planning_override=True requested for agent %s but PlanningTurnDriver"
+                " is not yet implemented; falling back to StandardTurnDriver",
+                self.agent_id,
+            )
+        return StandardTurnDriver()
+
     def run(
         self,
         *,
@@ -351,6 +373,7 @@ class Agent:
         prompt_fragments: tuple[str, ...] | None = None,
         run_id: str | None = None,
         in_parallel_batch: bool = False,
+        planning_override: bool | None = None,
     ) -> AgentResult:
         """Execute the agent loop for one invocation.
 
@@ -426,16 +449,11 @@ class Agent:
                     caller_id=caller_id,
                     result=early_result,
                 )[0]
+            driver = self._select_turn_driver(planning_override=planning_override)
             while self.should_continue(run):
-                # The base loop is intentionally small so subclasses can override
-                # individual steps without replacing the lifecycle contract.
-                self.before_iteration(run)
-                decision = self.resolve_runtime_decision(run=run)
-                if decision is None:
-                    context = self.build_context(host=host, run=run)
-                    decision = self.decide(host=host, run=run, context=context)
-                outcome = self.dispatch_decision(host=host, run=run, decision=decision, caller_id=caller_id)
-                self.after_iteration(run)
+                outcome = driver.run_turn(
+                    agent=self, host=host, run=run, caller_id=caller_id,
+                )
                 if outcome is not None:
                     post_result, continue_run = self._run_post_agent_hooks(
                         host=host,
@@ -479,6 +497,10 @@ class Agent:
     def build_context(self, *, host: "AgentHostProtocol", run: AgentRun) -> ModelContext:
         """Assemble the provider-facing model context for the current run."""
         system_prompt = _apply_runtime_placeholders(self.system_prompt, run.placeholder_values)
+        resolver = getattr(host, "file_ref_resolver", None)
+        if resolver is not None:
+            base_dir = self.source_path.parent if self.source_path is not None else None
+            system_prompt = expand_file_refs(system_prompt, resolver, base_dir=base_dir)
         prompt = _apply_runtime_placeholders(run.rendered_prompt, run.placeholder_values)
         if run.prompt_fragments:
             # System and helper augmentations stay outside the original template
