@@ -6,5 +6,6 @@ or via planning_override at call time.
 """
 
 from .config import PlanningConfig
+from .plan_state import CompletedStep, PlanState, PlanStep
 
-__all__ = ["PlanningConfig"]
+__all__ = ["PlanningConfig", "PlanStep", "CompletedStep", "PlanState"]
