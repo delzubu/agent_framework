@@ -17,6 +17,7 @@ def test_evaluator_cli_has_web_and_run_subcommands() -> None:
     parser = build_parser()
     args = parser.parse_args(["web", "--env", ".env"])
     assert args.command == "web"
+    assert args.open_browser is True
     args = parser.parse_args(
         [
             "web",
@@ -26,12 +27,14 @@ def test_evaluator_cli_has_web_and_run_subcommands() -> None:
             "myagent",
             "--initializer",
             "seed.py",
+            "--no-open-browser",
         ],
     )
     assert args.command == "web"
     assert args.env == "custom/.env"
     assert args.agent == "myagent"
     assert args.initializer == "seed.py"
+    assert args.open_browser is False
     assert args.agent_model_override is None
     assert args.agent_model_override_scope == "root_only"
     args = parser.parse_args(["run", "--agent", "root", "--prompt", "hi"])
@@ -959,12 +962,26 @@ def test_web_command_keeps_relative_env_path_for_ui_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AGENT_EVAL_DEFAULT_ENV_PATH", raising=False)
+    opened: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
     monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
 
     code = main(["web", "--env", ".env"])
 
     assert code == 0
     assert os.environ["AGENT_EVAL_DEFAULT_ENV_PATH"] == ".env"
+    assert opened == ["http://127.0.0.1:8123/"]
+
+
+def test_web_command_can_skip_browser_launch(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+
+    code = main(["web", "--env", ".env", "--no-open-browser"])
+
+    assert code == 0
+    assert opened == []
 
 
 def test_web_command_sets_agent_model_override_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

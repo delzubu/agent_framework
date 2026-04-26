@@ -13,13 +13,13 @@ python -m agent_framework_evaluator web \
   --agent-model-override gpt-4.1 \
   --agent-model-override-scope root_only \
   --host 127.0.0.1 \
-  --port 8123 \
-  --open-browser
+  --port 8123
 ```
 - `--agent` — default agent id (overridable in the UI)
 - `--initializer` — initializer `.py` filename (relative to `AGENT_EVAL_INITIALIZER_DIR` from `.env`)
 - `--agent-model-override` — optional default model override for the tested agent
 - `--agent-model-override-scope` — `root_only` (tested agent only) or `all_agents` (whole run)
+- Browser launch is enabled by default; pass `--no-open-browser` to suppress it
 - Default URL: `http://127.0.0.1:8123/`
 
 ### `run` — headless single-agent invocation

@@ -47,7 +47,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8123)
-    web.add_argument("--open-browser", action="store_true")
+    web.add_argument(
+        "--no-open-browser",
+        action="store_false",
+        dest="open_browser",
+        help="Do not launch the browser automatically.",
+    )
+    web.set_defaults(open_browser=True)
 
     run = subparsers.add_parser("run")
     run.add_argument("--env", default=DEFAULT_ENV_ARGUMENT)
