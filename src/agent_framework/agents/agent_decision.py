@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, Final, TYPE_CHECKING
 
 from agent_framework.model import ModelResponse
+
+if TYPE_CHECKING:
+    from agent_framework.planning.plan_state import PlanStep
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,6 +29,17 @@ _ALLOWED_DECISION_KINDS: Final[frozenset[str]] = frozenset(
     }
 )
 
+# Planning-only kinds — only accepted when planning_active=True is passed to
+# from_model_response. Emitting these from a non-planning agent is a hard error.
+_PLANNING_DECISION_KINDS: Final[frozenset[str]] = frozenset(
+    {"submit_plan", "amend_plan", "continue_plan"}
+)
+
+_STEP_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
+_VALID_STEP_KINDS: Final[frozenset[str]] = frozenset(
+    {"call_tool", "call_subagent", "invoke_skill", "callback"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SubagentCallSpec:
@@ -33,6 +48,120 @@ class SubagentCallSpec:
     subagent_id: str
     parameters: dict[str, Any] = field(default_factory=dict)
     output_key: str = ""  # filled to "call_<i>" by parser when absent
+
+
+def _parse_and_validate_plan(payload: dict[str, Any]) -> "tuple[PlanStep, ...]":
+    """Parse and validate a `submit_plan` / `amend_plan` payload into PlanSteps.
+
+    Raises `ValueError` for any of the validation rules in ADR §7.3.
+    """
+    from agent_framework.planning.plan_state import PlanStep  # avoid circular import
+
+    raw_plan = payload.get("plan")
+    if not isinstance(raw_plan, list) or len(raw_plan) == 0:
+        raise ValueError(
+            "Invalid submit_plan: 'plan' must be a non-empty list of step objects."
+        )
+
+    seen_ids: dict[str, int] = {}  # id → index for forward-ref and dup detection
+    steps: list[PlanStep] = []
+
+    for i, raw_step in enumerate(raw_plan):
+        if not isinstance(raw_step, dict):
+            raise ValueError(
+                f"Invalid submit_plan: step at index {i} must be a JSON object."
+            )
+
+        step_id = str(raw_step.get("id", "")).strip()
+        if not step_id:
+            raise ValueError(
+                f"Invalid submit_plan: step at index {i} is missing 'id'."
+            )
+        if not _STEP_ID_RE.match(step_id):
+            raise ValueError(
+                f"Invalid submit_plan: step id {step_id!r} at index {i} does not match "
+                r"^[a-zA-Z][a-zA-Z0-9_]*$."
+            )
+        if step_id in seen_ids:
+            raise ValueError(
+                f"Invalid submit_plan: duplicate step id {step_id!r} at index {i} "
+                f"(first occurrence at index {seen_ids[step_id]})."
+            )
+
+        step_kind = str(raw_step.get("kind", "")).strip()
+        if step_kind not in _VALID_STEP_KINDS:
+            raise ValueError(
+                f"Invalid submit_plan: step {step_id!r} has unsupported kind "
+                f"{step_kind!r}. Must be one of: {sorted(_VALID_STEP_KINDS)}."
+            )
+
+        tool_name = _optional_text(raw_step.get("tool_name"))
+        subagent_id = _optional_text(raw_step.get("subagent_id"))
+        skill_name = _optional_text(raw_step.get("skill_name"))
+        callback_intent = _optional_text(raw_step.get("callback_intent"))
+
+        if tool_name is not None and subagent_id is not None:
+            raise ValueError(
+                f"Invalid submit_plan: step {step_id!r} has both 'tool_name' and "
+                "'subagent_id' set; use exactly one."
+            )
+
+        # Kind-target consistency
+        if step_kind == "call_tool" and not tool_name:
+            raise ValueError(
+                f"Invalid submit_plan: step {step_id!r} has kind 'call_tool' but "
+                "is missing 'tool_name'."
+            )
+        if step_kind == "call_subagent" and not subagent_id:
+            raise ValueError(
+                f"Invalid submit_plan: step {step_id!r} has kind 'call_subagent' but "
+                "is missing 'subagent_id'."
+            )
+        if step_kind == "invoke_skill" and not skill_name:
+            raise ValueError(
+                f"Invalid submit_plan: step {step_id!r} has kind 'invoke_skill' but "
+                "is missing 'skill_name'."
+            )
+        if step_kind == "callback" and not callback_intent:
+            raise ValueError(
+                f"Invalid submit_plan: step {step_id!r} has kind 'callback' but "
+                "is missing 'callback_intent'."
+            )
+
+        # depends_on: no forward refs (only IDs already seen)
+        raw_deps = raw_step.get("depends_on") or []
+        if not isinstance(raw_deps, list):
+            raise ValueError(
+                f"Invalid submit_plan: step {step_id!r} 'depends_on' must be a list."
+            )
+        deps: list[str] = []
+        for dep in raw_deps:
+            dep_id = str(dep).strip()
+            if dep_id not in seen_ids:
+                raise ValueError(
+                    f"Invalid submit_plan: step {step_id!r} depends_on {dep_id!r} which "
+                    "is either unknown or appears later in the plan (forward references "
+                    "are not allowed)."
+                )
+            deps.append(dep_id)
+
+        parameters = dict(raw_step.get("parameters") or {})
+        message = str(raw_step.get("message", "")).strip()
+
+        seen_ids[step_id] = i
+        steps.append(PlanStep(
+            id=step_id,
+            kind=step_kind,
+            parameters=parameters,
+            tool_name=tool_name,
+            subagent_id=subagent_id,
+            skill_name=skill_name,
+            callback_intent=callback_intent,
+            depends_on=tuple(deps),
+            message=message,
+        ))
+
+    return tuple(steps)
 
 
 def _optional_text(value: object) -> str | None:
@@ -58,9 +187,16 @@ class AgentDecision:
     batch_mode: str | None = None
     batch_timeout_seconds: float | None = None
     subagent_calls: tuple[SubagentCallSpec, ...] = field(default_factory=tuple)
+    # planning fields (populated only when kind in _PLANNING_DECISION_KINDS)
+    plan: "tuple[PlanStep, ...]" = field(default_factory=tuple)
 
     @classmethod
-    def from_model_response(cls, response: ModelResponse) -> "AgentDecision":
+    def from_model_response(
+        cls,
+        response: ModelResponse,
+        *,
+        planning_active: bool = False,
+    ) -> "AgentDecision":
         """Create an `AgentDecision` from a normalized model response."""
         payload = response.payload
         if not isinstance(payload, dict):
@@ -102,8 +238,15 @@ class AgentDecision:
                 callback_intent,
             )
 
-        if normalized_kind not in _ALLOWED_DECISION_KINDS:
-            allowed = ", ".join(sorted(_ALLOWED_DECISION_KINDS))
+        if normalized_kind in _PLANNING_DECISION_KINDS:
+            if not planning_active:
+                raise ValueError(
+                    f"Invalid model decision JSON: decision kind {normalized_kind!r} is only "
+                    "valid for planning-enabled agents. Enable planning via 'planning: enabled: true' "
+                    "in the agent frontmatter or pass planning_override=True at call time."
+                )
+        elif normalized_kind not in _ALLOWED_DECISION_KINDS:
+            allowed = ", ".join(sorted(_ALLOWED_DECISION_KINDS | _PLANNING_DECISION_KINDS))
             raise ValueError(
                 f"Invalid model decision JSON: unsupported 'kind' {raw_kind!r}. "
                 f"Must be one of: {allowed}. "
@@ -179,6 +322,11 @@ class AgentDecision:
                 ))
             subagent_calls = tuple(specs)
 
+        # Parse planning-specific fields.
+        plan: tuple[PlanStep, ...] = ()
+        if normalized_kind in ("submit_plan", "amend_plan"):
+            plan = _parse_and_validate_plan(payload)
+
         return cls(
             kind=normalized_kind,
             message=str(payload.get("message", "")).strip(),
@@ -190,7 +338,8 @@ class AgentDecision:
             batch_mode=batch_mode,
             batch_timeout_seconds=batch_timeout_seconds,
             subagent_calls=subagent_calls,
+            plan=plan,
         )
 
 
-__all__ = ["AgentDecision", "SubagentCallSpec"]
+__all__ = ["AgentDecision", "SubagentCallSpec", "_PLANNING_DECISION_KINDS"]
