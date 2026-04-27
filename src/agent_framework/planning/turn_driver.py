@@ -35,14 +35,17 @@ def _select_ready_batch(
     *,
     parallel_execution: bool,
 ) -> list[PlanStep]:
-    """Return steps whose dependencies are all completed.
+    """Return steps whose dependencies are all completed and not yet dispatched.
 
+    Uses step_results (not completed_steps) as the "already dispatched" guard
+    so that pending callback steps are skipped without being re-dispatched.
     If parallel_execution is False, returns at most one step.
     """
+    dispatched_ids: set[str] = set(plan_state.step_results.keys())
     completed_ids: set[str] = {c.step_id for c in plan_state.completed_steps}
     ready: list[PlanStep] = []
     for step in plan_state.plan:
-        if step.id in completed_ids:
+        if step.id in dispatched_ids:
             continue
         if all(dep in completed_ids for dep in step.depends_on):
             ready.append(step)
@@ -96,10 +99,25 @@ def _inject_reminder(run: "AgentRun", plan_state: PlanState, *, end_of_plan: boo
     pending_tag = (
         f"<pending_steps>{json.dumps(pending_ids)}</pending_steps>\n" if pending_ids else ""
     )
+    # Include callback reminder when a step is awaiting model resolution.
+    callback_tag = ""
+    if plan_state.pending_callback_step_id:
+        pending_step = next(
+            (s for s in plan_state.plan if s.id == plan_state.pending_callback_step_id), None
+        )
+        intent = (pending_step.callback_intent or "information_request") if pending_step else "information_request"
+        callback_tag = (
+            f"<pending_callback step_id=\"{plan_state.pending_callback_step_id}\" "
+            f"intent=\"{intent}\">"
+            f"A step is awaiting your resolution. "
+            f"Emit continue_plan with parameters.resolution to answer, or submit_plan to replan."
+            f"</pending_callback>\n"
+        )
     reminder = (
         f"<system_reminder>\n"
         f"<plan_state revision=\"{plan_state.plan_revision}\">\n{plan_summary}\n</plan_state>\n"
         f"<step_results>\n{results_summary}\n</step_results>\n"
+        f"{callback_tag}"
         f"{pending_tag}"
         f"{end_tag}"
         f"</system_reminder>"
@@ -156,15 +174,24 @@ def _dispatch_step(
             result = f"skill:{step.skill_name}:invoked"
 
         elif step.kind == "callback":
-            raise NotImplementedError(
-                f"Planning callback steps are handled by FEAT #64 (step={step.id!r})"
+            # Model-bound callback: pause plan and let reflect resolve it.
+            # Store a pending sentinel in step_results (prevents re-dispatch)
+            # but do NOT add to completed_steps (so _all_steps_done stays False).
+            plan_state.step_results[step.id] = {
+                "_callback_pending": True,
+                "intent": step.callback_intent or "information_request",
+                "step_id": step.id,
+            }
+            plan_state.pending_callback_step_id = step.id
+            _LOGGER.info(
+                "Planning: step %r is a model-bound callback (intent=%s)",
+                step.id, step.callback_intent,
             )
+            return plan_state.step_results[step.id]
 
         else:
             raise ValueError(f"Unsupported step kind {step.kind!r} for step {step.id!r}")
 
-    except NotImplementedError:
-        raise
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         result = {"error": error, "step_id": step.id}
@@ -382,16 +409,46 @@ class PlanningTurnDriver:
             return self._make_result(decision, run)
 
         if decision.kind == "continue_plan":
+            # If there's a pending callback step, resolve it now.
+            pending_id = plan_state.pending_callback_step_id
+            if pending_id is not None:
+                resolution = dict(decision.parameters).get("resolution")
+                intent = None
+                pending_step = next((s for s in plan_state.plan if s.id == pending_id), None)
+                if pending_step is not None:
+                    intent = pending_step.callback_intent
+                resolved_result = {
+                    "_callback_resolved": True,
+                    "intent": intent or "information_request",
+                    "resolution": resolution,
+                }
+                plan_state.step_results[pending_id] = resolved_result
+                plan_state.completed_steps.append(
+                    CompletedStep(
+                        step_id=pending_id,
+                        step=pending_step or plan_state.plan[0],
+                        result=resolved_result,
+                        started_at=time.time(),
+                        finished_at=time.time(),
+                        plan_revision_at_start=plan_state.plan_revision,
+                    )
+                )
+                plan_state.total_steps_executed += 1
+                plan_state.pending_callback_step_id = None
+                _LOGGER.info(
+                    "Planning: callback step %r resolved via continue_plan", pending_id
+                )
             return None
 
         if decision.kind == "submit_plan":
-            # Re-plan: replace plan, remove results for dropped steps.
+            # Re-plan: replace plan, remove results for dropped steps, clear any pending callback.
             new_step_ids = {s.id for s in decision.plan}
             for dropped_id in list(plan_state.step_results):
                 if dropped_id not in new_step_ids:
                     del plan_state.step_results[dropped_id]
             plan_state.plan = decision.plan
             plan_state.plan_revision += 1
+            plan_state.pending_callback_step_id = None
             _LOGGER.info(
                 "Planning: agent %s re-planned (revision %d) — %d steps",
                 agent.agent_id, plan_state.plan_revision, len(decision.plan),
