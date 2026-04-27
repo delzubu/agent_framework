@@ -126,6 +126,17 @@ def _inject_reminder(run: "AgentRun", plan_state: PlanState, *, end_of_plan: boo
     run.prompt_fragments.append(reminder)
 
 
+def _inject_cap_reminder(run: "AgentRun", *, cap: str, detail: str) -> None:
+    """Append a safety-cap exceeded reminder to the conversation."""
+    reminder = (
+        f"<system_reminder>\n"
+        f"<safety_cap_exceeded cap=\"{cap}\">{detail}</safety_cap_exceeded>\n"
+        f"</system_reminder>"
+    )
+    run.conversation_messages.append({"role": "user", "content": reminder})
+    run.prompt_fragments.append(reminder)
+
+
 def _dispatch_step(
     step: PlanStep,
     *,
@@ -279,6 +290,9 @@ class PlanningTurnDriver:
 
     def __init__(self, config: "PlanningConfig") -> None:
         self.config = config
+        # Tracks consecutive plan-phase validation failures per run_id.
+        # Used because plan_state doesn't exist until the first valid submit_plan.
+        self._plan_phase_failures: dict[str, int] = {}
 
     def run_turn(
         self,
@@ -321,9 +335,42 @@ class PlanningTurnDriver:
         _LOGGER.debug("Planning: entering PLAN phase for agent %s", agent.agent_id)
 
         context = agent.build_context(host=host, run=run)
-        decision = agent.decide(host=host, run=run, context=context, planning_active=True)
+        try:
+            decision = agent.decide(host=host, run=run, context=context, planning_active=True)
+        except ValueError as exc:
+            run_id = run.run_id
+            failures = self._plan_phase_failures.get(run_id, 0) + 1
+            self._plan_phase_failures[run_id] = failures
+            _LOGGER.error(
+                "Planning: plan validation error for agent %s (consecutive=%d): %s",
+                agent.agent_id, failures, exc,
+                exc_info=True,
+            )
+            if failures >= 2:
+                self._plan_phase_failures.pop(run_id, None)
+                return self._emit_safety_cap_callback(
+                    agent=agent,
+                    host=host,
+                    run=run,
+                    caller_id=caller_id,
+                    cap="consecutive_validation_failures",
+                    detail=f"Two consecutive plan validation errors: {exc}",
+                )
+            error_reminder = (
+                f"<system_reminder>\n"
+                f"<plan_validation_error>{exc}</plan_validation_error>\n"
+                f"The plan you submitted was invalid. Please submit a corrected plan.\n"
+                f"</system_reminder>"
+            )
+            run.conversation_messages.append({"role": "user", "content": error_reminder})
+            run.prompt_fragments.append(error_reminder)
+            return None
+
+        # Clear per-run failure counter on successful model call.
+        self._plan_phase_failures.pop(run.run_id, None)
 
         if decision.kind == "submit_plan":
+            # decision.plan is already validated by from_model_response — no extra validation needed.
             plan_state = PlanState(plan=decision.plan, plan_revision=1)
             run.plan_state = plan_state
             _LOGGER.info(
@@ -353,6 +400,30 @@ class PlanningTurnDriver:
             "Planning: EXECUTE phase — dispatching %d step(s): %s",
             len(ready_batch), [s.id for s in ready_batch],
         )
+
+        # max_steps safety cap.
+        projected = plan_state.total_steps_executed + len(ready_batch)
+        max_steps = self.config.max_steps
+        if max_steps > 0:
+            pct = projected / max_steps
+            if pct > 0.8:
+                _LOGGER.warning(
+                    "Planning: agent %s approaching max_steps cap (%d/%d)",
+                    agent.agent_id, projected, max_steps,
+                )
+        if max_steps > 0 and plan_state.total_steps_executed >= max_steps:
+            _LOGGER.error(
+                "Planning: agent %s exceeded max_steps=%d (executed=%d)",
+                agent.agent_id, max_steps, plan_state.total_steps_executed,
+            )
+            return self._emit_safety_cap_callback(
+                agent=agent,
+                host=host,
+                run=run,
+                caller_id=caller_id,
+                cap="max_steps",
+                detail=f"max_steps={max_steps} exceeded (executed={plan_state.total_steps_executed})",
+            )
 
         timeout = self.config.step_timeout_seconds
 
@@ -403,7 +474,35 @@ class PlanningTurnDriver:
         _inject_reminder(run, plan_state, end_of_plan=end_of_plan)
 
         context = agent.build_context(host=host, run=run)
-        decision = agent.decide(host=host, run=run, context=context, planning_active=True)
+        try:
+            decision = agent.decide(host=host, run=run, context=context, planning_active=True)
+        except ValueError as exc:
+            # Plan validation failed (invalid submit_plan from the model).
+            plan_state.consecutive_validation_failures += 1
+            _LOGGER.error(
+                "Planning: plan validation error for agent %s (consecutive=%d): %s",
+                agent.agent_id, plan_state.consecutive_validation_failures, exc,
+                exc_info=True,
+            )
+            if plan_state.consecutive_validation_failures >= 2:
+                return self._emit_safety_cap_callback(
+                    agent=agent,
+                    host=host,
+                    run=run,
+                    caller_id=caller_id,
+                    cap="consecutive_validation_failures",
+                    detail=f"Two consecutive plan validation errors: {exc}",
+                )
+            # First failure: inject error reminder and let model retry next reflect.
+            error_reminder = (
+                f"<system_reminder>\n"
+                f"<plan_validation_error>{exc}</plan_validation_error>\n"
+                f"The plan you submitted was invalid. Please submit a corrected plan.\n"
+                f"</system_reminder>"
+            )
+            run.conversation_messages.append({"role": "user", "content": error_reminder})
+            run.prompt_fragments.append(error_reminder)
+            return None
 
         if decision.kind == "final_message":
             return self._make_result(decision, run)
@@ -441,20 +540,10 @@ class PlanningTurnDriver:
             return None
 
         if decision.kind == "submit_plan":
-            # Re-plan: replace plan, remove results for dropped steps, clear any pending callback.
-            new_step_ids = {s.id for s in decision.plan}
-            for dropped_id in list(plan_state.step_results):
-                if dropped_id not in new_step_ids:
-                    del plan_state.step_results[dropped_id]
-            plan_state.plan = decision.plan
-            plan_state.plan_revision += 1
-            plan_state.pending_callback_step_id = None
-            _LOGGER.info(
-                "Planning: agent %s re-planned (revision %d) — %d steps",
-                agent.agent_id, plan_state.plan_revision, len(decision.plan),
+            return self._apply_replan(
+                decision, agent=agent, host=host, run=run,
+                caller_id=caller_id, plan_state=plan_state,
             )
-            _inject_reminder(run, plan_state, end_of_plan=False)
-            return None
 
         if decision.kind == "amend_plan":
             raise NotImplementedError(
@@ -463,6 +552,105 @@ class PlanningTurnDriver:
 
         # Non-planning decision — dispatch normally.
         return agent.dispatch_decision(host=host, run=run, decision=decision, caller_id=caller_id)
+
+    def _apply_replan(
+        self,
+        decision: AgentDecision,
+        *,
+        agent: "Agent",
+        host: Any,
+        run: "AgentRun",
+        caller_id: str | None,
+        plan_state: PlanState,
+    ) -> "AgentResult | None":
+        """Apply a submit_plan decision as a re-plan, enforcing max_plan_revisions."""
+        max_revisions = self.config.max_plan_revisions
+        if max_revisions > 0:
+            pct = plan_state.plan_revision / max_revisions
+            if pct >= 0.8:
+                _LOGGER.warning(
+                    "Planning: agent %s approaching max_plan_revisions cap (%d/%d)",
+                    agent.agent_id, plan_state.plan_revision, max_revisions,
+                )
+        if max_revisions > 0 and plan_state.plan_revision >= max_revisions:
+            _LOGGER.error(
+                "Planning: agent %s exceeded max_plan_revisions=%d",
+                agent.agent_id, max_revisions,
+            )
+            return self._emit_safety_cap_callback(
+                agent=agent,
+                host=host,
+                run=run,
+                caller_id=caller_id,
+                cap="max_plan_revisions",
+                detail=f"max_plan_revisions={max_revisions} exceeded",
+            )
+
+        new_step_ids = {s.id for s in decision.plan}
+        for dropped_id in list(plan_state.step_results):
+            if dropped_id not in new_step_ids:
+                del plan_state.step_results[dropped_id]
+        # Remove completed_steps for dropped step ids.
+        plan_state.completed_steps[:] = [
+            cs for cs in plan_state.completed_steps if cs.step_id in new_step_ids
+        ]
+        plan_state.plan = decision.plan
+        plan_state.plan_revision += 1
+        plan_state.pending_callback_step_id = None
+        plan_state.consecutive_validation_failures = 0
+        _LOGGER.info(
+            "Planning: agent %s re-planned (revision %d) — %d steps",
+            agent.agent_id, plan_state.plan_revision, len(decision.plan),
+        )
+        _inject_reminder(run, plan_state, end_of_plan=False)
+        return None
+
+    def _emit_safety_cap_callback(
+        self,
+        *,
+        agent: "Agent",
+        host: Any,
+        run: "AgentRun",
+        caller_id: str | None,
+        cap: str,
+        detail: str,
+    ) -> "AgentResult | None":
+        """Terminate execution due to a safety-cap violation.
+
+        When there is a parent caller, escalate via a synthetic callback so the
+        caller can handle the failure. When there is no caller (top-level run),
+        return a failed AgentResult directly — calling handle_callback in that
+        case would block waiting for user input.
+        """
+        from agent_framework.agents.agent_result import AgentResult
+
+        message = (
+            f"Planning safety cap exceeded: {detail}. "
+            "The plan execution has been halted. Please review the plan configuration."
+        )
+        _inject_cap_reminder(run, cap=cap, detail=detail)
+
+        has_real_caller = caller_id is not None and caller_id != "host"
+        if has_real_caller:
+            synthetic = AgentDecision(
+                kind="callback_to_caller",
+                callback_intent="execution_recovery",
+                message=message,
+                parameters={"cap": cap, "detail": detail},
+            )
+            return agent.handle_callback(
+                host=host, run=run, decision=synthetic, caller_id=caller_id
+            )
+
+        _LOGGER.error(
+            "Planning: safety cap %r triggered for agent %s — terminating run. %s",
+            cap, agent.agent_id, detail,
+        )
+        return AgentResult(
+            status="failed",
+            message=message,
+            prompt=run.rendered_prompt,
+        )
 
     @staticmethod
     def _make_result(decision: AgentDecision, run: "AgentRun") -> "AgentResult":

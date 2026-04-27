@@ -107,6 +107,7 @@ class PlanState:
     total_steps_executed: int = 0
     pending_callback_step_id: str | None = None
     awaiting_caller_callback: bool = False
+    consecutive_validation_failures: int = 0
 
 
 __all__ = ["PlanStep", "CompletedStep", "PlanState"]
