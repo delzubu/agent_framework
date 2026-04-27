@@ -42,6 +42,16 @@ def test_expand_text_file(tmp_path: Path):
     assert "@note.txt" not in result
 
 
+def test_expand_text_file_with_plus_prefix(tmp_path: Path):
+    from agent_framework.file_reference import DefaultFileReferenceResolver, expand_file_refs
+    f = tmp_path / "note.txt"
+    f.write_text("hello world", encoding="utf-8")
+    result = expand_file_refs("See @+note.txt for details", DefaultFileReferenceResolver(), base_dir=tmp_path)
+    assert '<file name="note.txt">' in result
+    assert "hello world" in result
+    assert "@+note.txt" not in result
+
+
 def test_expand_quoted_path_with_spaces(tmp_path: Path):
     from agent_framework.file_reference import DefaultFileReferenceResolver, expand_file_refs
     f = tmp_path / "my deck.pptx"
@@ -50,6 +60,15 @@ def test_expand_quoted_path_with_spaces(tmp_path: Path):
     assert '<file name="my deck.pptx"' in result
     assert 'encoding="base64"' in result
     assert base64.b64encode(b"\xff\xfe\x00\x00binary").decode() in result
+
+
+def test_expand_quoted_path_with_spaces_and_plus_prefix(tmp_path: Path):
+    from agent_framework.file_reference import DefaultFileReferenceResolver, expand_file_refs
+    f = tmp_path / "my deck.pptx"
+    f.write_bytes(b"\xff\xfe\x00\x00binary")  # Invalid UTF-8 sequence
+    result = expand_file_refs('Analyze @+"my deck.pptx"', DefaultFileReferenceResolver(), base_dir=tmp_path)
+    assert '<file name="my deck.pptx"' in result
+    assert 'encoding="base64"' in result
 
 
 def test_expand_binary_file_base64(tmp_path: Path):

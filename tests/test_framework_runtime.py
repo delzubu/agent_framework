@@ -14,6 +14,7 @@ from agent_framework.agent import (
 )
 from agent_framework.agents.agent import CallbackRoutingPolicy
 from agent_framework.config import load_host_config
+from agent_framework.file_reference import DefaultFileReferenceResolver
 from agent_framework.host import AgentHost
 from agent_framework.llm_trace_logging import wire_llm_traces_to_runtime_tracer
 from agent_framework.model import ModelContext, ModelResponse
@@ -130,6 +131,38 @@ You are the root narrator.
     agent = Agent.from_markdown(agent_path, default_provider='openai', default_model=('gpt-4o-mini',))
     rendered = agent.render_user_prompt({'instruction': 'Explore the ruin.'})
     assert '<instruction>Explore the ruin.</instruction>' in rendered
+
+
+def test_agent_build_context_expands_file_refs_in_system_prompt(tmp_path: Path) -> None:
+    (tmp_path / 'context.txt').write_text('system context', encoding='utf-8')
+    agent_path = tmp_path / 'root.md'
+    agent_path.write_text(
+        """---
+id: root
+role: narrator
+parameters:
+  instruction:
+    description: First instruction.
+    required: true
+---
+Review @+context.txt before responding.
+---
+<agent_input><instruction>{{instruction}}</instruction></agent_input>
+""",
+        encoding='utf-8',
+    )
+    agent = Agent.from_markdown(agent_path, default_provider='openai', default_model=('gpt-4o-mini',))
+    run = agent._create_run({'instruction': 'Explore the ruin.'})
+    agent.refresh_parameter_state(run)
+
+    class HostStub:
+        file_ref_resolver = DefaultFileReferenceResolver()
+        config = type('Config', (), {'skills_catalog_max_tokens': 2000})()
+
+    context = agent.build_context(host=HostStub(), run=run)
+    assert '<file name="context.txt">' in context.system_prompt
+    assert 'system context' in context.system_prompt
+    assert '@+context.txt' not in context.system_prompt
 
 
 def test_post_agent_hook_replace_is_default_and_append_is_opt_in() -> None:
