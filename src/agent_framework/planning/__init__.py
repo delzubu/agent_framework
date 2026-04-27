@@ -8,6 +8,7 @@ or via planning_override at call time.
 from .config import PlanningConfig
 from .plan_state import CompletedStep, PlanState, PlanStep
 from .step_reference import StepReferenceResolver, resolve as resolve_step_refs
+from .turn_driver import PlanningTurnDriver
 
 __all__ = [
     "PlanningConfig",
@@ -16,4 +17,5 @@ __all__ = [
     "PlanState",
     "StepReferenceResolver",
     "resolve_step_refs",
+    "PlanningTurnDriver",
 ]

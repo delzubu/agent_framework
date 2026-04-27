@@ -387,13 +387,12 @@ class Agent:
             self.planning_config is not None and self.planning_config.enabled
         )
         if planning_active:
-            # PlanningTurnDriver will be imported here once FEAT: PlanningTurnDriver lands.
-            # TODO(FEAT #63: PlanningTurnDriver): replace fallback with real driver.
-            _LOGGER.info(
-                "Planning active for agent %s (override=%s, config=%r) but "
-                "PlanningTurnDriver is not yet implemented; falling back to StandardTurnDriver",
-                self.agent_id, planning_override, self.planning_config,
-            )
+            from agent_framework.planning.turn_driver import PlanningTurnDriver
+            config = self.planning_config
+            if config is None:
+                from agent_framework.planning.config import PlanningConfig
+                config = PlanningConfig.default_enabled()
+            return PlanningTurnDriver(config=config)
         return StandardTurnDriver()
 
     def run(
@@ -623,7 +622,14 @@ class Agent:
         )
         return _merge_runtime_system_into_messages(ctx)
 
-    def decide(self, *, host: "AgentHostProtocol", run: AgentRun, context: ModelContext) -> AgentDecision:
+    def decide(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        context: ModelContext,
+        planning_active: bool = False,
+    ) -> AgentDecision:
         """Request and normalize the next decision from the configured model."""
         self._run_pre_model_hooks(run=run, caller_id=None, context=context)
         pre_model_hooks = getattr(host, "run_pre_model_hooks", None)
@@ -683,7 +689,7 @@ class Agent:
                 )
             )
         try:
-            return AgentDecision.from_model_response(response)
+            return AgentDecision.from_model_response(response, planning_active=planning_active)
         except BaseException as exc:
             validate_model_exception = getattr(host, "validate_model_exception", None)
             if not callable(validate_model_exception):

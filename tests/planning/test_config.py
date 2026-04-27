@@ -194,8 +194,8 @@ def test_agent_with_invalid_planning_block_raises(tmp_path: Path):
 
 
 def test_agent_planning_config_drives_select_turn_driver(tmp_path: Path):
-    """When planning_config.enabled is True, _select_turn_driver picks planning (logs + falls back for now)."""
-    from agent_framework.agents.turn_driver import StandardTurnDriver
+    """When planning_config.enabled is True, _select_turn_driver returns PlanningTurnDriver."""
+    from agent_framework.planning.turn_driver import PlanningTurnDriver
 
     agent_path = tmp_path / "planner.md"
     agent_path.write_text(
@@ -205,6 +205,5 @@ def test_agent_planning_config_drives_select_turn_driver(tmp_path: Path):
     agent = Agent.from_markdown(
         agent_path, default_provider="openai", default_model=("gpt-4o-mini",)
     )
-    # Until PlanningTurnDriver is implemented, falls back to StandardTurnDriver
     driver = agent._select_turn_driver(planning_override=None)
-    assert isinstance(driver, StandardTurnDriver)
+    assert isinstance(driver, PlanningTurnDriver)

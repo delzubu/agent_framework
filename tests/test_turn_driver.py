@@ -130,9 +130,8 @@ def test_planning_override_false_uses_standard_driver(tmp_path: Path):
     assert result.status == "completed"
 
 
-def test_planning_override_true_falls_back_gracefully(tmp_path: Path):
-    """planning_override=True falls back to StandardTurnDriver until PlanningTurnDriver
-    is implemented; must not raise and must complete normally."""
+def test_planning_override_true_uses_planning_driver(tmp_path: Path):
+    """planning_override=True selects PlanningTurnDriver; final_message in PLAN phase completes normally."""
     _make_agent(tmp_path)
     host = _make_host(tmp_path, [{"kind": "final_message", "message": "ok"}])
     result = host.run_agent("test_agent", "go", planning_override=True)
@@ -169,14 +168,16 @@ def test_select_turn_driver_returns_standard_for_none(tmp_path: Path):
     assert isinstance(driver, StandardTurnDriver)
 
 
-def test_select_turn_driver_returns_standard_for_true_until_planning_implemented(tmp_path: Path):
-    """Until PlanningTurnDriver is implemented, True still returns StandardTurnDriver."""
+def test_select_turn_driver_returns_planning_driver_for_true(tmp_path: Path):
+    """planning_override=True returns PlanningTurnDriver."""
+    from agent_framework.planning.turn_driver import PlanningTurnDriver
+
     agent_path = _make_agent(tmp_path)
     agent = Agent.from_markdown(
         agent_path, default_provider="openai", default_model=("gpt-4o-mini",)
     )
     driver = agent._select_turn_driver(planning_override=True)
-    assert isinstance(driver, StandardTurnDriver)
+    assert isinstance(driver, PlanningTurnDriver)
 
 
 # ---------------------------------------------------------------------------
