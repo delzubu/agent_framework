@@ -196,6 +196,8 @@ _SYSTEM_TEXT_TEMPLATE_PATH = Path(__file__).with_name("agents") / "system.text.m
 _SYSTEM_TEXT_TEMPLATE = _SYSTEM_TEXT_TEMPLATE_PATH.read_text(encoding="utf-8")
 _SYSTEM_JSON_OBJECT_TEMPLATE_PATH = Path(__file__).with_name("agents") / "system.json_object.md"
 _SYSTEM_JSON_OBJECT_TEMPLATE = _SYSTEM_JSON_OBJECT_TEMPLATE_PATH.read_text(encoding="utf-8")
+_SYSTEM_PLAN_EXECUTE_TEMPLATE_PATH = Path(__file__).with_name("agents") / "system.plan_execute.md"
+_SYSTEM_PLAN_EXECUTE_TEMPLATE = _SYSTEM_PLAN_EXECUTE_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
 def build_skills_catalog(skills: "tuple[CapabilityDefinition, ...]", max_tokens: int = 2000) -> str:
@@ -242,6 +244,7 @@ def runtime_prompt_source_paths(response_mode: str) -> tuple[Path, ...]:
     mode_map = {
         "decision": _SYSTEM_DECISION_TEMPLATE_PATH,
         "text": _SYSTEM_TEXT_TEMPLATE_PATH,
+        "plan_execute": _SYSTEM_PLAN_EXECUTE_TEMPLATE_PATH,
         DEFAULT_RESPONSE_MODE: _SYSTEM_JSON_OBJECT_TEMPLATE_PATH,
     }
     return (_SYSTEM_TEMPLATE_PATH, mode_map.get(response_mode, _SYSTEM_JSON_OBJECT_TEMPLATE_PATH))
@@ -321,6 +324,7 @@ class ModelDriverBase:
         mode_templates = {
             "decision": _SYSTEM_DECISION_TEMPLATE,
             "text": _SYSTEM_TEXT_TEMPLATE,
+            "plan_execute": _SYSTEM_PLAN_EXECUTE_TEMPLATE,
             DEFAULT_RESPONSE_MODE: _SYSTEM_JSON_OBJECT_TEMPLATE,
         }
         mode_prompt = mode_templates.get(context.response_mode, _SYSTEM_JSON_OBJECT_TEMPLATE).strip()

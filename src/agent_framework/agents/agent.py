@@ -608,11 +608,14 @@ class Agent:
             ),
             *run.conversation_messages,
         ]
+        planning_active = (
+            self.planning_config is not None and self.planning_config.enabled
+        )
         ctx = ModelContext(
             system_prompt=system_prompt,
             user_prompt=prompt,
             messages=tuple(message_history),
-            response_mode="json_object",
+            response_mode="plan_execute" if planning_active else "json_object",
             tools=tools,
             subagents=subagents,
             skills=skills,
