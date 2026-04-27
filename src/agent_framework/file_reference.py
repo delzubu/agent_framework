@@ -9,7 +9,7 @@ from typing import Callable, Protocol, runtime_checkable
 # Matches:
 #   @"path/with spaces.txt"   — quoted (any chars except newline/quote)
 #   @word.ext                 — unquoted with at least one dot (avoids @dataclass etc.)
-_REF_PATTERN = re.compile(r'@(?:"([^"\n]+)"|([^\s"@\n]*\.[^\s"@\n]+))')
+_REF_PATTERN = re.compile(r'@\+?(?:"([^"\n]+)"|([^\s"@\n]*\.[^\s"@\n]+))')
 _FILE_BLOCK_PATTERN = re.compile(r"<file\b(?P<attrs>[^>]*)>(?P<content>.*?)</file>", re.DOTALL | re.IGNORECASE)
 _FILE_ATTR_PATTERN = re.compile(r'([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)"')
 

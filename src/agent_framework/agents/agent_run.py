@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from agent_framework.memory import MemoryRef, MemoryScope
 
 from .call_context import CallContext
+
+if TYPE_CHECKING:
+    from agent_framework.planning.plan_state import PlanState
 
 
 @dataclass(slots=True)
@@ -31,5 +34,6 @@ class AgentRun:
     resolved_memory_refs: tuple[MemoryRef, ...] = ()
     memory_projection_requests: tuple[str, ...] = ()
     in_parallel_batch: bool = False
+    plan_state: "PlanState | None" = None
 
 __all__ = ["AgentRun"]

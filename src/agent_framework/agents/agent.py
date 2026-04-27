@@ -16,6 +16,7 @@ from jsonschema import validate as validate_json_schema
 import yaml
 
 from agent_framework.errors import ModelDriverError
+from agent_framework.file_reference import expand_file_refs
 from agent_framework.model import (
     CapabilityDefinition,
     ModelContext,
@@ -27,6 +28,10 @@ from agent_framework.model import (
 from agent_framework.model_validation import ModelValidationContext
 
 from .agent_behavior import AgentBehavior
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from agent_framework.planning.config import PlanningConfig
 from .agent_decision import AgentDecision, SubagentCallSpec
 from .agent_end_event import AgentEndEvent
 from .agent_end_hook_decision import AgentEndHookDecision
@@ -121,6 +126,29 @@ def _parse_parameters_injection(raw: Any, source_path: Path | None = None) -> st
     return value
 
 
+def _parse_planning_config(raw: Any, source_path: Path | None = None) -> "PlanningConfig | None":
+    """Parse the optional `planning:` frontmatter block into a PlanningConfig."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        from agent_framework.agents.helpers import AgentMarkdownError
+        raise AgentMarkdownError(
+            source_path=source_path or Path("<unknown>"),
+            detail=f"'planning' must be a YAML mapping, got {type(raw).__name__!r}.",
+            hint="Example: planning:\\n  enabled: true",
+        )
+    from agent_framework.planning.config import PlanningConfig
+    try:
+        return PlanningConfig.from_frontmatter(raw)
+    except ValueError as exc:
+        from agent_framework.agents.helpers import AgentMarkdownError
+        raise AgentMarkdownError(
+            source_path=source_path or Path("<unknown>"),
+            detail=str(exc),
+            hint="Check the 'planning:' block in the agent frontmatter.",
+        ) from exc
+
+
 def _subagent_result_payload(
     message: str,
     parameters: dict[str, Any] | None,
@@ -211,6 +239,7 @@ class Agent:
     source_path: Path | None = None
     terminal_tools: tuple[str, ...] = ()
     parameters_injection: str = "override"
+    planning_config: "PlanningConfig | None" = None
 
     @classmethod
     def from_markdown(
@@ -274,6 +303,7 @@ class Agent:
             parameters_injection=_parse_parameters_injection(
                 metadata.get("parameters_injection"), source_path
             ),
+            planning_config=_parse_planning_config(metadata.get("planning"), source_path),
         )
         agent._validate_template_contract()
         agent._attach_behaviors()
@@ -339,6 +369,32 @@ class Agent:
         except ValueError:
             return None
 
+    def _select_turn_driver(self, *, planning_override: bool | None) -> "TurnDriver":
+        """Choose a TurnDriver for this invocation.
+
+        Resolution order:
+            1. planning_override=False wins unconditionally → StandardTurnDriver.
+            2. planning_override=True → planning active (config defaults if no frontmatter).
+            3. self.planning_config.enabled → planning active with frontmatter config.
+            4. Default → StandardTurnDriver.
+        """
+        from .turn_driver import StandardTurnDriver  # local import avoids circular
+
+        if planning_override is False:
+            return StandardTurnDriver()
+
+        planning_active = planning_override is True or (
+            self.planning_config is not None and self.planning_config.enabled
+        )
+        if planning_active:
+            from agent_framework.planning.turn_driver import PlanningTurnDriver
+            config = self.planning_config
+            if config is None:
+                from agent_framework.planning.config import PlanningConfig
+                config = PlanningConfig.default_enabled()
+            return PlanningTurnDriver(config=config)
+        return StandardTurnDriver()
+
     def run(
         self,
         *,
@@ -351,6 +407,7 @@ class Agent:
         prompt_fragments: tuple[str, ...] | None = None,
         run_id: str | None = None,
         in_parallel_batch: bool = False,
+        planning_override: bool | None = None,
     ) -> AgentResult:
         """Execute the agent loop for one invocation.
 
@@ -426,16 +483,11 @@ class Agent:
                     caller_id=caller_id,
                     result=early_result,
                 )[0]
+            driver = self._select_turn_driver(planning_override=planning_override)
             while self.should_continue(run):
-                # The base loop is intentionally small so subclasses can override
-                # individual steps without replacing the lifecycle contract.
-                self.before_iteration(run)
-                decision = self.resolve_runtime_decision(run=run)
-                if decision is None:
-                    context = self.build_context(host=host, run=run)
-                    decision = self.decide(host=host, run=run, context=context)
-                outcome = self.dispatch_decision(host=host, run=run, decision=decision, caller_id=caller_id)
-                self.after_iteration(run)
+                outcome = driver.run_turn(
+                    agent=self, host=host, run=run, caller_id=caller_id,
+                )
                 if outcome is not None:
                     post_result, continue_run = self._run_post_agent_hooks(
                         host=host,
@@ -479,6 +531,10 @@ class Agent:
     def build_context(self, *, host: "AgentHostProtocol", run: AgentRun) -> ModelContext:
         """Assemble the provider-facing model context for the current run."""
         system_prompt = _apply_runtime_placeholders(self.system_prompt, run.placeholder_values)
+        resolver = getattr(host, "file_ref_resolver", None)
+        if resolver is not None:
+            base_dir = self.source_path.parent if self.source_path is not None else None
+            system_prompt = expand_file_refs(system_prompt, resolver, base_dir=base_dir)
         prompt = _apply_runtime_placeholders(run.rendered_prompt, run.placeholder_values)
         if run.prompt_fragments:
             # System and helper augmentations stay outside the original template
@@ -551,11 +607,14 @@ class Agent:
             ),
             *run.conversation_messages,
         ]
+        planning_active = (
+            self.planning_config is not None and self.planning_config.enabled
+        )
         ctx = ModelContext(
             system_prompt=system_prompt,
             user_prompt=prompt,
             messages=tuple(message_history),
-            response_mode="json_object",
+            response_mode="plan_execute" if planning_active else "json_object",
             tools=tools,
             subagents=subagents,
             skills=skills,
@@ -563,7 +622,14 @@ class Agent:
         )
         return _merge_runtime_system_into_messages(ctx)
 
-    def decide(self, *, host: "AgentHostProtocol", run: AgentRun, context: ModelContext) -> AgentDecision:
+    def decide(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        context: ModelContext,
+        planning_active: bool = False,
+    ) -> AgentDecision:
         """Request and normalize the next decision from the configured model."""
         self._run_pre_model_hooks(run=run, caller_id=None, context=context)
         pre_model_hooks = getattr(host, "run_pre_model_hooks", None)
@@ -623,7 +689,7 @@ class Agent:
                 )
             )
         try:
-            return AgentDecision.from_model_response(response)
+            return AgentDecision.from_model_response(response, planning_active=planning_active)
         except BaseException as exc:
             validate_model_exception = getattr(host, "validate_model_exception", None)
             if not callable(validate_model_exception):
