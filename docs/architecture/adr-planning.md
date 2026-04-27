@@ -3,7 +3,7 @@
 **Status:** Accepted (design phase). Implementation tracked under EPIC: Planning support.
 **Date:** 2026-04-26
 **Branch:** `feature/planning-support`
-**Companion research:** `research/planning_agents/` (six reports — read `00_synthesis.md` first).
+**Companion research:** `docs/research/planning_agents/` (six reports — read `00_synthesis.md` first).
 
 ---
 
@@ -1100,12 +1100,12 @@ These are explicit non-goals for v1 but the architecture must accommodate them:
 
 ## 20. References
 
-- `research/planning_agents/00_synthesis.md` — full design synthesis with citations.
-- `research/planning_agents/01_claude_code.md` — TodoWriteTool, Plan Mode, AgentTool patterns.
-- `research/planning_agents/02_nano_claude_code.md` — persistent Task store, threaded sub-agents.
-- `research/planning_agents/03_langgraph.md` — Plan-and-Execute, ReWOO, LLMCompiler.
-- `research/planning_agents/04_microsoft_agent_framework.md` — Magentic, Handoff, Workflow.
-- `research/planning_agents/05_other_frameworks.md` — OpenAI Agents SDK, CrewAI, AutoGPT, ReAct/Plan-and-Solve/Reflexion/ToT, Anthropic guide, OpenHands.
+- `docs/research/planning_agents/00_synthesis.md` — full design synthesis with citations.
+- `docs/research/planning_agents/01_claude_code.md` — TodoWriteTool, Plan Mode, AgentTool patterns.
+- `docs/research/planning_agents/02_nano_claude_code.md` — persistent Task store, threaded sub-agents.
+- `docs/research/planning_agents/03_langgraph.md` — Plan-and-Execute, ReWOO, LLMCompiler.
+- `docs/research/planning_agents/04_microsoft_agent_framework.md` — Magentic, Handoff, Workflow.
+- `docs/research/planning_agents/05_other_frameworks.md` — OpenAI Agents SDK, CrewAI, AutoGPT, ReAct/Plan-and-Solve/Reflexion/ToT, Anthropic guide, OpenHands.
 - `agent-adventure/agents/player_controller.md` — reference use case (this is the spec the design serves).
 - `CLAUDE.md` — non-negotiable rules on structured model output.
 
