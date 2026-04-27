@@ -30,11 +30,16 @@ This document captures the exact state of implementation so an incoming agent ca
 | #65 | Safety caps and plan validation error recovery — `max_steps`, `max_plan_revisions` caps with 80% warnings; step exception handling; consecutive validation failure recovery | `src/agent_framework/planning/turn_driver.py`, `src/agent_framework/planning/plan_state.py`, `tests/planning/test_planning_turn_driver_safety.py` |
 | #66 | `system.plan_execute.md` — planning system prompt template; `response_mode: plan_execute`; `build_context` wiring | `src/agent_framework/agents/system.plan_execute.md`, `src/agent_framework/model.py`, `src/agent_framework/agents/agent.py`, `tests/planning/test_system_plan_execute.md` |
 
+### Done — merged into `feature/planning-support`
+
+| FEAT | Description | Key files |
+|------|-------------|-----------|
+| #67 | `player_controller` planning integration — rewrote agent with `planning: enabled: true`; two-phase plan (parallel retrieval + intent parsing → object details + routing); committed to agent-adventure `main` | `agent-adventure/agents/player_controller.md` |
+
 ### Not done
 
 | FEAT / Issue | Description | Notes |
 |---|---|---|
-| #67 | End-to-end integration with `player_controller` | Update `player_controller.md` frontmatter to add `planning: enabled: true`. Run existing evaluator suite, compare against baseline. See ADR §16. |
 | #74 | Review planning documentation — TOC presence and reading narrative | Review `docs/architecture/adr-planning.md` for TOC and narrative completeness. |
 
 ---
