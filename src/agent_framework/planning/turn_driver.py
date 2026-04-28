@@ -689,6 +689,7 @@ class PlanningTurnDriver:
         return AgentResult(
             status="completed",
             message=decision.message,
+            parameters=decision.parameters if decision.parameters else None,
             decision=decision,
             prompt=run.rendered_prompt,
         )

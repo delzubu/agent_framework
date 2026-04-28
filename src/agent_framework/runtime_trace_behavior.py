@@ -302,7 +302,7 @@ class RuntimeTraceBehavior(AgentBehavior):
             return None
         inv = event.invocation
         try:
-            decision = AgentDecision.from_model_response(event.response)
+            decision = AgentDecision.from_model_response(event.response, planning_active=True)
             payload = _decision_payload(decision)
         except Exception:
             payload = {"error": "could_not_parse_decision", "raw": event.response.content if hasattr(event.response, "content") else None}
