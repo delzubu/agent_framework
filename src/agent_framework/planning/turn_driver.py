@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _future
 from typing import TYPE_CHECKING, Any
 
 from agent_framework.agents.agent_decision import AgentDecision
-from agent_framework.planning.plan_state import CompletedStep, PlanState, PlanStep
+from agent_framework.planning.plan_state import CompletedStep, PlanState, PlanStep, plan_step_to_dict
 from agent_framework.planning.step_reference import resolve as _default_resolve
 
 if TYPE_CHECKING:
@@ -135,6 +135,34 @@ def _inject_cap_reminder(run: "AgentRun", *, cap: str, detail: str) -> None:
     )
     run.conversation_messages.append({"role": "user", "content": reminder})
     run.prompt_fragments.append(reminder)
+
+
+def _emit_plan_updated(
+    run: "AgentRun",
+    agent: "Agent",
+    *,
+    is_initial: bool,
+    previous_plan: "tuple[PlanStep, ...] | None",
+) -> None:
+    """Emit a plan_updated named event after PlanState.plan has been mutated."""
+    from agent_framework.agent_event_publisher import agent_events
+
+    plan_state = run.plan_state
+    new_ids = {s.id for s in plan_state.plan}
+    prev_ids = {s.id for s in previous_plan} if previous_plan else set()
+    agent_events.audit_named_event(
+        run_id=run.run_id,
+        agent_id=agent.agent_id,
+        event={
+            "type": "plan_updated",
+            "is_initial": is_initial,
+            "plan_revision": plan_state.plan_revision,
+            "step_count": len(plan_state.plan),
+            "added_step_ids": sorted(new_ids - prev_ids),
+            "dropped_step_ids": sorted(prev_ids - new_ids),
+            "plan": [plan_step_to_dict(s) for s in plan_state.plan],
+        },
+    )
 
 
 def _dispatch_step(
@@ -377,6 +405,7 @@ class PlanningTurnDriver:
                 "Planning: plan submitted for agent %s — %d steps",
                 agent.agent_id, len(decision.plan),
             )
+            _emit_plan_updated(run, agent, is_initial=True, previous_plan=None)
             _inject_reminder(run, plan_state, end_of_plan=False)
             return None
 
@@ -586,6 +615,7 @@ class PlanningTurnDriver:
                 detail=f"max_plan_revisions={max_revisions} exceeded",
             )
 
+        previous_plan = plan_state.plan
         new_step_ids = {s.id for s in decision.plan}
         for dropped_id in list(plan_state.step_results):
             if dropped_id not in new_step_ids:
@@ -602,6 +632,7 @@ class PlanningTurnDriver:
             "Planning: agent %s re-planned (revision %d) — %d steps",
             agent.agent_id, plan_state.plan_revision, len(decision.plan),
         )
+        _emit_plan_updated(run, agent, is_initial=False, previous_plan=previous_plan)
         _inject_reminder(run, plan_state, end_of_plan=False)
         return None
 

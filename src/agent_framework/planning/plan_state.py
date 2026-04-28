@@ -110,4 +110,19 @@ class PlanState:
     consecutive_validation_failures: int = 0
 
 
-__all__ = ["PlanStep", "CompletedStep", "PlanState"]
+def plan_step_to_dict(step: PlanStep) -> dict[str, Any]:
+    """Serialize a PlanStep to a plain dict suitable for trace event payloads."""
+    return {
+        "id": step.id,
+        "kind": step.kind,
+        "tool_name": step.tool_name,
+        "subagent_id": step.subagent_id,
+        "skill_name": step.skill_name,
+        "callback_intent": step.callback_intent,
+        "depends_on": list(step.depends_on),
+        "message": step.message,
+        "parameters": dict(step.parameters),
+    }
+
+
+__all__ = ["PlanStep", "CompletedStep", "PlanState", "plan_step_to_dict"]

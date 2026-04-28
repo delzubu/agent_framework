@@ -1586,6 +1586,7 @@ function classifyEventKind(kind) {
   if (kind.includes("decision")) return { icon: "◎", cssClass: "trace-event--decision" };
   if (kind.includes("model_call")) return { icon: "⊡", cssClass: "trace-event--model" };
   if (kind.includes("context_updated")) return { icon: "≡", cssClass: "trace-event--context" };
+  if (kind.includes("plan_updated")) return { icon: "📋", cssClass: "trace-event--plan" };
   return null;
 }
 
@@ -1954,6 +1955,78 @@ function appendTraceEventRow(event) {
   traceFeed.scrollTop = traceFeed.scrollHeight;
 }
 
+/** Groups flat plan steps into ordered ready-batches using depends_on DAG. */
+function groupPlanIntoBatches(plan) {
+  if (!Array.isArray(plan) || plan.length === 0) return [];
+  const batches = [];
+  const emitted = new Set();
+  while (emitted.size < plan.length) {
+    const batch = plan.filter(s => {
+      if (emitted.has(s.id)) return false;
+      const deps = Array.isArray(s.depends_on) ? s.depends_on : [];
+      return deps.every(d => emitted.has(d));
+    });
+    if (batch.length === 0) break; // cycle guard
+    for (const s of batch) emitted.add(s.id);
+    batches.push(batch);
+  }
+  return batches;
+}
+
+/** Renders plan steps grouped into parallel/sequential batches. */
+function buildPlanBatchesElement(plan) {
+  const container = document.createElement("div");
+  container.className = "flow-plan-batches";
+  const batches = groupPlanIntoBatches(plan);
+  batches.forEach((batch, i) => {
+    const batchEl = document.createElement("div");
+    batchEl.className = "flow-plan-batch";
+    const mode = batch.length > 1 ? "parallel" : "sequential";
+    const label = document.createElement("span");
+    label.className = "flow-plan-batch-label";
+    label.textContent = `${mode === "parallel" ? "⊕" : "→"} batch ${i + 1} (${mode})`;
+    batchEl.appendChild(label);
+    const stepsEl = document.createElement("div");
+    stepsEl.className = `flow-plan-batch-steps flow-plan-batch-steps--${mode}`;
+    for (const step of batch) {
+      const stepEl = document.createElement("div");
+      stepEl.className = "flow-plan-step";
+      const kind = step.kind || "";
+      const name = step.tool_name || step.subagent_id || step.skill_name || step.callback_intent || "";
+      stepEl.textContent = `↳ ${step.id}  (${kind}${name ? ": " + name : ""})`;
+      stepsEl.appendChild(stepEl);
+    }
+    batchEl.appendChild(stepsEl);
+    container.appendChild(batchEl);
+  });
+  return container;
+}
+
+/** Builds a custom trace-pane row for a plan_updated event. */
+function buildPlanUpdatedTraceRow(event, planEvent) {
+  const node = document.createElement("details");
+  node.className = "trace-event-row trace-feed-row trace-event--plan";
+  node.dataset.channel = typeof event.channel === "string" ? event.channel : "runtime";
+  node.dataset.level = "info";
+  const rev = planEvent.plan_revision || 1;
+  const count = planEvent.step_count || 0;
+  const added = Array.isArray(planEvent.added_step_ids) ? planEvent.added_step_ids.length : 0;
+  const dropped = Array.isArray(planEvent.dropped_step_ids) ? planEvent.dropped_step_ids.length : 0;
+  const diffStr = planEvent.is_initial ? "" : ` (+${added} / -${dropped})`;
+  const summary = document.createElement("summary");
+  summary.textContent = `📋 plan updated: revision ${rev} — ${count} steps${diffStr}`;
+  const body = document.createElement("div");
+  body.className = "trace-event-body";
+  const plan = Array.isArray(planEvent.plan) ? planEvent.plan : [];
+  if (plan.length > 0) {
+    body.appendChild(buildPlanBatchesElement(plan));
+  }
+  body.appendChild(renderPayloadTree(event.payload || {}));
+  node.appendChild(summary);
+  node.appendChild(body);
+  return node;
+}
+
 function buildFlowNode(runId, depth) {
   const fr = runFrames.get(runId);
   if (!fr) return null;
@@ -1980,6 +2053,27 @@ function buildFlowNode(runId, depth) {
     setTimeout(() => fr.details.classList.remove("flow-highlight"), 1500);
   });
   node.appendChild(pill);
+
+  if (fr.planUpdates && fr.planUpdates.length > 0) {
+    for (const pu of fr.planUpdates) {
+      const puEl = document.createElement("details");
+      puEl.className = "flow-plan-update";
+      puEl.style.marginLeft = `${(depth + 1) * 20}px`;
+      const rev = pu.plan_revision || 1;
+      const count = pu.step_count || 0;
+      const added = Array.isArray(pu.added_step_ids) ? pu.added_step_ids.length : 0;
+      const dropped = Array.isArray(pu.dropped_step_ids) ? pu.dropped_step_ids.length : 0;
+      const diffStr = pu.is_initial ? "" : ` (+${added} / -${dropped})`;
+      const puSummary = document.createElement("summary");
+      puSummary.textContent = `📋 plan updated: v${rev} (${count} steps${diffStr})`;
+      puEl.appendChild(puSummary);
+      const plan = Array.isArray(pu.plan) ? pu.plan : [];
+      if (plan.length > 0) {
+        puEl.appendChild(buildPlanBatchesElement(plan));
+      }
+      node.appendChild(puEl);
+    }
+  }
 
   const childrenWithBatch = [];
   for (const [bid, bf] of batchFrames) {
@@ -2082,6 +2176,23 @@ function routeTraceEvent(event) {
     }
     if (eventType === "subagent_batch_finished") {
       endBatchFrame(event);
+      return;
+    }
+    if (eventType === "plan_updated") {
+      const rid = getEventRunId(event);
+      const node = buildPlanUpdatedTraceRow(event, batchEvent);
+      const container = resolveRunContainer(rid);
+      container.appendChild(node);
+      const entry = { el: node, event };
+      unifiedEntries.push(entry);
+      setEntryVisible(entry);
+      traceFeed.scrollTop = traceFeed.scrollHeight;
+      if (rid && runFrames.has(rid)) {
+        const fr = runFrames.get(rid);
+        if (!fr.planUpdates) fr.planUpdates = [];
+        fr.planUpdates.push(batchEvent);
+        rebuildFlowTab();
+      }
       return;
     }
   }
