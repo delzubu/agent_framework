@@ -16,6 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _futures_wait
 from typing import TYPE_CHECKING, Any
 
+from agent_framework.agents.agent import _subagent_result_payload
 from agent_framework.agents.agent_decision import AgentDecision
 from agent_framework.planning.plan_state import CompletedStep, PlanState, PlanStep, plan_step_to_dict
 from agent_framework.planning.step_reference import resolve as _default_resolve
@@ -197,7 +198,11 @@ def _dispatch_step(
                 parameters=params,
                 parent_run_id=run.run_id,
             )
-            result = agent_result.message
+            result = _subagent_result_payload(
+                agent_result.message,
+                agent_result.parameters,
+                agent_result.parameters_injection,
+            )
 
         elif step.kind == "invoke_skill":
             # Delegate to the agent's skill invocation handler.
