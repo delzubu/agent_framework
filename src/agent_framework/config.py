@@ -3,14 +3,25 @@
 This module keeps `.env` parsing isolated from the runtime classes so the
 execution layer can depend on a typed configuration object instead of raw
 environment strings.
+
+## Source priority (lowest → highest)
+
+1. Code defaults (field defaults on ``_RawSettings``)
+2. Environment variables (``os.environ``)
+3. Startup ``.env`` file (the path passed to :func:`load_host_config`)
+4. CLI-specified ``.env`` file (``cli_env`` argument)
+5. Explicit ``overrides`` dict (for programmatic / test use)
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOGGER = logging.getLogger(__name__)
 DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES = 32768
@@ -104,115 +115,266 @@ class HostConfig:
         return self.default_model
 
 
-def load_host_config(env_path: str | Path = ".env") -> HostConfig:
-    """Load typed host configuration from a `.env` file.
+class _RawSettings(BaseSettings):
+    """Internal pydantic-settings model for multi-source configuration loading.
+
+    All values are stored as raw strings; type conversion and path resolution
+    happen in :func:`load_host_config`.
+
+    Source priority (highest → lowest):
+
+    1. ``overrides`` passed to :meth:`load` (init kwargs)
+    2. CLI-specified ``.env`` file
+    3. Startup ``.env`` file
+    4. Environment variables (``os.environ``)
+    5. Field defaults below
+
+    Field names are the lowercase equivalents of the corresponding env-var
+    names, so pydantic-settings resolves them automatically (e.g.
+    ``openai_api_key`` ↔ ``OPENAI_API_KEY``).
+    """
+
+    model_config = SettingsConfigDict(
+        env_ignore_empty=True,
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    # ── Core ──────────────────────────────────────────────────────────────
+    openai_api_key: str = ""
+    default_provider: str = "openai"
+    default_model: str = "gpt-4o-mini"
+
+    # ── Directory paths (raw strings; resolved relative to env-file dir) ──
+    agent_directory: str = "agents"
+    agents_local_path: str = ""
+    tools_directory: str = "tools"
+    tools_local_path: str = ""
+    world_directory: str = "world"
+    world_local_path: str = ""
+    root_agent: str = "root"
+
+    # ── Agent model overrides ─────────────────────────────────────────────
+    agent_models: str = ""
+
+    # ── Skills ────────────────────────────────────────────────────────────
+    skills_directory: str = ""
+    skills_local_path: str = ""
+    skills_directories: str = ""
+    skills_local_directories: str = ""
+    skills_catalog_max_tokens: str = ""
+
+    # ── DIAL provider ─────────────────────────────────────────────────────
+    dial_base_url: str = ""
+    dial_api_version: str = "2024-10-21"
+    dial_api_key: str = ""
+
+    # ── Commands ──────────────────────────────────────────────────────────
+    commands_directory: str = ""
+    commands_directories: str = ""
+
+    # ── MCP ───────────────────────────────────────────────────────────────
+    mcp_config_path: str = ""
+    mcp_enabled: str = "true"
+
+    # ── Policies ──────────────────────────────────────────────────────────
+    missing_tool_policy: str = "graceful"
+
+    # ── Memory subsystem ──────────────────────────────────────────────────
+    memory_enabled: str = "true"
+    memory_auto_store_threshold_bytes: str = ""
+    memory_builtin_tools_enabled: str = "true"
+    memory_default_projection_mode: str = "catalog_and_selected_content"
+    memory_backend: str = "memory"
+    memory_query_provider: str = "catalog"
+    memory_projector: str = "xml"
+    memory_global_scopes: str = ""
+    memory_group_scopes: str = ""
+    memory_use_case_scopes: str = ""
+    memory_enable_agent_scope: str = "false"
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        **_kwargs: Any,
+    ) -> tuple[Any, ...]:
+        # dotenv files take priority over env vars so that a project-local
+        # .env can override system-wide variables set in the shell.
+        return (init_settings, dotenv_settings, env_settings)
+
+    @classmethod
+    def load(
+        cls,
+        startup_env: Path | None = None,
+        cli_env: Path | None = None,
+        overrides: dict[str, str] | None = None,
+    ) -> "_RawSettings":
+        """Merge all configuration sources and return a populated instance.
+
+        Args:
+            startup_env: Path to the startup-directory ``.env`` file.
+            cli_env: Optional second ``.env`` file (e.g. from ``--env`` CLI
+                flag) that takes priority over ``startup_env``.
+            overrides: Explicit key/value pairs that override every other
+                source.  Keys may be uppercase env-var names or lowercase
+                field names.
+        """
+        env_files: list[Path] = []
+        if startup_env is not None and startup_env.exists():
+            env_files.append(startup_env)
+        if cli_env is not None and cli_env.exists():
+            env_files.append(cli_env)
+
+        # Accept uppercase env-var names in overrides and convert to field
+        # names (lowercase) so pydantic init kwargs work correctly.
+        kwargs: dict[str, Any] = {k.lower(): v for k, v in (overrides or {}).items()}
+
+        return cls(
+            _env_file=tuple(env_files) if env_files else None,
+            _env_file_encoding="utf-8",
+            **kwargs,
+        )
+
+
+def load_host_config(
+    env_path: str | Path = ".env",
+    *,
+    cli_env: str | Path | None = None,
+    overrides: dict[str, str] | None = None,
+) -> HostConfig:
+    """Load typed host configuration from layered sources.
+
+    Sources are merged from lowest to highest priority:
+
+    1. Code defaults
+    2. Environment variables (``os.environ``)
+    3. Startup ``.env`` file (``env_path``)
+    4. CLI-specified ``.env`` file (``cli_env``)
+    5. ``overrides`` dict (for programmatic / test use)
 
     Args:
-        env_path: Path to the `.env` file.
+        env_path: Path to the startup ``.env`` file (may not exist).
+        cli_env: Optional second ``.env`` file whose values override those
+            from ``env_path``.
+        overrides: Explicit string values that override every other source.
+            Keys may be uppercase env-var names (``"OPENAI_API_KEY"``) or
+            lowercase field names (``"openai_api_key"``).
 
     Returns:
-        A fully resolved `HostConfig` instance.
+        A fully resolved ``HostConfig`` instance.
     """
-    env_file = Path(env_path)
-    values = _parse_env_file(env_file)
-    if env_file.exists():
-        _LOGGER.debug("loaded host config from %s", env_file.resolve())
+    startup_env = Path(env_path)
+    cli_env_path = Path(cli_env) if cli_env else None
+
+    if startup_env.exists():
+        _LOGGER.debug("loaded host config from %s", startup_env.resolve())
     else:
-        _LOGGER.debug("env file not found at %s, using defaults", env_file.resolve())
-    default_provider = values.get("DEFAULT_PROVIDER", "openai")
-    raw_default_model = values.get("DEFAULT_MODEL", "gpt-4o-mini")
+        _LOGGER.debug("env file not found at %s, using defaults", startup_env.resolve())
+
+    raw = _RawSettings.load(startup_env, cli_env_path, overrides)
+
+    # Base directory for relative path resolution: the startup env file's
+    # parent when it exists, otherwise the current working directory.
+    base_dir = startup_env.parent if startup_env.exists() else Path.cwd()
+
     default_model: tuple[str, ...] = tuple(
-        m.strip() for m in raw_default_model.split(",") if m.strip()
+        m.strip() for m in raw.default_model.split(",") if m.strip()
     ) or ("gpt-4o-mini",)
     agent_directory = _resolve_config_path(
-        env_file,
-        values.get("AGENTS_LOCAL_PATH", "").strip() or values.get("AGENT_DIRECTORY", "").strip(),
+        base_dir,
+        raw.agents_local_path.strip() or raw.agent_directory.strip(),
         default_relative="agents",
     )
     tools_directory = _resolve_config_path(
-        env_file,
-        values.get("TOOLS_LOCAL_PATH", "").strip() or values.get("TOOLS_DIRECTORY", "").strip(),
+        base_dir,
+        raw.tools_local_path.strip() or raw.tools_directory.strip(),
         default_relative="tools",
     )
     world_directory = _resolve_config_path(
-        env_file,
-        values.get("WORLD_LOCAL_PATH", "").strip() or values.get("WORLD_DIRECTORY", "").strip(),
+        base_dir,
+        raw.world_local_path.strip() or raw.world_directory.strip(),
         default_relative="world",
     )
-    root_agent_id = values.get("ROOT_AGENT", "root").strip()
-    raw_multi = values.get("SKILLS_DIRECTORIES", "").strip() or values.get("SKILLS_LOCAL_DIRECTORIES", "").strip()
-    raw_single = values.get("SKILLS_DIRECTORY", "").strip() or values.get("SKILLS_LOCAL_PATH", "").strip()
+    root_agent_id = raw.root_agent.strip()
+
+    raw_multi = raw.skills_directories.strip() or raw.skills_local_directories.strip()
+    raw_single = raw.skills_directory.strip() or raw.skills_local_path.strip()
     if raw_multi:
         skills_directories: tuple[Path, ...] = tuple(
-            (env_file.parent / p.strip()).resolve()
+            (base_dir / p.strip()).resolve()
             for p in raw_multi.split(",")
             if p.strip()
         )
     elif raw_single:
-        skills_directories = ((env_file.parent / raw_single.strip()).resolve(),)
+        skills_directories = ((base_dir / raw_single).resolve(),)
     else:
-        default = (env_file.parent / "skills").resolve()
+        default = (base_dir / "skills").resolve()
         skills_directories = (default,) if default.is_dir() else ()
-    raw_max_tokens = values.get("SKILLS_CATALOG_MAX_TOKENS", "")
-    skills_catalog_max_tokens = int(raw_max_tokens) if raw_max_tokens.strip() else 2000
-    # Commands directories
-    raw_commands_multi = values.get("COMMANDS_DIRECTORIES", "")
-    raw_commands_single = values.get("COMMANDS_DIRECTORY", "")
+
+    raw_max_tokens = raw.skills_catalog_max_tokens.strip()
+    skills_catalog_max_tokens = int(raw_max_tokens) if raw_max_tokens else 2000
+
+    raw_commands_multi = raw.commands_directories.strip()
+    raw_commands_single = raw.commands_directory.strip()
     if raw_commands_multi:
         commands_directories: tuple[Path, ...] = tuple(
-            (env_file.parent / p.strip()).resolve()
+            (base_dir / p.strip()).resolve()
             for p in raw_commands_multi.split(",")
             if p.strip()
         )
     elif raw_commands_single:
-        commands_directories = ((env_file.parent / raw_commands_single.strip()).resolve(),)
+        commands_directories = ((base_dir / raw_commands_single).resolve(),)
     else:
         commands_directories = ()
 
-    # MCP config
-    raw_mcp_config_path = values.get("MCP_CONFIG_PATH", "").strip()
-    mcp_config_path: Path | None = (env_file.parent / raw_mcp_config_path).resolve() if raw_mcp_config_path else None
-    mcp_enabled = values.get("MCP_ENABLED", "true").strip().lower() not in ("false", "0", "no")
-    raw_missing_tool = values.get("MISSING_TOOL_POLICY", "graceful").strip().lower()
-    if raw_missing_tool in ("strict", "fail", "error"):
-        missing_tool_policy: Literal["graceful", "strict"] = "strict"
-    else:
-        missing_tool_policy = "graceful"
-    memory_enabled = values.get("MEMORY_ENABLED", "true").strip().lower() not in ("false", "0", "no")
-    raw_memory_threshold = values.get("MEMORY_AUTO_STORE_THRESHOLD_BYTES", "").strip()
+    raw_mcp = raw.mcp_config_path.strip()
+    mcp_config_path: Path | None = (base_dir / raw_mcp).resolve() if raw_mcp else None
+    mcp_enabled = raw.mcp_enabled.strip().lower() not in ("false", "0", "no")
+
+    raw_missing_tool = raw.missing_tool_policy.strip().lower()
+    missing_tool_policy: Literal["graceful", "strict"] = (
+        "strict" if raw_missing_tool in ("strict", "fail", "error") else "graceful"
+    )
+
+    memory_enabled = raw.memory_enabled.strip().lower() not in ("false", "0", "no")
+    raw_memory_threshold = raw.memory_auto_store_threshold_bytes.strip()
     memory_auto_store_threshold_bytes = (
         int(raw_memory_threshold) if raw_memory_threshold else DEFAULT_MEMORY_AUTO_STORE_THRESHOLD_BYTES
     )
     memory_builtin_tools_enabled = (
-        values.get("MEMORY_BUILTIN_TOOLS_ENABLED", "true").strip().lower() not in ("false", "0", "no")
+        raw.memory_builtin_tools_enabled.strip().lower() not in ("false", "0", "no")
     )
     memory_default_projection_mode = (
-        values.get("MEMORY_DEFAULT_PROJECTION_MODE", "catalog_and_selected_content").strip()
-        or "catalog_and_selected_content"
+        raw.memory_default_projection_mode.strip() or "catalog_and_selected_content"
     )
-    memory_backend_kind = values.get("MEMORY_BACKEND", "memory").strip() or "memory"
-    memory_query_provider_kind = values.get("MEMORY_QUERY_PROVIDER", "catalog").strip() or "catalog"
-    memory_projector_kind = values.get("MEMORY_PROJECTOR", "xml").strip() or "xml"
-    memory_global_scopes = _parse_csv_values(values.get("MEMORY_GLOBAL_SCOPES", ""))
-    memory_group_scopes = _parse_csv_values(values.get("MEMORY_GROUP_SCOPES", ""))
-    memory_use_case_scopes = _parse_csv_values(values.get("MEMORY_USE_CASE_SCOPES", ""))
+    memory_backend_kind = raw.memory_backend.strip() or "memory"
+    memory_query_provider_kind = raw.memory_query_provider.strip() or "catalog"
+    memory_projector_kind = raw.memory_projector.strip() or "xml"
+    memory_global_scopes = _parse_csv_values(raw.memory_global_scopes)
+    memory_group_scopes = _parse_csv_values(raw.memory_group_scopes)
+    memory_use_case_scopes = _parse_csv_values(raw.memory_use_case_scopes)
     memory_enable_agent_scope = (
-        values.get("MEMORY_ENABLE_AGENT_SCOPE", "false").strip().lower() in ("true", "1", "yes", "on")
+        raw.memory_enable_agent_scope.strip().lower() in ("true", "1", "yes", "on")
     )
+
     return HostConfig(
-        openai_api_key=values.get("OPENAI_API_KEY", ""),
-        default_provider=default_provider,
+        openai_api_key=raw.openai_api_key,
+        default_provider=raw.default_provider,
         default_model=default_model,
         agent_directory=agent_directory,
         tools_directory=tools_directory,
         world_directory=world_directory,
         root_agent_id=root_agent_id,
-        agent_models=_parse_agent_models(values.get("AGENT_MODELS", "")),
+        agent_models=_parse_agent_models(raw.agent_models),
         skills_directories=skills_directories,
         skills_catalog_max_tokens=skills_catalog_max_tokens,
-        dial_base_url=values.get("DIAL_BASE_URL", ""),
-        dial_api_version=values.get("DIAL_API_VERSION", "2024-10-21"),
-        dial_api_key=values.get("DIAL_API_KEY", ""),
+        dial_base_url=raw.dial_base_url,
+        dial_api_version=raw.dial_api_version,
+        dial_api_key=raw.dial_api_key,
         commands_directories=commands_directories,
         mcp_config_path=mcp_config_path,
         mcp_enabled=mcp_enabled,
@@ -231,13 +393,13 @@ def load_host_config(env_path: str | Path = ".env") -> HostConfig:
     )
 
 
-def _resolve_config_path(env_file: Path, raw: str, *, default_relative: str) -> Path:
-    """Resolve a path from ``.env``: absolute paths as-is, else relative to the env file's parent."""
+def _resolve_config_path(base_dir: Path, raw: str, *, default_relative: str) -> Path:
+    """Resolve a path value: absolute paths as-is, relative paths resolved against ``base_dir``."""
     text = (raw or "").strip() or default_relative
     candidate = Path(text)
     if candidate.is_absolute():
         return candidate.resolve()
-    return (env_file.parent / candidate).resolve()
+    return (base_dir / candidate).resolve()
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -299,16 +461,17 @@ def _strip_quotes(value: str) -> str:
 
 
 def read_optional_path_relative_to_env_file(env_file: Path, key: str) -> Path | None:
-    """Return a filesystem path from a single key in ``.env``, or ``None`` if missing or empty.
+    """Return a filesystem path from a single key, or ``None`` if missing or empty.
 
+    Lookup order: ``.env`` file value (if present) → ``os.environ`` fallback.
     Relative values resolve against the directory containing the env file (same
     rules as :func:`load_host_config`).
     """
-    values = _parse_env_file(env_file)
-    raw = values.get(key, "").strip()
+    file_values = _parse_env_file(env_file)
+    raw = (file_values.get(key) or os.environ.get(key, "")).strip()
     if not raw:
         return None
-    return _resolve_config_path(env_file, raw, default_relative=".")
+    return _resolve_config_path(env_file.parent, raw, default_relative=".")
 
 
 __all__ = [
