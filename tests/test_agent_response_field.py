@@ -51,15 +51,11 @@ def test_parser_no_response_no_deprecation_warning_for_non_final_message(caplog)
     assert not any("Deprecated" in r.message for r in caplog.records)
 
 
-def test_parser_parameters_on_final_message_emits_deprecation(caplog):
-    with caplog.at_level(logging.WARNING):
-        decision = AgentDecision.from_model_response(
+def test_parser_parameters_on_final_message_raises():
+    with pytest.raises(ValueError, match="final_message with structured output must use 'response'"):
+        AgentDecision.from_model_response(
             _resp({"kind": "final_message", "message": "done", "parameters": {"x": 42}}),
         )
-    # Phase 1: response is NOT mirrored from parameters — only a deprecation warning fires.
-    assert decision.response is None
-    assert decision.parameters == {"x": 42}
-    assert any("Deprecated" in r.message for r in caplog.records)
 
 
 def test_parser_response_none_when_not_set():

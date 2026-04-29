@@ -109,23 +109,6 @@ def _emit_context_updated(
     )
 
 
-_PARAMETERS_INJECTION_VALUES = frozenset(("override", "append", "ignore"))
-
-
-def _parse_parameters_injection(raw: Any, source_path: Path | None = None) -> str:
-    """Validate and normalise a ``parameters_injection`` frontmatter value."""
-    if raw is None:
-        return "override"
-    value = str(raw).strip().lower()
-    if value not in _PARAMETERS_INJECTION_VALUES:
-        raise AgentMarkdownError(
-            source_path=source_path or Path("<unknown>"),
-            detail=f"Invalid parameters_injection value {raw!r}.",
-            hint=f"Must be one of: {sorted(_PARAMETERS_INJECTION_VALUES)}",
-        )
-    return value
-
-
 def _parse_planning_config(raw: Any, source_path: Path | None = None) -> "PlanningConfig | None":
     """Parse the optional `planning:` frontmatter block into a PlanningConfig."""
     if raw is None:
@@ -150,47 +133,12 @@ def _parse_planning_config(raw: Any, source_path: Path | None = None) -> "Planni
 
 
 def _render_result_for_injection(result: Any) -> str:
-    """Render an AgentResult for injection into a parent conversation.
-
-    Prefers the typed envelope when *response* is set; falls back to the
-    legacy _subagent_result_payload serialization otherwise.
-    """
+    """Render an AgentResult for injection into a parent conversation."""
     from agent_framework.agents.result_envelope import render_subagent_envelope
-    response = getattr(result, "response", None)
-    if response is not None:
-        return render_subagent_envelope(message=result.message, response=response)
-    return _subagent_result_payload(
-        result.message,
-        getattr(result, "parameters", None),
-        getattr(result, "parameters_injection", "override"),
+    return render_subagent_envelope(
+        message=getattr(result, "message", ""),
+        response=getattr(result, "response", None),
     )
-
-
-def _subagent_result_payload(
-    message: str,
-    parameters: dict[str, Any] | None,
-    injection_mode: str = "override",
-) -> str:
-    """Build the text injected into the parent conversation for a subagent result.
-
-    ``injection_mode`` controls how ``parameters`` are combined with ``message``:
-
-    - ``"override"`` (default): merge into ``{"message": ..., ...params}`` JSON envelope.
-    - ``"append"``: keep ``message`` verbatim, append a fenced JSON block with the
-      parameters so the parent can parse it if needed without losing the prose summary.
-    - ``"ignore"``: return ``message`` unchanged; parameters are not forwarded.
-
-    When there are no parameters the plain message is always returned unchanged.
-    """
-    if not parameters:
-        return message
-    if injection_mode == "ignore":
-        return message
-    if injection_mode == "append":
-        params_text = json.dumps(parameters, ensure_ascii=False)
-        return f"{message}\n```\n{params_text}\n```"
-    # "override" (default)
-    return json.dumps({"message": message, **parameters}, ensure_ascii=False)
 
 
 @dataclass(slots=True)
@@ -255,7 +203,6 @@ class Agent:
     behaviors: tuple[AgentBehavior, ...] = field(default=(), repr=False)
     source_path: Path | None = None
     terminal_tools: tuple[str, ...] = ()
-    parameters_injection: str = "override"
     planning_config: "PlanningConfig | None" = None
 
     @classmethod
@@ -317,9 +264,6 @@ class Agent:
             behavior_ids=behavior_ids,
             source_path=source_path,
             terminal_tools=tuple(metadata.get("terminal_tools", []) or ()),
-            parameters_injection=_parse_parameters_injection(
-                metadata.get("parameters_injection"), source_path
-            ),
             planning_config=_parse_planning_config(metadata.get("planning"), source_path),
         )
         agent._validate_template_contract()
@@ -782,8 +726,6 @@ class Agent:
             status="completed",
             message=decision.message,
             response=decision.response,
-            parameters=decision.parameters if decision.parameters else None,
-            parameters_injection=self.parameters_injection,
             decision=decision,
             prompt=run.rendered_prompt,
         )

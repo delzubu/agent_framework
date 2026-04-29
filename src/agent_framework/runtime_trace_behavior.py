@@ -126,7 +126,6 @@ class RuntimeTraceBehavior(AgentBehavior):
                     "caller_id": caller_id,
                     "message": result.message or None,
                     "response": result.response or None,
-                    "parameters": result.parameters or None,
                     "usage_self": usage_summary.get("usage_self", {}),
                     "usage_inclusive": usage_summary.get("usage_inclusive", {}),
                 },
@@ -219,7 +218,6 @@ class RuntimeTraceBehavior(AgentBehavior):
                 "status": event.result.status,
                 "message": event.result.message or None,
                 "response": event.result.response or None,
-                "parameters": event.result.parameters or None,
             },
             context=_merge_context(
                 h,

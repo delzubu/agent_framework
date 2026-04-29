@@ -333,9 +333,10 @@ class AgentDecision:
             decision_response: dict[str, Any] | None = raw_response
         else:
             if normalized_kind == "final_message" and payload.get("parameters"):
-                _LOGGER.warning(
-                    "Deprecated: 'parameters' used as result payload in final_message decision. "
-                    "Set 'response' for structured output; 'parameters' on results will be removed."
+                raise ValueError(
+                    "Invalid model decision JSON: final_message with structured output must use "
+                    "'response' (a JSON object). Setting 'parameters' on a final_message result "
+                    "is no longer supported. Move the structured payload to 'response'."
                 )
             decision_response = None
 

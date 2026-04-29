@@ -271,19 +271,15 @@ def select_agent_result_field(agent_result: Any, field_name: Any) -> str | None:
         value = _traverse_dict(agent_result, parts)
         if value is not _MISSING:
             return _stringify_result_value(value)
-        # For sub-paths like "status" that may live under "response" in the new
-        # contract, try "response.<path>" before falling back to "parameters.<path>".
+        # For bare sub-paths (e.g. "status", "count") try "response.<path>" first,
+        # then "parameters.<path>" (decision call inputs still live there).
         if len(parts) >= 1 and parts[0] not in ("response", "parameters", "message", "status"):
-            response_dict = agent_result.get("response")
-            if isinstance(response_dict, dict):
-                value = _traverse_dict(response_dict, parts)
-                if value is not _MISSING:
-                    return _stringify_result_value(value)
-            params_dict = agent_result.get("parameters")
-            if isinstance(params_dict, dict):
-                value = _traverse_dict(params_dict, parts)
-                if value is not _MISSING:
-                    return _stringify_result_value(value)
+            for container_key in ("response", "parameters"):
+                container = agent_result.get(container_key)
+                if isinstance(container, dict):
+                    value = _traverse_dict(container, parts)
+                    if value is not _MISSING:
+                        return _stringify_result_value(value)
         return None
     return _stringify_result_value(agent_result)
 

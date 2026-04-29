@@ -16,7 +16,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _futures_wait
 from typing import TYPE_CHECKING, Any
 
-from agent_framework.agents.agent import _subagent_result_payload
 from agent_framework.agents.agent_decision import AgentDecision
 from agent_framework.planning.plan_state import CompletedStep, PlanState, PlanStep, plan_step_to_dict
 from agent_framework.planning.step_reference import resolve as _default_resolve
@@ -692,7 +691,6 @@ class PlanningTurnDriver:
             status="completed",
             message=decision.message,
             response=decision.response,
-            parameters=decision.parameters if decision.parameters else None,
             decision=decision,
             prompt=run.rendered_prompt,
         )
