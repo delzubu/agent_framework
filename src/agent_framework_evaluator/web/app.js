@@ -1086,7 +1086,7 @@ async function runAllCasesPlay() {
   }
 }
 
-function renderStringInTrace(parent, s, keyHint) {
+function renderStringInTrace(parent, s, keyHint, siblingResponse) {
   const wrap = document.createElement("span");
   wrap.className = "trace-json-str";
   const openQ = document.createElement("span");
@@ -1102,10 +1102,13 @@ function renderStringInTrace(parent, s, keyHint) {
     inner.setAttribute("role", "button");
     inner.tabIndex = 0;
     inner.title = `Open full text (${s.length} characters)`;
+    const opts = siblingResponse !== undefined
+      ? { message: s, response: siblingResponse }
+      : undefined;
     const open = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openTraceDetailModal(String(keyHint || "Field"), s);
+      openTraceDetailModal(String(keyHint || "Field"), s, opts);
     };
     inner.addEventListener("click", open);
     inner.addEventListener("keydown", (e) => {
@@ -1125,7 +1128,7 @@ function renderStringInTrace(parent, s, keyHint) {
   parent.appendChild(wrap);
 }
 
-function appendJsonValue(parent, value, keyHint) {
+function appendJsonValue(parent, value, keyHint, siblingResponse) {
   if (value === null) {
     const span = document.createElement("span");
     span.className = "trace-json-lit trace-json-null";
@@ -1135,7 +1138,7 @@ function appendJsonValue(parent, value, keyHint) {
   }
   const t = typeof value;
   if (t === "string") {
-    renderStringInTrace(parent, value, keyHint);
+    renderStringInTrace(parent, value, keyHint, siblingResponse);
     return;
   }
   if (t === "number" || t === "boolean") {
@@ -1180,14 +1183,20 @@ function appendJsonValue(parent, value, keyHint) {
     }
     const obj = document.createElement("div");
     obj.className = "trace-json-obj";
+    // When an object has a "message" string and a "response" field, pass response
+    // as context so the long-message popup shows both Message and Response tabs.
+    const msgResponseCtx = (typeof value.message === "string" && "response" in value)
+      ? value.response
+      : undefined;
     for (const k of keys) {
-      obj.appendChild(renderJsonKeyRow(k, value[k], keyHint ? `${keyHint}.${k}` : k));
+      const ctx = (k === "message" && msgResponseCtx !== undefined) ? msgResponseCtx : undefined;
+      obj.appendChild(renderJsonKeyRow(k, value[k], keyHint ? `${keyHint}.${k}` : k, ctx));
     }
     parent.appendChild(obj);
   }
 }
 
-function renderJsonKeyRow(k, v, path) {
+function renderJsonKeyRow(k, v, path, siblingResponse) {
   const row = document.createElement("div");
   row.className = "trace-json-kv";
   const keyEl = document.createElement("span");
@@ -1196,7 +1205,7 @@ function renderJsonKeyRow(k, v, path) {
   row.appendChild(keyEl);
   const valWrap = document.createElement("span");
   valWrap.className = "trace-json-val";
-  appendJsonValue(valWrap, v, path);
+  appendJsonValue(valWrap, v, path, siblingResponse);
   row.appendChild(valWrap);
   return row;
 }
