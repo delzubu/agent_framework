@@ -1506,6 +1506,9 @@ body {
 .trace-event--subagent > summary { border-left-color: #40a0a0; }
 .trace-event--subagent { border-left-color: #40a0a0; }
 
+.trace-event--plan > summary { border-left-color: #c0a060; }
+.trace-event--plan { border-left-color: #c0a060; }
+
 /* ── Batch containers ──────────────────────────────────────── */
 
 .trace-batch {
@@ -1637,6 +1640,65 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
+}
+
+.flow-plan-update {
+  margin-top: 0.2rem;
+  padding: 0.2rem 0.5rem 0.4rem;
+  border: 1px solid rgba(192, 160, 96, 0.4);
+  border-radius: 5px;
+  font-size: 0.8rem;
+  background: rgba(192, 160, 96, 0.07);
+}
+
+.flow-plan-update > summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 500;
+  list-style: none;
+  padding: 0.1rem 0;
+}
+
+.flow-plan-batches {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.flow-plan-batch {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.2rem 0.4rem;
+  border: 1px dashed rgba(192, 160, 96, 0.3);
+  border-radius: 4px;
+}
+
+.flow-plan-batch-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.flow-plan-batch-steps--parallel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.flow-plan-batch-steps--sequential {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.flow-plan-step {
+  font-size: 0.78rem;
+  color: var(--muted);
+  padding: 0.05rem 0.2rem;
+  font-family: var(--mono, monospace);
 }
 
 /* Highlight animation when scrolled-to from flow tab */

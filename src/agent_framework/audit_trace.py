@@ -189,6 +189,7 @@ class InMemoryAuditTracer:
             agent_decision={
                 "kind": decision.kind,
                 "message": decision.message,
+                "response": decision.response,
                 "parameters": dict(decision.parameters),
                 "subagent_id": decision.subagent_id,
                 "tool_name": decision.tool_name,

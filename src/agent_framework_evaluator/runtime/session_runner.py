@@ -35,9 +35,14 @@ def _agent_result_payload(result: AgentResult) -> dict[str, object]:
         "status": result.status,
         "message": result.message,
     }
+    if result.response is not None:
+        payload["response"] = result.response
     if result.decision is not None:
         payload["kind"] = result.decision.kind
-        payload["parameters"] = dict(result.decision.parameters)
+        # decision.parameters holds the call inputs that produced this result; expose
+        # them at the top level for evaluator dot-path access (e.g. "status", "count").
+        if result.decision.parameters:
+            payload["parameters"] = dict(result.decision.parameters)
         if result.decision.subagent_id is not None:
             payload["subagent_id"] = result.decision.subagent_id
         if result.decision.tool_name is not None:

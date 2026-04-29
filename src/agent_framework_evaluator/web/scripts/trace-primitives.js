@@ -1,5 +1,5 @@
 (() => {
-  function renderStringInTrace(parent, s, keyHint, deps) {
+  function renderStringInTrace(parent, s, keyHint, deps, siblingResponse) {
     const { openTraceDetailModal, traceStringPreviewChars } = deps;
     const wrap = document.createElement("span");
     wrap.className = "trace-json-str";
@@ -16,10 +16,13 @@
       inner.setAttribute("role", "button");
       inner.tabIndex = 0;
       inner.title = `Open full text (${s.length} characters)`;
+      const opts = siblingResponse !== undefined
+        ? { message: s, response: siblingResponse }
+        : undefined;
       const open = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        openTraceDetailModal(String(keyHint || "Field"), s);
+        openTraceDetailModal(String(keyHint || "Field"), s, opts);
       };
       inner.addEventListener("click", open);
       inner.addEventListener("keydown", (e) => {
@@ -94,14 +97,20 @@
       }
       const obj = document.createElement("div");
       obj.className = "trace-json-obj";
+      // When an object has a "message" string and a "response" field, pass response
+      // as context so the long-message popup shows both Message and Response tabs.
+      const msgResponseCtx = (typeof value.message === "string" && "response" in value)
+        ? value.response
+        : undefined;
       for (const k of keys) {
-        obj.appendChild(renderJsonKeyRow(k, value[k], keyHint ? `${keyHint}.${k}` : k, deps));
+        const sibResp = (k === "message" && msgResponseCtx !== undefined) ? msgResponseCtx : undefined;
+        obj.appendChild(renderJsonKeyRow(k, value[k], keyHint ? `${keyHint}.${k}` : k, deps, sibResp));
       }
       parent.appendChild(obj);
     }
   }
 
-  function renderJsonKeyRow(k, v, path, deps) {
+  function renderJsonKeyRow(k, v, path, deps, siblingResponse) {
     const row = document.createElement("div");
     row.className = "trace-json-kv";
     const keyEl = document.createElement("span");
@@ -110,7 +119,11 @@
     row.appendChild(keyEl);
     const valWrap = document.createElement("span");
     valWrap.className = "trace-json-val";
-    appendJsonValue(valWrap, v, path, deps);
+    if (typeof v === "string" && siblingResponse !== undefined) {
+      renderStringInTrace(valWrap, v, path, deps, siblingResponse);
+    } else {
+      appendJsonValue(valWrap, v, path, deps);
+    }
     row.appendChild(valWrap);
     return row;
   }

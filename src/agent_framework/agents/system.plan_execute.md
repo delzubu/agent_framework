@@ -91,7 +91,12 @@ When a step emits a callback (you see `<pending_callback>`):
   ```json
   {"kind": "continue_plan", "message": "fetch completed, proceeding"}
   ```
-- `final_message` example:
+- `final_message` example (prose only):
   ```json
   {"kind": "final_message", "message": "<synthesized answer>"}
   ```
+- `final_message` example (structured output):
+  ```json
+  {"kind": "final_message", "message": "<short summary>", "response": {"key": "value"}}
+  ```
+  Use `message` for human-readable text only. Use `response` for structured output. Never serialize `response` into `message`.

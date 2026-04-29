@@ -98,8 +98,7 @@ class SubagentBatchItemResult:
     run_id: str
     status: str  # "completed" | "failed" | "timed_out" | "blocked"
     message: str = ""
-    parameters: dict[str, Any] | None = None
-    parameters_injection: str = "override"
+    response: dict[str, Any] | None = None
     callback_intent: str | None = None
     callback_prompt: str | None = None
 
@@ -1963,19 +1962,23 @@ class AgentHost:
         result: AgentResult,
     ) -> SubagentBatchItemResult:
         if result.status == "blocked":
-            try:
-                import json as _json
-                payload = _json.loads(result.message) if result.message else {}
-            except Exception:
-                payload = {}
+            # Callback metadata is carried in result.response for the new contract;
+            # fall back to parsing result.message as JSON for agents not yet updated.
+            blocked_payload: dict[str, Any] = result.response or {}
+            if not blocked_payload and result.message:
+                try:
+                    import json as _json
+                    blocked_payload = _json.loads(result.message)
+                except Exception:
+                    blocked_payload = {}
             return SubagentBatchItemResult(
                 output_key=spec.output_key,
                 subagent_id=spec.subagent_id,
                 run_id=child_run_id,
                 status="blocked",
                 message=result.message,
-                callback_intent=payload.get("intent"),
-                callback_prompt=payload.get("prompt", ""),
+                callback_intent=blocked_payload.get("intent"),
+                callback_prompt=blocked_payload.get("prompt", ""),
             )
         return SubagentBatchItemResult(
             output_key=spec.output_key,
@@ -1983,8 +1986,7 @@ class AgentHost:
             run_id=child_run_id,
             status=result.status,
             message=result.message,
-            parameters=result.parameters,
-            parameters_injection=result.parameters_injection,
+            response=result.response,
         )
 
     def execute_tool(self, tool_name: str, parameters: dict[str, Any]) -> str:

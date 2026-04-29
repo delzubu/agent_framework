@@ -18,57 +18,109 @@
     return null;
   }
 
-  function openTraceDetailModal(title, text) {
+  function renderMdInto(el, text) {
+    el.textContent = "";
+    const parseMd = getMarkedParse();
+    if (parseMd) {
+      try {
+        const html = parseMd(text, { breaks: true });
+        const frag = document.createRange().createContextualFragment(html);
+        el.appendChild(frag);
+      } catch (_) {
+        el.textContent = text;
+      }
+    } else {
+      el.style.whiteSpace = "pre-wrap";
+      el.style.overflowWrap = "anywhere";
+      el.textContent = text;
+    }
+  }
+
+  /**
+   * Open the trace detail modal.
+   * @param {string} title
+   * @param {string} text  Raw string always shown in the Source tab.
+   * @param {object} [opts]
+   * @param {string} [opts.message]  Show a Message tab with markdown rendering.
+   * @param {unknown} [opts.response] Show a Response tab with prettified JSON.
+   */
+  function openTraceDetailModal(title, text, opts) {
     const modal = document.getElementById("trace-detail-modal");
     const titleEl = document.getElementById("trace-detail-modal-title");
     const srcEl = document.getElementById("trace-detail-modal-source");
     const mdEl = document.getElementById("trace-detail-modal-md");
+    const msgEl = document.getElementById("trace-detail-modal-message");
+    const respEl = document.getElementById("trace-detail-modal-response");
     const tabs = document.getElementById("trace-detail-dialog-tabs");
-    const tabSrc = document.getElementById("trace-detail-tab-source");
     const tabMd = document.getElementById("trace-detail-tab-md");
+    const tabMsg = document.getElementById("trace-detail-tab-message");
+    const tabResp = document.getElementById("trace-detail-tab-response");
     if (!modal || !titleEl || !srcEl || !mdEl) return;
+
+    const hasMessage = opts && typeof opts.message === "string";
+    const hasResponse = opts && opts.response != null;
+
     titleEl.textContent = title;
     srcEl.textContent = text;
-    const parseMd = getMarkedParse();
-    const showMd = Boolean(parseMd && looksLikeMarkdown(text));
-    mdEl.innerHTML = "";
-    if (showMd && parseMd) {
-      try {
-        mdEl.innerHTML = parseMd(text);
-      } catch (_) {
-        mdEl.innerHTML = "<p><em>Could not render as Markdown.</em></p>";
+
+    if (msgEl && tabMsg) {
+      if (hasMessage) {
+        renderMdInto(msgEl, opts.message);
+        tabMsg.hidden = false;
+      } else {
+        msgEl.textContent = "";
+        tabMsg.hidden = true;
       }
     }
-    if (tabs) tabs.hidden = !showMd;
+
+    if (respEl && tabResp) {
+      if (hasResponse) {
+        try { respEl.textContent = JSON.stringify(opts.response, null, 2); }
+        catch (_) { respEl.textContent = String(opts.response); }
+        tabResp.hidden = false;
+      } else {
+        respEl.textContent = "";
+        tabResp.hidden = true;
+      }
+    }
+
+    const parseMd = getMarkedParse();
+    const showMd = Boolean(!hasMessage && parseMd && looksLikeMarkdown(text));
+    mdEl.textContent = "";
+    if (showMd && parseMd) {
+      renderMdInto(mdEl, text);
+    }
     if (tabMd) tabMd.style.display = showMd ? "" : "none";
-    if (tabSrc) tabSrc.classList.add("trace-detail-tab--active");
-    if (tabMd) tabMd.classList.remove("trace-detail-tab--active");
-    srcEl.classList.add("trace-detail-panel--active");
-    mdEl.classList.remove("trace-detail-panel--active");
+
+    const anyExtra = hasMessage || hasResponse || showMd;
+    if (tabs) tabs.hidden = !anyExtra;
+
+    _activatePanel(hasMessage ? "message" : "source");
     modal.showModal();
+  }
+
+  function _activatePanel(which) {
+    const panelIds = ["source", "md", "message", "response"];
+    for (const id of panelIds) {
+      const panel = document.getElementById(`trace-detail-modal-${id}`);
+      const btn = document.getElementById(`trace-detail-tab-${id}`);
+      panel?.classList.toggle("trace-detail-panel--active", id === which);
+      btn?.classList.toggle("trace-detail-tab--active", id === which);
+    }
   }
 
   function wireTraceDetailModal() {
     const modal = document.getElementById("trace-detail-modal");
     const closeBtn = document.getElementById("trace-detail-modal-close");
-    const tabSrc = document.getElementById("trace-detail-tab-source");
-    const tabMd = document.getElementById("trace-detail-tab-md");
-    const srcEl = document.getElementById("trace-detail-modal-source");
-    const mdEl = document.getElementById("trace-detail-modal-md");
     if (!modal || !closeBtn) return;
     closeBtn.addEventListener("click", () => modal.close());
     modal.addEventListener("click", (e) => {
       if (e.target === modal) modal.close();
     });
-    function showPanel(which) {
-      const showSrc = which === "source";
-      srcEl?.classList.toggle("trace-detail-panel--active", showSrc);
-      mdEl?.classList.toggle("trace-detail-panel--active", !showSrc);
-      tabSrc?.classList.toggle("trace-detail-tab--active", showSrc);
-      tabMd?.classList.toggle("trace-detail-tab--active", !showSrc);
+    for (const id of ["source", "md", "message", "response"]) {
+      document.getElementById(`trace-detail-tab-${id}`)
+        ?.addEventListener("click", () => _activatePanel(id));
     }
-    tabSrc?.addEventListener("click", () => showPanel("source"));
-    tabMd?.addEventListener("click", () => showPanel("md"));
   }
 
   window.getMarkedParse = getMarkedParse;

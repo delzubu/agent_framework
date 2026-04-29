@@ -17,7 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _future
 from typing import TYPE_CHECKING, Any
 
 from agent_framework.agents.agent_decision import AgentDecision
-from agent_framework.planning.plan_state import CompletedStep, PlanState, PlanStep
+from agent_framework.agents.turn_driver import BaseTurnDriver
+from agent_framework.planning.plan_state import CompletedStep, PlanState, PlanStep, plan_step_to_dict
 from agent_framework.planning.step_reference import resolve as _default_resolve
 
 if TYPE_CHECKING:
@@ -137,6 +138,34 @@ def _inject_cap_reminder(run: "AgentRun", *, cap: str, detail: str) -> None:
     run.prompt_fragments.append(reminder)
 
 
+def _emit_plan_updated(
+    run: "AgentRun",
+    agent: "Agent",
+    *,
+    is_initial: bool,
+    previous_plan: "tuple[PlanStep, ...] | None",
+) -> None:
+    """Emit a plan_updated named event after PlanState.plan has been mutated."""
+    from agent_framework.agent_event_publisher import agent_events
+
+    plan_state = run.plan_state
+    new_ids = {s.id for s in plan_state.plan}
+    prev_ids = {s.id for s in previous_plan} if previous_plan else set()
+    agent_events.audit_named_event(
+        run_id=run.run_id,
+        agent_id=agent.agent_id,
+        event={
+            "type": "plan_updated",
+            "is_initial": is_initial,
+            "plan_revision": plan_state.plan_revision,
+            "step_count": len(plan_state.plan),
+            "added_step_ids": sorted(new_ids - prev_ids),
+            "dropped_step_ids": sorted(prev_ids - new_ids),
+            "plan": [plan_step_to_dict(s) for s in plan_state.plan],
+        },
+    )
+
+
 def _dispatch_step(
     step: PlanStep,
     *,
@@ -163,13 +192,14 @@ def _dispatch_step(
             result = host.execute_tool(step.tool_name, params)
 
         elif step.kind == "call_subagent":
+            from agent_framework.agents.agent import _render_result_for_injection
             agent_result = host.call_subagent(
                 caller=agent,
                 callee_id=step.subagent_id,
                 parameters=params,
                 parent_run_id=run.run_id,
             )
-            result = agent_result.message
+            result = _render_result_for_injection(agent_result)
 
         elif step.kind == "invoke_skill":
             # Delegate to the agent's skill invocation handler.
@@ -281,7 +311,7 @@ def _dispatch_parallel_batch(
                 )
 
 
-class PlanningTurnDriver:
+class PlanningTurnDriver(BaseTurnDriver):
     """TurnDriver for planning-enabled agents.
 
     Drives the plan → execute → reflect lifecycle. Each run_turn call
@@ -290,9 +320,6 @@ class PlanningTurnDriver:
 
     def __init__(self, config: "PlanningConfig") -> None:
         self.config = config
-        # Tracks consecutive plan-phase validation failures per run_id.
-        # Used because plan_state doesn't exist until the first valid submit_plan.
-        self._plan_phase_failures: dict[str, int] = {}
 
     def run_turn(
         self,
@@ -334,40 +361,10 @@ class PlanningTurnDriver:
         """No plan yet — call model, expect submit_plan."""
         _LOGGER.debug("Planning: entering PLAN phase for agent %s", agent.agent_id)
 
-        context = agent.build_context(host=host, run=run)
-        try:
-            decision = agent.decide(host=host, run=run, context=context, planning_active=True)
-        except ValueError as exc:
-            run_id = run.run_id
-            failures = self._plan_phase_failures.get(run_id, 0) + 1
-            self._plan_phase_failures[run_id] = failures
-            _LOGGER.error(
-                "Planning: plan validation error for agent %s (consecutive=%d): %s",
-                agent.agent_id, failures, exc,
-                exc_info=True,
-            )
-            if failures >= 2:
-                self._plan_phase_failures.pop(run_id, None)
-                return self._emit_safety_cap_callback(
-                    agent=agent,
-                    host=host,
-                    run=run,
-                    caller_id=caller_id,
-                    cap="consecutive_validation_failures",
-                    detail=f"Two consecutive plan validation errors: {exc}",
-                )
-            error_reminder = (
-                f"<system_reminder>\n"
-                f"<plan_validation_error>{exc}</plan_validation_error>\n"
-                f"The plan you submitted was invalid. Please submit a corrected plan.\n"
-                f"</system_reminder>"
-            )
-            run.conversation_messages.append({"role": "user", "content": error_reminder})
-            run.prompt_fragments.append(error_reminder)
-            return None
-
-        # Clear per-run failure counter on successful model call.
-        self._plan_phase_failures.pop(run.run_id, None)
+        result = self._try_decide(agent, host, run, caller_id, planning_active=True)
+        if not isinstance(result, AgentDecision):
+            return result
+        decision = result
 
         if decision.kind == "submit_plan":
             # decision.plan is already validated by from_model_response — no extra validation needed.
@@ -377,6 +374,7 @@ class PlanningTurnDriver:
                 "Planning: plan submitted for agent %s — %d steps",
                 agent.agent_id, len(decision.plan),
             )
+            _emit_plan_updated(run, agent, is_initial=True, previous_plan=None)
             _inject_reminder(run, plan_state, end_of_plan=False)
             return None
 
@@ -473,36 +471,10 @@ class PlanningTurnDriver:
 
         _inject_reminder(run, plan_state, end_of_plan=end_of_plan)
 
-        context = agent.build_context(host=host, run=run)
-        try:
-            decision = agent.decide(host=host, run=run, context=context, planning_active=True)
-        except ValueError as exc:
-            # Plan validation failed (invalid submit_plan from the model).
-            plan_state.consecutive_validation_failures += 1
-            _LOGGER.error(
-                "Planning: plan validation error for agent %s (consecutive=%d): %s",
-                agent.agent_id, plan_state.consecutive_validation_failures, exc,
-                exc_info=True,
-            )
-            if plan_state.consecutive_validation_failures >= 2:
-                return self._emit_safety_cap_callback(
-                    agent=agent,
-                    host=host,
-                    run=run,
-                    caller_id=caller_id,
-                    cap="consecutive_validation_failures",
-                    detail=f"Two consecutive plan validation errors: {exc}",
-                )
-            # First failure: inject error reminder and let model retry next reflect.
-            error_reminder = (
-                f"<system_reminder>\n"
-                f"<plan_validation_error>{exc}</plan_validation_error>\n"
-                f"The plan you submitted was invalid. Please submit a corrected plan.\n"
-                f"</system_reminder>"
-            )
-            run.conversation_messages.append({"role": "user", "content": error_reminder})
-            run.prompt_fragments.append(error_reminder)
-            return None
+        result = self._try_decide(agent, host, run, caller_id, planning_active=True)
+        if not isinstance(result, AgentDecision):
+            return result
+        decision = result
 
         if decision.kind == "final_message":
             return self._make_result(decision, run)
@@ -586,6 +558,7 @@ class PlanningTurnDriver:
                 detail=f"max_plan_revisions={max_revisions} exceeded",
             )
 
+        previous_plan = plan_state.plan
         new_step_ids = {s.id for s in decision.plan}
         for dropped_id in list(plan_state.step_results):
             if dropped_id not in new_step_ids:
@@ -597,70 +570,14 @@ class PlanningTurnDriver:
         plan_state.plan = decision.plan
         plan_state.plan_revision += 1
         plan_state.pending_callback_step_id = None
-        plan_state.consecutive_validation_failures = 0
+        run.consecutive_validation_failures = 0
         _LOGGER.info(
             "Planning: agent %s re-planned (revision %d) — %d steps",
             agent.agent_id, plan_state.plan_revision, len(decision.plan),
         )
+        _emit_plan_updated(run, agent, is_initial=False, previous_plan=previous_plan)
         _inject_reminder(run, plan_state, end_of_plan=False)
         return None
-
-    def _emit_safety_cap_callback(
-        self,
-        *,
-        agent: "Agent",
-        host: Any,
-        run: "AgentRun",
-        caller_id: str | None,
-        cap: str,
-        detail: str,
-    ) -> "AgentResult | None":
-        """Terminate execution due to a safety-cap violation.
-
-        When there is a parent caller, escalate via a synthetic callback so the
-        caller can handle the failure. When there is no caller (top-level run),
-        return a failed AgentResult directly — calling handle_callback in that
-        case would block waiting for user input.
-        """
-        from agent_framework.agents.agent_result import AgentResult
-
-        message = (
-            f"Planning safety cap exceeded: {detail}. "
-            "The plan execution has been halted. Please review the plan configuration."
-        )
-        _inject_cap_reminder(run, cap=cap, detail=detail)
-
-        has_real_caller = caller_id is not None and caller_id != "host"
-        if has_real_caller:
-            synthetic = AgentDecision(
-                kind="callback_to_caller",
-                callback_intent="execution_recovery",
-                message=message,
-                parameters={"cap": cap, "detail": detail},
-            )
-            return agent.handle_callback(
-                host=host, run=run, decision=synthetic, caller_id=caller_id
-            )
-
-        _LOGGER.error(
-            "Planning: safety cap %r triggered for agent %s — terminating run. %s",
-            cap, agent.agent_id, detail,
-        )
-        return AgentResult(
-            status="failed",
-            message=message,
-            prompt=run.rendered_prompt,
-        )
-
-    @staticmethod
-    def _make_result(decision: AgentDecision, run: "AgentRun") -> "AgentResult":
-        from agent_framework.agents.agent_result import AgentResult
-        return AgentResult(
-            status="completed",
-            message=decision.message,
-            decision=decision,
-            prompt=run.rendered_prompt,
-        )
 
 
 __all__ = ["PlanningTurnDriver"]

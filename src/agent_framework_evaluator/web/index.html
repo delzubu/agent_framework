@@ -204,10 +204,14 @@
       <div class="trace-detail-dialog-tabs" id="trace-detail-dialog-tabs" hidden>
         <button type="button" class="trace-detail-tab trace-detail-tab--active" data-panel="source" id="trace-detail-tab-source">Source</button>
         <button type="button" class="trace-detail-tab" data-panel="md" id="trace-detail-tab-md">Markdown</button>
+        <button type="button" class="trace-detail-tab" data-panel="message" id="trace-detail-tab-message" hidden>Message</button>
+        <button type="button" class="trace-detail-tab" data-panel="response" id="trace-detail-tab-response" hidden>Response</button>
       </div>
       <div class="trace-detail-dialog-body">
         <pre id="trace-detail-modal-source" class="trace-detail-panel trace-detail-panel--active trace-detail-dialog-pre"></pre>
         <div id="trace-detail-modal-md" class="trace-detail-panel trace-detail-md-body"></div>
+        <div id="trace-detail-modal-message" class="trace-detail-panel trace-detail-md-body"></div>
+        <pre id="trace-detail-modal-response" class="trace-detail-panel trace-detail-dialog-pre"></pre>
       </div>
     </div>
   </dialog>

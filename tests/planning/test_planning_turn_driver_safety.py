@@ -312,7 +312,7 @@ def test_plan_validation_error_logged(tmp_path: Path, caplog):
     ])
     _register_echo(host)
 
-    with caplog.at_level(logging.ERROR, logger="agent_framework.planning.turn_driver"):
+    with caplog.at_level(logging.ERROR, logger="agent_framework.agents.turn_driver"):
         host.run_agent("planner", "validate")
 
-    assert any("plan validation error" in r.message for r in caplog.records)
+    assert any("plan validation error" in r.message.lower() for r in caplog.records)

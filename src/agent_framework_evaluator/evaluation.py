@@ -235,12 +235,30 @@ def _stringify_result_value(value: Any) -> str:
         return str(value)
 
 
+def _traverse_dict(d: dict, parts: list[str]) -> Any:
+    current: Any = d
+    for part in parts:
+        if not part:
+            continue
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return _MISSING
+    return current
+
+
+_MISSING = object()
+
+
 def select_agent_result_field(agent_result: Any, field_name: Any) -> str | None:
     """Select *field_name* (dot-delimited path) from *agent_result*.
 
     Returns ``None`` when the path does not exist in the result dict, so callers
     can distinguish a missing field from an empty value and raise an appropriate
     error.  Returns the full stringified payload when *field_name* is ``"."``.
+
+    For structured paths (e.g. ``response.status``), ``response`` is checked
+    before ``parameters`` so that the new typed channel takes precedence.
     """
     field = str(field_name or "message").strip() or "message"
     if field == ".":
@@ -248,15 +266,21 @@ def select_agent_result_field(agent_result: Any, field_name: Any) -> str | None:
     if isinstance(agent_result, str):
         return agent_result
     if isinstance(agent_result, dict):
-        current: Any = agent_result
-        for part in field.split("."):
-            if not part:
-                continue
-            if isinstance(current, dict) and part in current:
-                current = current[part]
-            else:
-                return None
-        return _stringify_result_value(current)
+        parts = [p for p in field.split(".") if p]
+        # Try the path directly first (handles "message", "response", "response.x", …).
+        value = _traverse_dict(agent_result, parts)
+        if value is not _MISSING:
+            return _stringify_result_value(value)
+        # For bare sub-paths (e.g. "status", "count") try "response.<path>" first,
+        # then "parameters.<path>" (decision call inputs still live there).
+        if len(parts) >= 1 and parts[0] not in ("response", "parameters", "message", "status"):
+            for container_key in ("response", "parameters"):
+                container = agent_result.get(container_key)
+                if isinstance(container, dict):
+                    value = _traverse_dict(container, parts)
+                    if value is not _MISSING:
+                        return _stringify_result_value(value)
+        return None
     return _stringify_result_value(agent_result)
 
 

@@ -1737,8 +1737,8 @@ def test_no_skill_tool_registered_on_invocation(tmp_path: Path) -> None:
 # AgentResult.parameters propagation
 # ---------------------------------------------------------------------------
 
-def test_agent_result_carries_parameters_from_final_message_decision(tmp_path: Path) -> None:
-    """handle_final_message must propagate decision.parameters into AgentResult.parameters."""
+def test_agent_result_carries_response_from_final_message_decision(tmp_path: Path) -> None:
+    """handle_final_message propagates decision.response into AgentResult.response."""
     env_path = tmp_path / ".env"
     write_env(env_path)
     agent = Agent(
@@ -1757,17 +1757,17 @@ def test_agent_result_carries_parameters_from_final_message_decision(tmp_path: P
             {
                 "kind": "final_message",
                 "message": "parsed 2 intents",
-                "parameters": {"intents": ["move", "attack"], "confidence": 0.9},
+                "response": {"intents": ["move", "attack"], "confidence": 0.9},
             }
         ]),
     )
     result = agent.run(host=host, parameters={}, caller_id="host")
     assert result.message == "parsed 2 intents"
-    assert result.parameters == {"intents": ["move", "attack"], "confidence": 0.9}
+    assert result.response == {"intents": ["move", "attack"], "confidence": 0.9}
 
 
-def test_agent_result_parameters_none_when_decision_has_no_parameters(tmp_path: Path) -> None:
-    """AgentResult.parameters stays None when decision carries no parameters."""
+def test_agent_result_response_none_when_no_response_in_decision(tmp_path: Path) -> None:
+    """AgentResult.response stays None when final_message carries no response."""
     env_path = tmp_path / ".env"
     write_env(env_path)
     agent = Agent(
@@ -1785,82 +1785,29 @@ def test_agent_result_parameters_none_when_decision_has_no_parameters(tmp_path: 
         model_driver=FakeModelDriver([{"kind": "final_message", "message": "done"}]),
     )
     result = agent.run(host=host, parameters={}, caller_id="host")
-    assert result.parameters is None
+    assert result.response is None
 
 
-def test_subagent_result_payload_merges_message_and_parameters() -> None:
-    """_subagent_result_payload produces a JSON envelope when parameters are present."""
-    from agent_framework.agents.agent import _subagent_result_payload
+def test_render_result_envelope_with_response() -> None:
+    """render_subagent_envelope produces an XML envelope when response is set."""
+    from agent_framework.agents.result_envelope import render_subagent_envelope
 
-    payload = _subagent_result_payload("I captured 3 intents", {"intents": ["a", "b", "c"]})
-    parsed = json.loads(payload)
-    assert parsed["message"] == "I captured 3 intents"
-    assert parsed["intents"] == ["a", "b", "c"]
-
-
-def test_subagent_result_payload_plain_text_when_no_parameters() -> None:
-    """_subagent_result_payload returns plain message when no parameters."""
-    from agent_framework.agents.agent import _subagent_result_payload
-
-    assert _subagent_result_payload("simple reply", None) == "simple reply"
-    assert _subagent_result_payload("simple reply", {}) == "simple reply"
+    out = render_subagent_envelope(message="I captured 3 intents", response={"intents": ["a", "b", "c"]})
+    assert '<subagent_result message="I captured 3 intents">' in out
+    import json as _json
+    body = out.split(">", 1)[1].rsplit("</", 1)[0].strip()
+    assert _json.loads(body) == {"intents": ["a", "b", "c"]}
 
 
-def test_subagent_result_payload_append_mode() -> None:
-    """append mode: message kept verbatim, parameters appended as fenced JSON block."""
-    from agent_framework.agents.agent import _subagent_result_payload
+def test_render_result_envelope_plain_text_when_no_response() -> None:
+    """render_subagent_envelope returns plain message when response is None."""
+    from agent_framework.agents.result_envelope import render_subagent_envelope
 
-    result = _subagent_result_payload("captured 3 intents", {"intents": ["a"]}, "append")
-    assert result.startswith("captured 3 intents\n```\n")
-    assert result.endswith("\n```")
-    fenced = result.split("```\n", 1)[1].rstrip("\n`")
-    assert json.loads(fenced) == {"intents": ["a"]}
+    assert render_subagent_envelope(message="simple reply", response=None) == "simple reply"
 
 
-def test_subagent_result_payload_ignore_mode() -> None:
-    """ignore mode: message returned unchanged, parameters discarded."""
-    from agent_framework.agents.agent import _subagent_result_payload
-
-    assert _subagent_result_payload("summary only", {"secret": 42}, "ignore") == "summary only"
-
-
-def test_agent_loads_parameters_injection_from_frontmatter(tmp_path: Path) -> None:
-    """parameters_injection frontmatter field is parsed and stored on Agent."""
-    agent_path = tmp_path / "parser.md"
-    agent_path.write_text(
-        "---\nid: parser\nrole: parser\ndescription: p\nparameters_injection: append\n---\nsys\n---\ngo\n",
-        encoding="utf-8",
-    )
-    agent = Agent.from_markdown(agent_path, default_provider="openai", default_model=("gpt-4o-mini",))
-    assert agent.parameters_injection == "append"
-
-
-def test_agent_parameters_injection_defaults_to_override(tmp_path: Path) -> None:
-    """parameters_injection defaults to 'override' when absent from frontmatter."""
-    agent_path = tmp_path / "simple.md"
-    agent_path.write_text(
-        "---\nid: simple\nrole: r\ndescription: d\n---\nsys\n---\ngo\n",
-        encoding="utf-8",
-    )
-    agent = Agent.from_markdown(agent_path, default_provider="openai", default_model=("gpt-4o-mini",))
-    assert agent.parameters_injection == "override"
-
-
-def test_agent_invalid_parameters_injection_raises(tmp_path: Path) -> None:
-    """An unrecognised parameters_injection value raises AgentMarkdownError."""
-    from agent_framework.agents.helpers import AgentMarkdownError
-
-    agent_path = tmp_path / "bad.md"
-    agent_path.write_text(
-        "---\nid: bad\nrole: r\ndescription: d\nparameters_injection: merge\n---\nsys\n---\ngo\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(AgentMarkdownError, match="parameters_injection"):
-        Agent.from_markdown(agent_path, default_provider="openai", default_model=("gpt-4o-mini",))
-
-
-def test_call_subagent_append_mode_keeps_message_and_appends_params(tmp_path: Path) -> None:
-    """When child uses append mode, parent sees prose summary + fenced JSON block."""
+def test_call_subagent_response_envelope_injected_into_parent(tmp_path: Path) -> None:
+    """When child returns response, parent sees the typed XML envelope."""
     host, driver = _make_subagent_host(
         tmp_path,
         parent_id="orchestrator",
@@ -1870,15 +1817,11 @@ def test_call_subagent_append_mode_keeps_message_and_appends_params(tmp_path: Pa
             {
                 "kind": "final_message",
                 "message": "captured 2 intents",
-                "parameters": {"intents": ["move", "attack"]},
+                "response": {"intents": ["move", "attack"]},
             },
             {"kind": "final_message", "message": "done"},
         ],
     )
-    # Override the parser agent's parameters_injection after loading
-    parser = host.agent_registry.get("parser")
-    object.__setattr__(parser, "parameters_injection", "append")
-
     host.run_root(initial_instruction="go")
 
     orchestrator_contexts = [c for c in driver.contexts if len(list(c.messages)) > 2]
@@ -1889,30 +1832,23 @@ def test_call_subagent_append_mode_keeps_message_and_appends_params(tmp_path: Pa
     )
     assert last_user_msg is not None
     content = last_user_msg.split("Subagent result parser: ", 1)[1]
-    assert content.startswith("captured 2 intents\n```\n")
-    params = json.loads(content.split("```\n", 1)[1].rstrip("\n`"))
-    assert params == {"intents": ["move", "attack"]}
+    assert '<subagent_result message="captured 2 intents">' in content
+    body = content.split(">", 1)[1].rsplit("</", 1)[0].strip()
+    assert json.loads(body) == {"intents": ["move", "attack"]}
 
 
-def test_call_subagent_ignore_mode_drops_parameters(tmp_path: Path) -> None:
-    """When child uses ignore mode, parent sees only the prose message."""
+def test_call_subagent_plain_message_when_no_response(tmp_path: Path) -> None:
+    """When child returns no response, parent sees the plain prose message."""
     host, driver = _make_subagent_host(
         tmp_path,
         parent_id="orchestrator",
         child_id="parser",
         decisions=[
             {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
-            {
-                "kind": "final_message",
-                "message": "summary only",
-                "parameters": {"hidden": True},
-            },
+            {"kind": "final_message", "message": "summary only"},
             {"kind": "final_message", "message": "done"},
         ],
     )
-    parser = host.agent_registry.get("parser")
-    object.__setattr__(parser, "parameters_injection", "ignore")
-
     host.run_root(initial_instruction="go")
 
     orchestrator_contexts = [c for c in driver.contexts if len(list(c.messages)) > 2]
@@ -2112,28 +2048,24 @@ def _make_subagent_host(tmp_path: Path, parent_id: str, child_id: str, decisions
     return host, driver
 
 
-def test_call_subagent_injects_json_envelope_when_parameters_present(tmp_path: Path) -> None:
-    """Parent conversation must contain the JSON envelope when the child returns parameters."""
+def test_call_subagent_injects_xml_envelope_when_response_present(tmp_path: Path) -> None:
+    """Parent conversation must contain the typed XML envelope when the child returns response."""
     host, driver = _make_subagent_host(
         tmp_path,
         parent_id="orchestrator",
         child_id="parser",
         decisions=[
-            # orchestrator turn 1: call subagent
             {"kind": "call_subagent", "subagent_id": "parser", "parameters": {}},
-            # parser: final_message WITH parameters
             {
                 "kind": "final_message",
                 "message": "parsed 2 intents",
-                "parameters": {"intents": ["move", "attack"]},
+                "response": {"intents": ["move", "attack"]},
             },
-            # orchestrator turn 2 (after subagent result injected): finish
             {"kind": "final_message", "message": "orchestration done"},
         ],
     )
     host.run_root(initial_instruction="go")
 
-    # The second orchestrator decide() call contains the injected subagent result.
     orchestrator_contexts = [c for c in driver.contexts if len(list(c.messages)) > 2]
     assert orchestrator_contexts, "expected at least one orchestrator context with subagent result"
     last_user_msg = next(
@@ -2142,13 +2074,14 @@ def test_call_subagent_injects_json_envelope_when_parameters_present(tmp_path: P
         None,
     )
     assert last_user_msg is not None, "subagent result message not found in orchestrator context"
-    envelope = json.loads(last_user_msg.split("Subagent result parser: ", 1)[1])
-    assert envelope["message"] == "parsed 2 intents"
-    assert envelope["intents"] == ["move", "attack"]
+    content = last_user_msg.split("Subagent result parser: ", 1)[1]
+    assert '<subagent_result message="parsed 2 intents">' in content
+    body = content.split(">", 1)[1].rsplit("</", 1)[0].strip()
+    assert json.loads(body) == {"intents": ["move", "attack"]}
 
 
-def test_call_subagent_injects_plain_text_when_no_parameters(tmp_path: Path) -> None:
-    """Parent conversation must get plain text when child returns no parameters."""
+def test_call_subagent_injects_plain_text_when_no_response(tmp_path: Path) -> None:
+    """Parent conversation must get plain text when child returns no response."""
     host, driver = _make_subagent_host(
         tmp_path,
         parent_id="orchestrator",
@@ -2170,5 +2103,5 @@ def test_call_subagent_injects_plain_text_when_no_parameters(tmp_path: Path) -> 
     )
     assert last_user_msg is not None
     content_after_prefix = last_user_msg.split("Subagent result helper: ", 1)[1]
-    # No parameters: must be plain text, not a JSON envelope.
+    # No response: must be plain text, not an envelope.
     assert content_after_prefix == "helper done"
