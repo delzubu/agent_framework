@@ -1625,7 +1625,7 @@ Two override scopes are supported:
 - `root_only` — only the tested/top-level agent uses the selected override model
 - `all_agents` — every agent invoked during that run uses the selected override model
 
-The UI dropdown is populated from `.env` `DEFAULT_MODEL` and remains empty by default.  Initializers can prefill it with `DEFAULT_AGENT_MODEL_OVERRIDE` / `get_default_agent_model_override()` and `DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE` / `get_default_agent_model_override_scope()`.
+The UI model field is free text with completions from `.env` `DEFAULT_MODEL` and remains empty by default.  Initializers can prefill it with `DEFAULT_AGENT_MODEL_OVERRIDE` / `get_default_agent_model_override()` and `DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE` / `get_default_agent_model_override_scope()`.
 
 ```bash
 python -m agent_framework_evaluator web \

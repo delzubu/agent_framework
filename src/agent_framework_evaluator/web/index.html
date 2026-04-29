@@ -22,9 +22,8 @@
         <datalist id="initializer-list"></datalist>
       </label>
       <label>Agent model override
-        <select id="agent-model-override">
-          <option value="">Configured default</option>
-        </select>
+        <input id="agent-model-override" type="text" list="agent-model-override-list" placeholder="configured default" autocomplete="off" spellcheck="false">
+        <datalist id="agent-model-override-list"></datalist>
       </label>
       <label>Override scope
         <select id="agent-model-override-scope">
@@ -218,7 +217,14 @@
   </dialog>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="/static/scripts/trace-detail-modal.js"></script>
+  <script src="/static/scripts/conversation-ui.js"></script>
   <script src="/static/scripts/evaluation-rendering.js"></script>
+  <script src="/static/scripts/evaluation-ui.js"></script>
+  <script src="/static/scripts/trace-primitives.js"></script>
+  <script src="/static/scripts/usage-rendering.js"></script>
+  <script src="/static/scripts/trace-ui.js"></script>
+  <script src="/static/scripts/session-client.js"></script>
+  <script src="/static/scripts/agent-prompt-view.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

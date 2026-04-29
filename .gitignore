@@ -8,6 +8,7 @@ tmp/
 /build/
 *.egg-info/
 .claude/
+.claude/skills/
 .playwright-cli/
 .worktrees/
 docs/pages/sdk/

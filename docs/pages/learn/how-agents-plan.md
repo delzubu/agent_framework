@@ -19,7 +19,7 @@ Planning is the discipline of making that structure explicit. A planning agent d
 
 ## The foundational idea: Plan-and-Solve
 
-The conceptual root of modern agent planning is surprisingly simple. A 2023 paper by Wang et al. showed that adding one sentence to a chain-of-thought prompt — *"Let's first understand the problem and devise a plan to solve the problem. Then, let's carry out the plan and solve the problem step by step."* — measurably improved model performance on complex tasks compared to vanilla chain-of-thought. The model stopped jumping to the first plausible action and instead decomposed the problem first.
+The conceptual root of modern agent planning is surprisingly simple. A 2023 paper by Wang et al.[^wang-2023] showed that adding one sentence to a chain-of-thought prompt — *"Let's first understand the problem and devise a plan to solve the problem. Then, let's carry out the plan and solve the problem step by step."* — measurably improved model performance on complex tasks compared to vanilla chain-of-thought. The model stopped jumping to the first plausible action and instead decomposed the problem first.
 
 This "plan first, then execute" split became the template for every major agent planning system that followed. What the different frameworks add on top is mostly about *how the plan is represented*, *how execution feeds back into the plan*, and *what triggers a revision*.
 
@@ -206,3 +206,5 @@ The planning subsystem logs under `agent_framework.planning.*`:
 - [How to Create a Planning Agent]({{ '/build/creating-planning-agents/' | relative_url }}) — step-by-step implementation guide
 - [Agent Runtime Patterns]({{ '/learn/agent-runtime-patterns/' | relative_url }}) — the foundational loop
 - [Decision JSON Contract]({{ '/reference/decision-json-contract/' | relative_url }}) — full schema for plan decisions
+
+[^wang-2023]: Wang et al., "Plan-and-Solve Prompting: Improving Zero-Shot Chain-of-Thought Reasoning by Large Language Models" (2023), https://ar5iv.labs.arxiv.org/html/2305.04091

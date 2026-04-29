@@ -1079,6 +1079,19 @@ class Agent:
                         f"Workflow step {step.step_id!r} parameters must resolve to dict, "
                         f"got {type(resolved_parameters).__name__}."
                     )
+                _LOGGER.debug(
+                    "WorkflowCallSubagentStep resolved",
+                    extra={
+                        "workflow_step_id": step.step_id,
+                        "agent_id": self.agent_id,
+                        "subagent_id": resolved_subagent_id,
+                        "parameters_json": json.dumps(
+                            resolved_parameters,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    },
+                )
                 result = self._execute_single_subagent_flow(
                     host=host,
                     run=run,

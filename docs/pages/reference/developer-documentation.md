@@ -100,7 +100,7 @@ The important runtime detail is where the override is applied:
 
 Evaluator surfaces:
 
-- Web UI: model dropdown populated from `.env` `DEFAULT_MODEL`, left empty by default
+- Web UI: free-text model field with completions from `.env` `DEFAULT_MODEL`, left empty by default
 - CLI: `--agent-model-override` and `--agent-model-override-scope {root_only,all_agents}`
 - Initializers: `DEFAULT_AGENT_MODEL_OVERRIDE` / `get_default_agent_model_override()` and `DEFAULT_AGENT_MODEL_OVERRIDE_SCOPE` / `get_default_agent_model_override_scope()`
 
