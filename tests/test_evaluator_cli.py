@@ -992,6 +992,7 @@ def test_web_command_sets_agent_model_override_defaults(monkeypatch: pytest.Monk
             "web",
             "--env",
             ".env",
+            "--no-open-browser",
             "--agent-model-override",
             "gpt-4o",
             "--agent-model-override-scope",
