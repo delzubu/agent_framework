@@ -169,7 +169,7 @@ function getEvaluationUiDeps() {
     fillEvaluationDetailDom,
     hideCaseEvalSubpanels,
     normalizeUsageTotals,
-    openBatchCaseEvaluationModal,
+    openBatchCaseEvaluationModal: openBatchCaseEvaluationModalUi,
     renderEvalScoreBar,
     setLastEvaluationPayload: (payload) => {
       lastEvaluationPayload = payload;
