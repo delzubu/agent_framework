@@ -149,6 +149,23 @@ def _parse_planning_config(raw: Any, source_path: Path | None = None) -> "Planni
         ) from exc
 
 
+def _render_result_for_injection(result: Any) -> str:
+    """Render an AgentResult for injection into a parent conversation.
+
+    Prefers the typed envelope when *response* is set; falls back to the
+    legacy _subagent_result_payload serialization otherwise.
+    """
+    from agent_framework.agents.result_envelope import render_subagent_envelope
+    response = getattr(result, "response", None)
+    if response is not None:
+        return render_subagent_envelope(message=result.message, response=response)
+    return _subagent_result_payload(
+        result.message,
+        getattr(result, "parameters", None),
+        getattr(result, "parameters_injection", "override"),
+    )
+
+
 def _subagent_result_payload(
     message: str,
     parameters: dict[str, Any] | None,
@@ -764,6 +781,7 @@ class Agent:
         return AgentResult(
             status="completed",
             message=decision.message,
+            response=decision.response,
             parameters=decision.parameters if decision.parameters else None,
             parameters_injection=self.parameters_injection,
             decision=decision,
@@ -1317,7 +1335,7 @@ class Agent:
         )
         if pre_decision.system_message:
             run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
-        payload = _subagent_result_payload(result.message, result.parameters, result.parameters_injection)
+        payload = _render_result_for_injection(result)
         agent_events.audit_named_event(
             run_id=run.run_id,
             agent_id=self.agent_id,
@@ -1452,11 +1470,7 @@ class Agent:
             attrs = f'key="{r.output_key}" agent_id="{r.subagent_id}" status="{r.status}"'
             if r.status == "blocked" and r.callback_intent:
                 attrs += f' intent="{r.callback_intent}"'
-            payload = _subagent_result_payload(
-                r.message,
-                getattr(r, "parameters", None),
-                getattr(r, "parameters_injection", "override"),
-            )
+            payload = _render_result_for_injection(r)
             if payload:
                 lines.append(f"  <subagent_result {attrs}>{payload}</subagent_result>")
             else:

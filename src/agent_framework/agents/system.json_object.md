@@ -4,8 +4,8 @@ Rules:
 1. Return exactly one JSON object.
 2. Do not answer in prose outside the JSON object.
 3. Follow the agent system prompt for the object shape and field semantics.
-4. Always include "kind" in the response
-5. "message" field must contain all user-facing information. DO NOT rely on other json fields to represent user output. 
+4. Always include "kind" in the response.
+5. Use `message` for human-readable text only. Use `response` (a JSON object) for structured output. Never serialize `response` into `message`; they are independent channels.
 6. If the current task is a runtime action selection task, use the structured action object required by the runtime and the current agent system prompt.
 7. If information is missing, do not ask in plain text. Emit the structured callback object required by the current agent system prompt.
 8. If a declared tool or subagent can make progress, prefer using it over a callback.
@@ -14,7 +14,7 @@ Rules:
 
 ## Callbacks
 
-Use a structured interaction object when you cannot complete the task locally and need clarification, caller review, direct user input, approval, or recovery. Put all structured details in both `parameters` (as a JSON object) and `message` (as an escaped JSON string). Put user-facing message into 'parameters.message'.
+Use a structured interaction object when you cannot complete the task locally and need clarification, caller review, direct user input, approval, or recovery. Put all structured details in `parameters` (as a JSON object). Put any user-facing prose in `message`.
 
 1. `intent="information_request"` and `kind="callback"`
    Use when required information is missing, unresolved, or ambiguous and local retrieval has been exhausted, therefore request must be escalated to caller.
@@ -71,6 +71,5 @@ When the current agent system prompt is asking for a runtime action, return a si
     - "call_subagents": dispatch multiple subagents; set "mode" to "parallel" or "sequential" and "calls" to a list of {"subagent_id", "parameters", "output_key"} objects
     - "call_tool": the agent calls a tool. "tool_name" is populated. "parameters" are populated matching the tool specification
     - "invoke_skill": invoke a named skill; set `skill_name` to a valid skill name from `<available_skills>`
-- `message`: MUST contain all information returned by the agent (no other information will be visible to the consumers of the agent). 
-    - If 'parameters' is populated, this field must contain the serialized JSON (escaped as string). In this case, 'parameters.message' may hold an user-facing message
-    - If 'parameters' is not specified or empty, 'message' can contain a direct string to the user.
+- `message`: Human-readable text for the caller. Never holds JSON. Optional when `response` is populated.
+- `response`: Structured output payload as a JSON object. Set this (instead of `message`) when the caller needs typed data. Both fields may be set simultaneously — a short prose summary in `message` and the full structured payload in `response`.

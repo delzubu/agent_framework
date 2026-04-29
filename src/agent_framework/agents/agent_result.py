@@ -15,6 +15,7 @@ class AgentResult:
 
     status: str
     message: str = ""
+    response: dict[str, Any] | None = None
     parameters: dict[str, Any] | None = None
     parameters_injection: str = "override"
     decision: AgentDecision | None = None

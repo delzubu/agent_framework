@@ -37,3 +37,8 @@ Example `call_subagents`:
   {"subagent_id": "critic", "parameters": {"topic": "X"}, "output_key": "critique"}
 ]}
 ```
+
+## Output channels for `final_message`
+
+- `message`: Human-readable prose for the caller. Never serialize JSON into this field.
+- `response`: Structured output as a JSON object. Use when the caller needs typed data. Both fields may be set together — prose summary in `message`, full payload in `response`.

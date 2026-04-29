@@ -192,17 +192,14 @@ def _dispatch_step(
             result = host.execute_tool(step.tool_name, params)
 
         elif step.kind == "call_subagent":
+            from agent_framework.agents.agent import _render_result_for_injection
             agent_result = host.call_subagent(
                 caller=agent,
                 callee_id=step.subagent_id,
                 parameters=params,
                 parent_run_id=run.run_id,
             )
-            result = _subagent_result_payload(
-                agent_result.message,
-                agent_result.parameters,
-                agent_result.parameters_injection,
-            )
+            result = _render_result_for_injection(agent_result)
 
         elif step.kind == "invoke_skill":
             # Delegate to the agent's skill invocation handler.
@@ -694,6 +691,7 @@ class PlanningTurnDriver:
         return AgentResult(
             status="completed",
             message=decision.message,
+            response=decision.response,
             parameters=decision.parameters if decision.parameters else None,
             decision=decision,
             prompt=run.rendered_prompt,

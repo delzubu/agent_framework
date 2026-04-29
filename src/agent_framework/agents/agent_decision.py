@@ -178,6 +178,7 @@ class AgentDecision:
 
     kind: str
     message: str = ""
+    response: dict[str, Any] | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
     subagent_id: str | None = None
     tool_name: str | None = None
@@ -327,9 +328,21 @@ class AgentDecision:
         if normalized_kind in ("submit_plan", "amend_plan"):
             plan = _parse_and_validate_plan(payload)
 
+        raw_response = payload.get("response")
+        if isinstance(raw_response, dict):
+            decision_response: dict[str, Any] | None = raw_response
+        else:
+            if normalized_kind == "final_message" and payload.get("parameters"):
+                _LOGGER.warning(
+                    "Deprecated: 'parameters' used as result payload in final_message decision. "
+                    "Set 'response' for structured output; 'parameters' on results will be removed."
+                )
+            decision_response = None
+
         return cls(
             kind=normalized_kind,
             message=str(payload.get("message", "")).strip(),
+            response=decision_response,
             parameters=dict(payload.get("parameters", {}) or {}),
             subagent_id=subagent_id,
             tool_name=tool_name,
