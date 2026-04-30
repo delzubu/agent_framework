@@ -295,6 +295,7 @@ class RecordingAgentHost(AgentHost):
         run_id: str = "",
         parent_run_id: str | None = None,
         allow_user_fallback: bool = True,
+        allow_caller_run: bool = True,
         callback_parameters: dict[str, Any] | None = None,
     ) -> str:
         """Record a callback request and avoid interactive roundtrips at the host boundary."""

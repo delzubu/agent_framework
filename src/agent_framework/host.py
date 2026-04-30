@@ -1831,6 +1831,7 @@ class AgentHost:
                         intent=br.callback_intent or "information_request",
                         run_id=br.run_id,
                         parent_run_id=parent_run_id,
+                        allow_caller_run=False,
                     )
                 except Exception as exc:
                     self.delete_checkpoint(br.run_id)
@@ -2003,6 +2004,7 @@ class AgentHost:
         run_id: str = "",
         parent_run_id: str | None = None,
         allow_user_fallback: bool = True,
+        allow_caller_run: bool = True,
         callback_parameters: dict[str, Any] | None = None,
     ) -> str:
         """Collect a callback response from the caller side."""
@@ -2032,6 +2034,7 @@ class AgentHost:
                     run_id=run_id,
                     parent_run_id=caller_run.parent_run_id,
                     allow_user_fallback=allow_user_fallback,
+                    allow_caller_run=allow_caller_run,
                     callback_parameters=params,
                 )
             if not allow_user_fallback:
@@ -2048,18 +2051,19 @@ class AgentHost:
                 response = caller_agent.respond_to_callback(self, callee_id=callee.agent_id, prompt=prompt)
                 if response is not None:
                     return response
-                result = caller_agent.run(
-                    host=self,
-                    parameters=dict(callback_parameters or {}),
-                    caller_id="host",
-                    rendered_prompt_override=prompt,
-                )
-                if result.message:
-                    return result.message
-                if not allow_user_fallback:
-                    raise RuntimeError(
-                        f"Caller agent {caller_id!r} did not resolve callback for {callee.agent_id!r}."
+                if allow_caller_run:
+                    result = caller_agent.run(
+                        host=self,
+                        parameters=dict(callback_parameters or {}),
+                        caller_id="host",
+                        rendered_prompt_override=prompt,
                     )
+                    if result.message:
+                        return result.message
+                    if not allow_user_fallback:
+                        raise RuntimeError(
+                            f"Caller agent {caller_id!r} did not resolve callback for {callee.agent_id!r}."
+                        )
         # Fall back to user_comm
         if not allow_user_fallback:
             raise RuntimeError(
