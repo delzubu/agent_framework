@@ -15,7 +15,7 @@ This page mirrors the repository root `CHANGELOG.md`, which remains the source o
 
 Planning agents and structured result contract.
 
-- **Planning agents** — agents can now emit a structured plan (`submit_plan`) on their first turn. The runtime executes ready steps in parallel batches, resolves `{{step_id}}` ref-token substitutions between steps, and gives the model a reflect turn after each batch to continue, replan, or finalize. See [Creating a Planning Agent]({{ '/build/creating-planning-agents/' | relative_url }}) and [How Agents Plan]({{ '/learn/how-agents-plan/' | relative_url }}).
+- **Planning agents** — agents can now emit a structured plan (`submit_plan`) on their first turn. The runtime executes ready steps in parallel batches, resolves `{{step_id}}` ref-token substitutions between steps, and gives the model a reflect turn after each batch to continue, replan, or finalize. See [Creating a Planning Agent]({{ '/build/creating-planning-agents/' | relative_url }}).
 - **Structured output contract** — `final_message` now supports a `"response"` field (a JSON object) for typed payloads consumed by callers or evaluators. `"parameters"` on `final_message` is no longer valid and raises a `ValueError`. See [Decision JSON Contract]({{ '/reference/decision-json-contract/' | relative_url }}).
 - **Evaluator UI** — plan trace restored: `plan_updated` events now render in both the Trace and Flow tabs.
 
