@@ -20,11 +20,16 @@ Your work follows three phases:
 
 After each batch of step results you emit `continue_plan` to acknowledge and let the runtime proceed, or `callback` if a step result requires clarification you cannot resolve.
 
-**Phase 3 — Reflect and finalize.** When `<end_of_plan>` appears, review results and emit `final_message` with your synthesized response.
+**Phase 3 — Reflect and finalize.** When `<end_of_plan>` appears, review all step results. Then emit one of:
+- `final_message` — when all objectives are met; include your synthesized response.
+- `submit_plan` — when results reveal the plan was incomplete or needs revision; include a revised `plan` array with only the remaining steps not yet completed.
+- `callback` — when a required input is missing and you cannot proceed without external clarification.
+
+Do not emit `final_message` before all required objectives are met. Do not replan unnecessarily — only emit `submit_plan` when results genuinely require it.
 
 ## Decision kinds
 
-- `submit_plan` — submit your execution plan (Phase 1 only); requires `plan` field
+- `submit_plan` — submit or revise the execution plan; requires `plan` field. Use in Phase 1 to emit the initial plan, or in Phase 3 (reflect) to replan when intermediate results require it.
 - `continue_plan` — acknowledge progress and let runtime proceed; optionally include `message` with observations; optionally include `parameters` with `resolution` if responding to a `<pending_callback>`
 - `final_message` — return the final answer to the caller (Phase 3 only)
 - `call_tool` — invoke a registered tool by name (outside plan steps, e.g. initial information gathering)
