@@ -23,6 +23,12 @@ from agent_framework.model import (
 )
 
 
+def _is_temperature_unsupported(exc: Exception) -> bool:
+    """Return True when the provider error indicates the model does not accept temperature."""
+    msg = str(exc).lower()
+    return "temperature" in msg and ("unsupported" in msg or "not supported" in msg)
+
+
 @dataclass(slots=True)
 class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
     """OpenAI-backed model driver for the Responses API."""
@@ -38,6 +44,7 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
     on_request_trace: Any | None = None
     on_response_trace: Any | None = None
     _fallback_state: dict[tuple[str, ...], int] = field(default_factory=dict, repr=False)
+    _no_temperature_models: set[str] = field(default_factory=set, repr=False)
     _client: Any = field(default=None, repr=False)
 
     def set_trace_callbacks(
@@ -151,16 +158,23 @@ class OpenAiModelDriver(ModelDriverBase, _FallbackMixin):
                         run_id=context.run_id,
                     )
                 )
-            create_kwargs: dict[str, Any] = {
-                "model": model_name,
-                "temperature": temperature,
-                "input": model_input,
-            }
+            include_temperature = model_name not in self._no_temperature_models
+            create_kwargs: dict[str, Any] = {"model": model_name, "input": model_input}
+            if include_temperature:
+                create_kwargs["temperature"] = temperature
             if fmt_dict is not None:
                 create_kwargs["text"] = {
                     "format": openai_responses_text_format_field(fmt_dict),
                 }
-            response = client.responses.create(**create_kwargs)
+            try:
+                response = client.responses.create(**create_kwargs)
+            except Exception as exc:
+                if include_temperature and _is_temperature_unsupported(exc):
+                    self._no_temperature_models.add(model_name)
+                    create_kwargs.pop("temperature")
+                    response = client.responses.create(**create_kwargs)
+                else:
+                    raise
             raw_response_text = self._raw_response_text(response)
             raw_text = response.output_text.strip()
             raw_usage = self._usage_payload(getattr(response, "usage", None))
