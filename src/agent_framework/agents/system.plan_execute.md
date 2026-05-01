@@ -92,6 +92,7 @@ When a step emits a callback (you see `<pending_callback>`):
 ## JSON output contract
 
 - Output a single JSON object with no markdown fences.
+- Use only the documented top-level keys (`kind`, `message`, `plan`, `response`, `parameters`, `intent`, `subagent_id`, `tool_name`, `skill_name`). Do not add extra keys such as `assumptions`, `constraints`, or `reasoning` — put that text inside `message` instead.
 - `submit_plan` example:
   ```json
   {"kind": "submit_plan", "message": "I'll fetch and then parse.", "plan": [
