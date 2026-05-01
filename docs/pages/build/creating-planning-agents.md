@@ -85,7 +85,9 @@ A plan is a list of steps. Each step is an object with these fields:
 
 - `id`: a short, unique identifier (snake_case)
 - `kind`: the action kind — `call_tool`, `call_subagent`, or `invoke_skill`
-- `parameters`: action parameters; use `{{step_id.field}}` to reference a prior step's result
+- `tool_name` (for `call_tool`): the tool to invoke
+- `subagent_id` (for `call_subagent`): the child agent to delegate to
+- `parameters`: action-specific arguments; use `{{step_id.field}}` to reference a prior step's result
 - `depends_on`: list of step IDs that must complete before this step runs
 
 Steps whose `depends_on` list is empty or whose dependencies are all complete
@@ -95,20 +97,20 @@ Example plan:
 ```json
 {
   "kind": "submit_plan",
-  "steps": [
+  "message": "Fetch data and analyze it.",
+  "plan": [
     {
       "id": "fetch_data",
       "kind": "call_tool",
-      "parameters": {"tool_name": "fetch", "url": "{{source_url}}"},
+      "tool_name": "fetch",
+      "parameters": {"url": "{{source_url}}"},
       "depends_on": []
     },
     {
       "id": "analyze",
       "kind": "call_subagent",
-      "parameters": {
-        "subagent_id": "data_analyzer",
-        "data": "{{fetch_data.content}}"
-      },
+      "subagent_id": "data_analyzer",
+      "parameters": {"data": "{{fetch_data.content}}"},
       "depends_on": ["fetch_data"]
     }
   ]
@@ -120,8 +122,8 @@ Example plan:
 
 After each batch of steps completes, the model receives the results and must choose one of:
 
-- `continue_plan` — proceed to the next ready batch.
-- `amend_plan` — revise the remaining steps based on what was learned.
+- `continue_plan` — acknowledge results and proceed to the next ready batch.
+- `submit_plan` — revise the remaining steps based on what was learned (replan).
 - `final_message` — all objectives are met; emit the final result.
 
 Add this section to the system prompt:
@@ -132,12 +134,12 @@ Add this section to the system prompt:
 After executing a batch of steps, you will receive the results. You must then emit one of:
 
 - `continue_plan` — if the results are satisfactory and there are more steps to execute
-- `amend_plan` — if the results reveal that the remaining plan is wrong or insufficient;
-  include a revised `steps` array with only the remaining (not yet completed) steps
-- `final_message` — if all objectives are met; include the final result in your message
+- `submit_plan` — if the results reveal that the remaining plan is wrong or insufficient;
+  include a revised `plan` array with only the remaining (not yet completed) steps
+- `final_message` — if all objectives are met; include the final result
 
 Do not emit `final_message` before all required steps are complete.
-Do not emit `amend_plan` unless the results genuinely require it — unnecessary replanning wastes tokens.
+Do not emit `submit_plan` (replan) unless the results genuinely require it — unnecessary replanning wastes tokens.
 ```
 
 ---
@@ -190,17 +192,15 @@ When a step parameter is *entirely* a `{{ref}}` token and the referenced value i
 {
   "id": "get_player_state",
   "kind": "call_subagent",
-  "parameters": {
-    "subagent_id": "player_lookup",
-    "player_id": "{{player_id}}"
-  },
+  "subagent_id": "player_lookup",
+  "parameters": {"player_id": "{{player_id}}"},
   "depends_on": []
 },
 {
   "id": "evaluate_options",
   "kind": "call_subagent",
+  "subagent_id": "option_evaluator",
   "parameters": {
-    "subagent_id": "option_evaluator",
     "player_name": "{{get_player_state.name}}",
     "current_location": "{{get_player_state.location}}",
     "inventory": "{{get_player_state.inventory}}"
@@ -218,20 +218,22 @@ Steps with no unmet dependencies run in parallel:
   {
     "id": "search_wiki",
     "kind": "call_tool",
-    "parameters": {"tool_name": "search", "query": "{{topic}}"},
+    "tool_name": "search",
+    "parameters": {"query": "{{topic}}"},
     "depends_on": []
   },
   {
     "id": "search_news",
     "kind": "call_tool",
-    "parameters": {"tool_name": "search_news", "query": "{{topic}}"},
+    "tool_name": "search_news",
+    "parameters": {"query": "{{topic}}"},
     "depends_on": []
   },
   {
     "id": "synthesize",
     "kind": "call_subagent",
+    "subagent_id": "synthesizer",
     "parameters": {
-      "subagent_id": "synthesizer",
       "wiki_results": "{{search_wiki.results}}",
       "news_results": "{{search_news.results}}"
     },
@@ -301,13 +303,58 @@ expected_contains: ["get_player_state", "evaluate_options", "apply_action"]
 
 ---
 
+## Output contract for `final_message`
+
+Planning agents return results to their callers via `final_message`. There are two forms:
+
+**Text result** — a prose answer the caller reads as a string:
+```json
+{"kind": "final_message", "message": "Research complete. The answer is X."}
+```
+
+**Structured result** — a typed JSON payload the caller or evaluator consumes programmatically:
+```json
+{
+  "kind": "final_message",
+  "message": "",
+  "response": {
+    "status": "ready",
+    "items": [...]
+  }
+}
+```
+
+Use `"response"` (a JSON object) whenever downstream code needs to read specific fields from the result. **Do not use `"parameters"` on `final_message`** — `parameters` is reserved for `call_tool`, `call_subagent`, and `callback` decisions. Setting it on `final_message` raises a `ValueError` at runtime.
+
+Your system prompt's Output Shape section should show the exact JSON the model must emit, using `"response"` for structured output:
+
+```markdown
+## Output Shape
+
+When all plan steps are complete, emit:
+
+```json
+{
+  "kind": "final_message",
+  "message": "",
+  "response": {
+    "status": "ready | blocked",
+    "results": ["..."],
+    "reasoning": ["..."]
+  }
+}
+```
+```
+
+---
+
 ## Common pitfalls
 
 **Model emits `call_tool` instead of `submit_plan` on the first turn.** The prompt did not make the planning contract clear. Add explicit instruction: "Your first decision must be `submit_plan` with a complete plan. Do not call tools directly."
 
 **Steps with `depends_on` populated but references not used.** A step that declares `depends_on: ["step_a"]` but does not reference `{{step_a.*}}` in its parameters is not wrong, but it may signal that the dependency is unnecessary — remove it to unlock parallelism.
 
-**Plan revision loop.** If the model keeps emitting `amend_plan` without making progress, check whether the sub-agents are producing results in the format the model expects. The `max_plan_revisions` cap prevents infinite revision loops.
+**Plan revision loop.** If the model keeps emitting `submit_plan` (replan) without making progress, check whether the sub-agents are producing results in the format the model expects. The `max_plan_revisions` cap prevents infinite revision loops.
 
 **`final_message` too early.** If the model emits `final_message` before all steps complete, the reflect prompt is not enforcing the "all steps complete" check. Add the check explicitly to the prompt.
 
@@ -352,7 +399,7 @@ Maximize parallelism: steps that do not depend on each other should run at the s
 
 After steps complete, emit:
 - `continue_plan` to proceed to the next batch
-- `amend_plan` with revised remaining steps if results change what needs to happen
+- `submit_plan` with a revised `plan` array if results change what needs to happen
 - `final_message` with the synthesized answer when the research is complete
 
 ## Plan
@@ -377,6 +424,6 @@ Plan and execute a thorough search. Read at least two sources before synthesizin
 
 - [How Agents Plan]({{ '/learn/how-agents-plan/' | relative_url }}) — conceptual background
 - [Three Kinds of Agents]({{ '/learn/three-kinds-of-agents/' | relative_url }}) — when to use planning vs other patterns
-- [Decision JSON Contract]({{ '/reference/decision-json-contract/' | relative_url }}) — full schema for `submit_plan`, `amend_plan`, `continue_plan`
+- [Decision JSON Contract]({{ '/reference/decision-json-contract/' | relative_url }}) — full schema for `submit_plan`, `continue_plan`, `final_message`
 - [Evaluation and Debugging]({{ '/build/evaluation-and-debugging/' | relative_url }}) — evaluating planning agents
 - [Tracing and Observability]({{ '/build/tracing-and-observability/' | relative_url }}) — reading PlanState in traces

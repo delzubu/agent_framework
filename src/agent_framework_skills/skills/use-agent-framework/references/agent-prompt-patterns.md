@@ -101,8 +101,12 @@ Per tool in the system prompt:
 ### `agent_framework` JSON decision kinds
 
 ```json
-// Terminal — agent is done
-{"kind": "final_message", "message": "string"}
+// Terminal — text answer
+{"kind": "final_message", "message": "The answer is 42."}
+
+// Terminal — structured result (machine-readable payload for downstream consumers)
+// Use "response" (JSON object). Do NOT use "parameters" on final_message — raises ValueError.
+{"kind": "final_message", "message": "", "response": {"status": "ready", "items": []}}
 
 // Tool call
 {"kind": "call_tool", "tool_name": "string", "arguments": {}}
@@ -128,12 +132,23 @@ Per tool in the system prompt:
 
 // Load a skill
 {"kind": "invoke_skill", "skill_id": "string"}
+
+// Planning agent — emit a plan (first turn or replan in reflect)
+{
+  "kind": "submit_plan",
+  "message": "string",
+  "plan": [
+    {"id": "step_a", "kind": "call_tool", "tool_name": "string", "parameters": {}},
+    {"id": "step_b", "kind": "call_subagent", "subagent_id": "string", "depends_on": ["step_a"], "parameters": {"x": "{{step_a}}"}}
+  ]
+}
 ```
 
 **Output contract rules (enforce in system prompt):**
 - Do NOT wrap JSON in markdown code fences
 - Do NOT include both `subagent_id` and `tool_name` in the same object
-- Do NOT invent `kind` values — only the six above are valid
+- Do NOT invent `kind` values — only the kinds above are valid
+- Do NOT use `"parameters"` on `final_message` — use `"response"` for structured output
 - Output MUST be a single JSON object, nothing else
 
 **Add to system prompt (negative example):**
@@ -141,7 +156,9 @@ Per tool in the system prompt:
 WRONG: ```json\n{"kind": "call_tool", ...}```
 WRONG: {"kind": "gather_context", ...}
 WRONG: {"kind": "call_tool", "tool_name": "x", "subagent_id": "y"}
+WRONG: {"kind": "final_message", "parameters": {...}}   ← use "response" not "parameters"
 CORRECT: {"kind": "call_tool", "tool_name": "x", "arguments": {...}}
+CORRECT: {"kind": "final_message", "message": "", "response": {...}}
 ```
 
 ---
@@ -231,8 +248,9 @@ Correct decision: {"kind": "callback", "intent": "...", "message": "..."}
 
 | Industry pattern | Our primitive | Configure via |
 |-----------------|--------------|---------------|
-| ReAct loop | Default decision loop | System prompt output format, tools list |
-| Plan-and-Execute | Planner agent (`call_subagent`) + executor agents (`call_subagents`) | Separate `.md` files per agent |
+| ReAct loop | Default decision loop (standalone agent) | System prompt output format, tools list |
+| Deterministic orchestration | `AgentBehavior.before_run` + `ProgrammaticWorkflow` | Python behavior + `workflow-agents.md` |
+| Plan-and-Execute with data deps | `submit_plan` + `PlanningTurnDriver` (planning agent) | `planning:` frontmatter block + `planning-agents.md` |
 | Reflexion / self-critique | Critic sub-agent + `callback` | Critic agent with evaluation role |
 | Router / supervisor | Root agent with routing rules + `call_subagent` | Root agent system prompt |
 | Parallel crew | `call_subagents` with `output_key` per agent | `call_subagents` decision kind |

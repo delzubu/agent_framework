@@ -247,6 +247,7 @@
     if (kind.includes("decision")) return { icon: "◎", cssClass: "trace-event--decision" };
     if (kind.includes("model_call")) return { icon: "⊡", cssClass: "trace-event--model" };
     if (kind.includes("context_updated")) return { icon: "≡", cssClass: "trace-event--context" };
+    if (kind.includes("plan_updated")) return { icon: "📋", cssClass: "trace-event--plan" };
     return null;
   }
 

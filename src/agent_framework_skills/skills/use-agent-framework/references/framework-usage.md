@@ -104,13 +104,28 @@ Use the sidecar for runtime metadata only. Keep parameters, tools, subagents, re
 Every model call produces exactly one decision. The framework parses and dispatches it, then loops.
 
 ### `final_message` — done, return result
+
+**Text result** (plain prose answer, no structured payload):
+```json
+{"kind": "final_message", "message": "The answer is 42."}
+```
+
+**Structured result** (machine-readable payload for downstream consumers):
 ```json
 {
   "kind": "final_message",
-  "message": "The answer is 42.",
-  "parameters": {}
+  "message": "",
+  "response": {
+    "status": "ready",
+    "items": []
+  }
 }
 ```
+
+Rules:
+- Use `"message"` for human-readable prose answers.
+- Use `"response"` (a JSON object) when the caller or evaluator needs a typed payload — e.g. a list of extracted records, a routing decision, a status block.
+- **Do NOT use `"parameters"` on `final_message`** — `parameters` is reserved for `call_tool` / `call_subagent` / `callback` decisions. Setting it on `final_message` raises `ValueError`.
 
 ### `call_tool` — invoke a registered tool
 ```json
@@ -239,6 +254,74 @@ Routing guidance:
 }
 ```
 The skill's full file content is injected as a user message. Loop continues.
+
+---
+
+## Planning agents
+
+A planning agent separates *plan generation* from *plan execution*. Enable it with a `planning:` frontmatter block:
+
+```yaml
+planning:
+  enabled: true
+  parallel_execution: true   # dispatch independent steps concurrently
+  max_steps: 30
+  max_plan_revisions: 3
+  step_timeout_seconds: 60
+```
+
+### Planning decision kinds
+
+**`submit_plan`** — emit a plan on the first turn (and on replan in reflect):
+```json
+{
+  "kind": "submit_plan",
+  "message": "Retrieve context and parse intents.",
+  "plan": [
+    {
+      "id": "get_data",
+      "kind": "call_tool",
+      "tool_name": "read_db",
+      "parameters": {"id": "{{input_id}}"}
+    },
+    {
+      "id": "process",
+      "kind": "call_subagent",
+      "subagent_id": "processor",
+      "depends_on": ["get_data"],
+      "parameters": {"data": "{{get_data}}"}
+    }
+  ]
+}
+```
+
+Step fields:
+- `id` — unique step identifier within this plan; used by `depends_on` and `{{ref}}` tokens.
+- `kind` — `call_tool` | `call_subagent` | `invoke_skill` | `callback`.
+- `depends_on` — list of step ids that must complete before this step runs.
+- `parameters` — step parameters; may embed `{{step_id}}` or `{{step_id.field}}` tokens (resolved at execution time).
+
+**`final_message`** (in reflect) — emit after all steps complete:
+```json
+{
+  "kind": "final_message",
+  "message": "",
+  "response": {"status": "ready", "results": []}
+}
+```
+
+### Ref-token substitution
+
+`{{step_id}}` in a parameter value is replaced with the string representation of that step's result before the step executes. `{{step_id.field}}` extracts a single field from a JSON object result.
+
+### Reflect phase
+
+After each batch of steps the model gets a reflect turn to evaluate intermediate results and decide whether to:
+- emit `final_message` (plan complete)
+- emit `submit_plan` again (replan with revised steps)
+- emit `callback` (escalate before continuing)
+
+Consult `references/planning-agents.md` for the full planning reference, prompt templates, and examples.
 
 ---
 

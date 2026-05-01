@@ -16,6 +16,7 @@ Load reference files on demand as your work requires:
 | `references/framework-usage.md` | Before writing or modifying any agent, tool, behavior, or host code |
 | `references/agent-usage.md` | Before creating or editing an agent `.md`, adjacent agent `.json`, or Python `AgentBehavior` |
 | `references/workflow-agents.md` | Before building deterministic controller agents that orchestrate subagents from `before_run(...)` |
+| `references/planning-agents.md` | Before building planning agents that emit `submit_plan`, execute steps in parallel, and replan in reflect |
 | `references/tool-authoring.md` | Before creating or changing a custom tool `.md` / `.py` pair |
 | `references/evaluator-usage.md` | Before writing evaluations, case files, initializers, or running the evaluator |
 | `references/memory-usage.md` | When the agent handles large/shared payloads, `mem://...` refs, or memory tools |
@@ -41,6 +42,7 @@ The `references/` folder is in the same directory as this file. Load any referen
 references/framework-usage.md
 references/agent-usage.md
 references/workflow-agents.md
+references/planning-agents.md
 references/tool-authoring.md
 references/evaluator-usage.md
 references/memory-usage.md

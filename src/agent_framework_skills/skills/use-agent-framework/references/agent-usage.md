@@ -13,6 +13,16 @@ Use this reference when building or modifying an agent for `agent_framework`, es
 | Add deterministic validation, prompt augmentation, memory preload, sanitization, or verification loops | Python `AgentBehavior` |
 | Add new host/tool/storage/runtime capabilities | Python framework code |
 
+### Three kinds of agents
+
+| Kind | How | When |
+|---|---|---|
+| **Standalone** | Default reactive loop; model decides each turn | Open-ended tasks; emergent behavior; small step count |
+| **Programmatic workflow** | `AgentBehavior.before_run` + `ProgrammaticWorkflow`; LLM bypassed for orchestration | Deterministic control flow; fixed routing topology; LLM-free parent |
+| **Planning** | `planning:` frontmatter block; model emits `submit_plan`; runtime executes batches + reflect | Structured multi-step tasks; data dependencies between steps; parallel execution desired |
+
+Load `references/workflow-agents.md` for programmatic workflows. Load `references/planning-agents.md` for planning agents.
+
 Rule of thumb:
 
 - keep agent intent in Markdown
