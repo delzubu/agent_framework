@@ -650,7 +650,14 @@ class Agent:
                 )
             )
         try:
-            return AgentDecision.from_model_response(response, planning_active=planning_active)
+            completed_step_ids: frozenset[str] | None = None
+            if run.plan_state is not None:
+                completed_step_ids = frozenset(run.plan_state.step_results.keys())
+            return AgentDecision.from_model_response(
+                response,
+                planning_active=planning_active,
+                completed_step_ids=completed_step_ids,
+            )
         except BaseException as exc:
             validate_model_exception = getattr(host, "validate_model_exception", None)
             if not callable(validate_model_exception):

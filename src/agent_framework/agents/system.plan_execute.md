@@ -29,14 +29,14 @@ After each batch of step results you emit `continue_plan` to acknowledge and let
 
 **Phase 3 — Reflect and finalize.** When `<end_of_plan>` appears, review all step results. Then emit one of:
 - `final_message` — when all objectives are met; include your synthesized response.
-- `submit_plan` — when results reveal the plan was incomplete or needs revision; include a revised `plan` array with only the remaining steps not yet completed.
+- `submit_plan` — when results reveal the plan was incomplete or needs revision; include a revised `plan` array with only the new remaining steps. Completed step results are still available as `{{step_id}}` references in the new steps' parameters — do NOT re-list completed step IDs in `depends_on`.
 - `callback` — when a required input is missing and you cannot proceed without external clarification.
 
 Do not emit `final_message` before all required objectives are met. Do not replan unnecessarily — only emit `submit_plan` when results genuinely require it.
 
 ## Decision kinds
 
-- `submit_plan` — submit or revise the execution plan; requires `plan` field. Use in Phase 1 to emit the initial plan, or in Phase 3 (reflect) to replan when intermediate results require it.
+- `submit_plan` — submit or revise the execution plan; requires `plan` field. Use in Phase 1 to emit the initial plan, or in Phase 3 (reflect) to replan when intermediate results require it. When replanning, include only the new remaining steps — do not re-include already-completed steps. Completed step results remain accessible as `{{step_id}}` in parameters; do NOT list completed step IDs in `depends_on` (only list IDs of other steps in the same new plan).
 - `continue_plan` — acknowledge progress and let runtime proceed (only valid when there are still pending steps or a `<pending_callback>`; do NOT emit when `<end_of_plan>` is present); optionally include `message` with observations; optionally include `parameters` with `resolution` if responding to a `<pending_callback>`
 - `final_message` — return the final answer to the caller (Phase 3 only)
 - `call_tool` — invoke a registered tool by name (outside plan steps, e.g. initial information gathering)

@@ -50,7 +50,11 @@ class SubagentCallSpec:
     output_key: str = ""  # filled to "call_<i>" by parser when absent
 
 
-def _parse_and_validate_plan(payload: dict[str, Any]) -> "tuple[PlanStep, ...]":
+def _parse_and_validate_plan(
+    payload: dict[str, Any],
+    *,
+    completed_step_ids: frozenset[str] | None = None,
+) -> "tuple[PlanStep, ...]":
     """Parse and validate a `submit_plan` / `amend_plan` payload into PlanSteps.
 
     Raises `ValueError` for any of the validation rules in ADR §7.3.
@@ -138,10 +142,17 @@ def _parse_and_validate_plan(payload: dict[str, Any]) -> "tuple[PlanStep, ...]":
         for dep in raw_deps:
             dep_id = str(dep).strip()
             if dep_id not in seen_ids:
+                if completed_step_ids and dep_id in completed_step_ids:
+                    raise ValueError(
+                        f"Invalid submit_plan: step {step_id!r} depends_on {dep_id!r} "
+                        "which is already completed from a previous plan. "
+                        f"Remove it from depends_on — its result is still accessible as "
+                        f"{{{{{dep_id}}}}} in parameters."
+                    )
                 raise ValueError(
                     f"Invalid submit_plan: step {step_id!r} depends_on {dep_id!r} which "
-                    "is either unknown or appears later in the plan (forward references "
-                    "are not allowed)."
+                    "is not defined in this plan. Only reference step IDs that appear "
+                    "earlier in the same plan array (no forward references)."
                 )
             deps.append(dep_id)
 
@@ -197,6 +208,7 @@ class AgentDecision:
         response: ModelResponse,
         *,
         planning_active: bool = False,
+        completed_step_ids: frozenset[str] | None = None,
     ) -> "AgentDecision":
         """Create an `AgentDecision` from a normalized model response."""
         payload = response.payload
@@ -326,7 +338,7 @@ class AgentDecision:
         # Parse planning-specific fields.
         plan: tuple[PlanStep, ...] = ()
         if normalized_kind in ("submit_plan", "amend_plan"):
-            plan = _parse_and_validate_plan(payload)
+            plan = _parse_and_validate_plan(payload, completed_step_ids=completed_step_ids)
 
         raw_response = payload.get("response")
         if isinstance(raw_response, dict):

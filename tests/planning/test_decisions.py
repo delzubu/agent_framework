@@ -197,14 +197,25 @@ def test_submit_plan_forward_ref_raises():
     # step_a tries to depend on step_b which comes after it
     step_a = dict(_MINIMAL_STEP, depends_on=["step_b"])
     step_b = {"id": "step_b", "kind": "call_subagent", "subagent_id": "x", "parameters": {}}
-    with pytest.raises(ValueError, match="forward references are not allowed"):
+    with pytest.raises(ValueError, match="no forward references"):
         AgentDecision.from_model_response(_submit([step_a, step_b]), planning_active=True)
 
 
 def test_submit_plan_unknown_dependency_raises():
     step = dict(_MINIMAL_STEP, depends_on=["nonexistent"])
-    with pytest.raises(ValueError, match="forward references are not allowed"):
+    with pytest.raises(ValueError, match="not defined in this plan"):
         AgentDecision.from_model_response(_submit([step]), planning_active=True)
+
+
+def test_submit_plan_completed_step_dependency_gives_helpful_error():
+    """When depends_on references a completed step, error explains to use {{step_id}} instead."""
+    step = dict(_MINIMAL_STEP, depends_on=["prev_step"])
+    with pytest.raises(ValueError, match=r"already completed.*\{\{prev_step\}\}"):
+        AgentDecision.from_model_response(
+            _submit([step]),
+            planning_active=True,
+            completed_step_ids=frozenset(["prev_step"]),
+        )
 
 
 # ---------------------------------------------------------------------------
