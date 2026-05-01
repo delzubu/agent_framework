@@ -36,5 +36,6 @@ class AgentRun:
     in_parallel_batch: bool = False
     plan_state: "PlanState | None" = None
     consecutive_validation_failures: int = 0
+    planning_semantic_failures: int = 0
 
 __all__ = ["AgentRun"]

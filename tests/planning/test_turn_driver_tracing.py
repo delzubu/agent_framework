@@ -112,10 +112,11 @@ def test_plan_updated_event_emitted_on_initial_submit(tmp_path: Path) -> None:
 
 def test_plan_updated_event_emitted_on_replan(tmp_path: Path) -> None:
     host, recorder = _make_host(tmp_path, payloads=[
-        # Initial plan: step_a, step_b
+        # Initial plan: step_a, step_b — both complete.
         {"kind": "submit_plan", "plan": [_STEP_A, _STEP_B]},
-        # After step_a executes and step_b executes, reflect emits a replan dropping step_b, adding step_c
-        {"kind": "submit_plan", "plan": [_STEP_A, _STEP_C]},
+        # Reflect: replan with only the new pending step (step_c).
+        # Completed steps (step_a, step_b) are not re-listed — new semantics.
+        {"kind": "submit_plan", "plan": [_STEP_C]},
         {"kind": "final_message", "message": "replanned done"},
     ])
     result = host.run_root(initial_instruction="go")
@@ -135,6 +136,9 @@ def test_plan_updated_event_emitted_on_replan(tmp_path: Path) -> None:
     replan = plan_events[1]
     assert replan["is_initial"] is False
     assert replan["plan_revision"] == 2
-    assert "step_b" in replan["dropped_step_ids"]
+    # Completed steps are preserved — nothing is dropped.
+    assert replan["dropped_step_ids"] == []
+    # step_c is the newly added pending step.
     assert "step_c" in replan["added_step_ids"]
-    assert len(replan["plan"]) == 2
+    # Merged plan = completed prefix [step_a, step_b] + new pending [step_c].
+    assert len(replan["plan"]) == 3

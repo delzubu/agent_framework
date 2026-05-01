@@ -149,13 +149,15 @@ def test_max_steps_warning_logged(tmp_path: Path, caplog):
 def test_max_plan_revisions_exceeded_emits_callback(tmp_path: Path):
     """When plan_revision >= max_plan_revisions, a safety-cap callback is emitted."""
     # max_plan_revisions=1: the initial plan sets revision=1; any replan hits the cap.
-    single_step = [{"id": "s", "kind": "call_tool", "tool_name": "echo", "parameters": {}}]
+    # Replan uses a fresh step ID (new semantics: completed IDs must not be reused).
     host, scripted = _make_host(
         tmp_path,
         [
-            {"kind": "submit_plan", "message": "v1", "plan": single_step},
-            # After s completes → reflect → re-plan → plan_revision(1) >= max(1) → cap
-            {"kind": "submit_plan", "message": "v2", "plan": single_step},
+            {"kind": "submit_plan", "message": "v1",
+             "plan": [{"id": "s1", "kind": "call_tool", "tool_name": "echo", "parameters": {}}]},
+            # s1 completes → reflect → replan with new id → plan_revision(1) >= max(1) → cap
+            {"kind": "submit_plan", "message": "v2",
+             "plan": [{"id": "s2", "kind": "call_tool", "tool_name": "echo", "parameters": {}}]},
         ],
         extra_frontmatter="  max_plan_revisions: 1",
     )
@@ -168,10 +170,12 @@ def test_max_plan_revisions_exceeded_emits_callback(tmp_path: Path):
 def test_max_plan_revisions_warning_logged(tmp_path: Path, caplog):
     """A WARNING is logged when >80% of max_plan_revisions is used."""
     # max_plan_revisions=5: warning fires when current revision >= 80% of max (>= 4/5=0.8).
-    # Need: v0 (initial, revision=1) + v1,v2,v3 (replans, revisions 2-4) + v4 (replan
-    # triggers when revision=4 → pct=4/5=0.8 → warning) + final_message.
-    single_step = [{"id": "s", "kind": "call_tool", "tool_name": "echo", "parameters": {}}]
-    payloads = [{"kind": "submit_plan", "message": f"v{i}", "plan": single_step} for i in range(5)]
+    # Each replan uses a unique step ID (new semantics: completed IDs are immutable).
+    payloads = [
+        {"kind": "submit_plan", "message": f"v{i}",
+         "plan": [{"id": f"s{i}", "kind": "call_tool", "tool_name": "echo", "parameters": {}}]}
+        for i in range(5)
+    ]
     payloads.append({"kind": "final_message", "message": "done"})
 
     host, _ = _make_host(

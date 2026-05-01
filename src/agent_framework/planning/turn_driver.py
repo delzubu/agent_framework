@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _futures_wait
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,24 @@ if TYPE_CHECKING:
     from agent_framework.planning.config import PlanningConfig
 
 _LOGGER = logging.getLogger(__name__)
+
+_TOKEN_RE = re.compile(r'\{\{([^}]+?)\}\}')
+
+
+def _extract_token_roots(value: Any) -> set[str]:
+    """Recursively collect {{token}} root names (everything before the first dot) from a value."""
+    roots: set[str] = set()
+    if isinstance(value, str):
+        for m in _TOKEN_RE.finditer(value):
+            token = m.group(1).strip()
+            roots.add(token.split('.')[0])
+    elif isinstance(value, dict):
+        for v in value.values():
+            roots.update(_extract_token_roots(v))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            roots.update(_extract_token_roots(item))
+    return roots
 
 
 def _select_ready_batch(
@@ -321,6 +340,129 @@ class PlanningTurnDriver(BaseTurnDriver):
     def __init__(self, config: "PlanningConfig") -> None:
         self.config = config
 
+    # ------------------------------------------------------------------
+    # Semantic validation helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_submit_plan(
+        decision: AgentDecision,
+        plan_state: "PlanState | None",
+        run: "AgentRun",
+    ) -> "str | None":
+        """Return an error message if the submit_plan is semantically invalid.
+
+        Checks:
+        - {{token}} roots must resolve to a step in this plan, a completed step, or a parameter.
+        - New step IDs must not collide with already-completed step IDs (immutable history).
+        """
+        new_step_ids = {s.id for s in decision.plan}
+        completed_ids = (
+            {c.step_id for c in plan_state.completed_steps}
+            if plan_state is not None else set()
+        )
+        param_names = set(run.parameter_values.keys())
+        valid_roots = new_step_ids | completed_ids | param_names
+
+        errors: list[str] = []
+
+        # Check for step ID collisions with completed history.
+        colliding = sorted(new_step_ids & completed_ids)
+        if colliding:
+            errors.append(
+                "The following step IDs in the new plan collide with already-completed steps "
+                f"(completed steps are immutable history and cannot be redefined): {colliding}. "
+                "Choose different IDs for the new steps. Reference the completed results via "
+                "{{step_id}} in parameters instead."
+            )
+
+        # Check for unresolvable {{token}} references.
+        bad_tokens: list[str] = []
+        for step in decision.plan:
+            for root in sorted(_extract_token_roots(step.parameters)):
+                if root not in valid_roots:
+                    bad_tokens.append(
+                        f"  - step {step.id!r}: {{{{root}}}} — {root!r} is not a step id "
+                        "in this plan, a completed step id, or an invocation parameter name"
+                    )
+        if bad_tokens:
+            lines = ["The submit_plan contains {{token}} references that cannot be resolved:"]
+            lines.extend(bad_tokens)
+            lines.append("")
+            lines.append("Valid token roots (must match exactly):")
+            lines.append(f"  Step IDs in this plan: {sorted(new_step_ids)}")
+            if completed_ids:
+                lines.append(f"  Completed step IDs from prior plan: {sorted(completed_ids)}")
+            lines.append(f"  Invocation parameter names: {sorted(param_names)}")
+            lines.append("Correct the token names to exactly match one of the above and resubmit.")
+            errors.append("\n".join(lines))
+
+        return "\n\n".join(errors) if errors else None
+
+    @staticmethod
+    def _validate_reflect_callback(
+        decision: AgentDecision,
+        plan_state: "PlanState",
+        end_of_plan: bool,
+    ) -> "str | None":
+        """Return error if model emits callback at end_of_plan when there are failed steps."""
+        if not end_of_plan or decision.kind != "callback":
+            return None
+
+        failed = [
+            (sid, r.get("error", "unknown error"))
+            for sid, r in plan_state.step_results.items()
+            if isinstance(r, dict) and "error" in r
+        ]
+        if not failed:
+            return None
+
+        failed_summary = "; ".join(f"{sid!r}: {err}" for sid, err in failed[:5])
+        return (
+            f"You emitted 'callback' at end_of_plan, but the plan completed with step execution "
+            f"errors: {failed_summary}. "
+            "Step execution errors are system results — do not escalate them to the user as if "
+            "they need to provide clarification. "
+            "Instead: emit 'final_message' to report the plan outcome (summarise which steps "
+            "failed and why), or emit 'submit_plan' with corrected steps to retry the failed work."
+        )
+
+    def _handle_semantic_failure(
+        self,
+        error: str,
+        *,
+        agent: "Agent",
+        host: Any,
+        run: "AgentRun",
+        caller_id: str | None,
+    ) -> "AgentResult | None":
+        """Inject a correction reminder; abort if this is the second consecutive semantic failure."""
+        run.planning_semantic_failures += 1
+        _LOGGER.error(
+            "Planning semantic validation failed for agent %s (attempt %d/2): %s",
+            agent.agent_id, run.planning_semantic_failures, error,
+        )
+        if run.planning_semantic_failures >= 2:
+            run.planning_semantic_failures = 0
+            return self._emit_safety_cap_callback(
+                agent=agent,
+                host=host,
+                run=run,
+                caller_id=caller_id,
+                cap="planning_semantic_validation",
+                detail=f"Two consecutive planning semantic validation failures. Last error: {error}",
+            )
+        reminder = (
+            "<system_reminder>\n"
+            f"<planning_validation_error>{error}</planning_validation_error>\n"
+            "Your decision did not conform to the specification. Correct the issue described "
+            "above and resubmit, matching the specification exactly.\n"
+            "</system_reminder>"
+        )
+        run.conversation_messages.append({"role": "user", "content": reminder})
+        run.prompt_fragments.append(reminder)
+        return None
+
     def run_turn(
         self,
         *,
@@ -367,7 +509,12 @@ class PlanningTurnDriver(BaseTurnDriver):
         decision = result
 
         if decision.kind == "submit_plan":
-            # decision.plan is already validated by from_model_response — no extra validation needed.
+            error = self._validate_submit_plan(decision, plan_state=None, run=run)
+            if error is not None:
+                return self._handle_semantic_failure(
+                    error, agent=agent, host=host, run=run, caller_id=caller_id
+                )
+            run.planning_semantic_failures = 0
             plan_state = PlanState(plan=decision.plan, plan_revision=1)
             run.plan_state = plan_state
             _LOGGER.info(
@@ -545,6 +692,12 @@ class PlanningTurnDriver(BaseTurnDriver):
             return None
 
         if decision.kind == "submit_plan":
+            error = self._validate_submit_plan(decision, plan_state=plan_state, run=run)
+            if error is not None:
+                return self._handle_semantic_failure(
+                    error, agent=agent, host=host, run=run, caller_id=caller_id
+                )
+            run.planning_semantic_failures = 0
             return self._apply_replan(
                 decision, agent=agent, host=host, run=run,
                 caller_id=caller_id, plan_state=plan_state,
@@ -554,6 +707,14 @@ class PlanningTurnDriver(BaseTurnDriver):
             raise NotImplementedError(
                 "amend_plan is reserved for a future FEAT and is not yet implemented."
             )
+
+        if decision.kind == "callback":
+            error = self._validate_reflect_callback(decision, plan_state, end_of_plan)
+            if error is not None:
+                return self._handle_semantic_failure(
+                    error, agent=agent, host=host, run=run, caller_id=caller_id
+                )
+            run.planning_semantic_failures = 0
 
         # Non-planning decision — dispatch normally.
         return agent.dispatch_decision(host=host, run=run, decision=decision, caller_id=caller_id)
@@ -591,16 +752,24 @@ class PlanningTurnDriver(BaseTurnDriver):
                 detail=f"max_plan_revisions={max_revisions} exceeded",
             )
 
-        previous_plan = plan_state.plan
+        # Completed steps are immutable history — never purge them.
+        completed_step_ids = {c.step_id for c in plan_state.completed_steps}
         new_step_ids = {s.id for s in decision.plan}
-        for dropped_id in list(plan_state.step_results):
-            if dropped_id not in new_step_ids:
-                del plan_state.step_results[dropped_id]
-        # Remove completed_steps for dropped step ids.
-        plan_state.completed_steps[:] = [
-            cs for cs in plan_state.completed_steps if cs.step_id in new_step_ids
-        ]
-        plan_state.plan = decision.plan
+
+        # Drop only non-completed sentinels (e.g. _callback_pending) that are
+        # absent from the new plan.  Completed results must survive for {{token}}
+        # resolution by new steps.
+        for sid in list(plan_state.step_results):
+            if sid not in completed_step_ids and sid not in new_step_ids:
+                del plan_state.step_results[sid]
+
+        # Build the merged plan: completed prefix (in execution order) + new pending.
+        completed_steps_in_order = tuple(
+            cs.step for cs in plan_state.completed_steps
+            if cs.step_id in completed_step_ids
+        )
+        previous_plan = plan_state.plan
+        plan_state.plan = completed_steps_in_order + decision.plan
         plan_state.plan_revision += 1
         plan_state.pending_callback_step_id = None
         run.consecutive_validation_failures = 0
