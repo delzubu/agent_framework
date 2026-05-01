@@ -141,3 +141,40 @@ def test_non_planning_agent_has_no_planning_config(tmp_path: Path):
         agent.planning_config is not None and agent.planning_config.enabled
     )
     assert not planning_active
+
+
+# ---------------------------------------------------------------------------
+# Replan contract — submit_plan must be allowed during reflect (bug #94)
+# ---------------------------------------------------------------------------
+
+def test_template_does_not_restrict_submit_plan_to_phase_1():
+    """submit_plan must be described as valid in reflect, not Phase 1 only."""
+    # The phrase "Phase 1 only" next to submit_plan was the bug — it told the
+    # model replanning is forbidden during reflect.
+    import re
+    # Find the submit_plan bullet in the decision kinds list
+    match = re.search(r"- `submit_plan`[^\n]*", _SYSTEM_PLAN_EXECUTE_TEMPLATE)
+    assert match, "submit_plan bullet not found in template"
+    line = match.group(0)
+    assert "Phase 1 only" not in line, (
+        f"submit_plan description must not say 'Phase 1 only'; got: {line!r}"
+    )
+
+
+def test_template_end_of_plan_allows_replan():
+    """Phase 3 paragraph must explicitly list submit_plan as a replan option.
+
+    Bug #94: Phase 3 only said 'emit final_message' — it did not tell the model
+    it could replan. After the fix, Phase 3 must list submit_plan as a valid choice.
+    """
+    import re
+    phase3_idx = _SYSTEM_PLAN_EXECUTE_TEMPLATE.find("Phase 3")
+    assert phase3_idx != -1, "Phase 3 heading not found in template"
+    # Slice only the Phase 3 section: from "Phase 3" up to the next top-level heading
+    rest = _SYSTEM_PLAN_EXECUTE_TEMPLATE[phase3_idx:]
+    next_section = re.search(r"\n## ", rest)
+    phase3_section = rest[: next_section.start()] if next_section else rest
+    assert "submit_plan" in phase3_section, (
+        "Phase 3 section must explicitly list submit_plan as a replan option; "
+        f"current Phase 3 text:\n{phase3_section!r}"
+    )
