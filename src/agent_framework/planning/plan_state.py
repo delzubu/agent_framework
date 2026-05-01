@@ -107,6 +107,7 @@ class PlanState:
     total_steps_executed: int = 0
     pending_callback_step_id: str | None = None
     awaiting_caller_callback: bool = False
+    eop_stall_count: int = 0
 
 
 def plan_step_to_dict(step: PlanStep) -> dict[str, Any]:

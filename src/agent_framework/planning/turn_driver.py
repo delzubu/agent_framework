@@ -480,6 +480,39 @@ class PlanningTurnDriver(BaseTurnDriver):
             return self._make_result(decision, run)
 
         if decision.kind == "continue_plan":
+            # Guard: continue_plan is invalid when the plan is fully done.
+            if end_of_plan and plan_state.pending_callback_step_id is None:
+                plan_state.eop_stall_count += 1
+                _LOGGER.warning(
+                    "Planning: agent %s emitted continue_plan at end_of_plan "
+                    "(stall %d/3) — injecting reminder to finalize",
+                    agent.agent_id, plan_state.eop_stall_count,
+                )
+                if plan_state.eop_stall_count >= 3:
+                    return self._emit_safety_cap_callback(
+                        agent=agent,
+                        host=host,
+                        run=run,
+                        caller_id=caller_id,
+                        cap="eop_stall",
+                        detail=(
+                            "Agent emitted continue_plan 3 times after end_of_plan "
+                            "with no pending steps. Expected final_message or submit_plan."
+                        ),
+                    )
+                run.conversation_messages.append({
+                    "role": "user",
+                    "content": (
+                        "<system_reminder>\n"
+                        "All plan steps are complete (<end_of_plan> was signalled). "
+                        "continue_plan is not valid here. "
+                        "Emit final_message to return your result, or submit_plan "
+                        "if the results require additional steps.\n"
+                        "</system_reminder>"
+                    ),
+                })
+                return None
+
             # If there's a pending callback step, resolve it now.
             pending_id = plan_state.pending_callback_step_id
             if pending_id is not None:

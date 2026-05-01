@@ -316,3 +316,73 @@ def test_plan_validation_error_logged(tmp_path: Path, caplog):
         host.run_agent("planner", "validate")
 
     assert any("plan validation error" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# eop_stall cap — continue_plan at end_of_plan infinite-loop guard
+# ---------------------------------------------------------------------------
+
+
+def test_eop_stall_terminates_after_three_continue_plans(tmp_path: Path):
+    """Agent emitting continue_plan three times at end_of_plan triggers eop_stall cap."""
+    host, _ = _make_host(
+        tmp_path,
+        [
+            {
+                "kind": "submit_plan",
+                "message": "one step",
+                "plan": [{"id": "s", "kind": "call_tool", "tool_name": "echo", "parameters": {}}],
+            },
+            # All three reflect turns emit continue_plan instead of final_message
+            {"kind": "continue_plan", "message": "thinking..."},
+            {"kind": "continue_plan", "message": "still thinking..."},
+            {"kind": "continue_plan", "message": "thinking again..."},
+        ],
+    )
+    _register_echo(host)
+
+    result = host.run_agent("planner", "stall test")
+    assert result is not None  # must terminate, not loop forever
+
+
+def test_eop_stall_resolves_when_model_finalizes(tmp_path: Path):
+    """Agent emitting continue_plan once then final_message succeeds normally."""
+    host, _ = _make_host(
+        tmp_path,
+        [
+            {
+                "kind": "submit_plan",
+                "message": "one step",
+                "plan": [{"id": "s", "kind": "call_tool", "tool_name": "echo", "parameters": {}}],
+            },
+            {"kind": "continue_plan", "message": "one stall"},
+            {"kind": "final_message", "message": "recovered"},
+        ],
+    )
+    _register_echo(host)
+
+    result = host.run_agent("planner", "stall then recover")
+    assert result.status == "completed"
+    assert result.message == "recovered"
+
+
+def test_eop_stall_warning_logged(tmp_path: Path, caplog):
+    """Each continue_plan at end_of_plan produces a WARNING log entry."""
+    host, _ = _make_host(
+        tmp_path,
+        [
+            {
+                "kind": "submit_plan",
+                "message": "one step",
+                "plan": [{"id": "s", "kind": "call_tool", "tool_name": "echo", "parameters": {}}],
+            },
+            {"kind": "continue_plan", "message": "stall"},
+            {"kind": "final_message", "message": "done"},
+        ],
+    )
+    _register_echo(host)
+
+    with caplog.at_level(logging.WARNING, logger="agent_framework.planning.turn_driver"):
+        host.run_agent("planner", "stall log test")
+
+    assert any("continue_plan at end_of_plan" in r.message for r in caplog.records)
