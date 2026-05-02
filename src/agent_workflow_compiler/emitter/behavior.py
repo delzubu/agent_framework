@@ -133,6 +133,10 @@ def emit_behavior(compilation: PlanCompilation, agent_id: str, output_path: str 
     lines.append("        )")
     lines.append("        return AgentHookDecision(final_result=result)")
     lines.append("")
+    lines.append("")
+    lines.append(f"def build_behavior() -> AgentBehavior:")
+    lines.append(f"    return {class_name}Behavior()")
+    lines.append("")
 
     Path(output_path).write_text("\n".join(lines), encoding="utf-8")
 

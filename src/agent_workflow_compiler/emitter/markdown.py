@@ -33,7 +33,7 @@ def emit_markdown(
         source_agent_path=source_agent_path,
     )
     workflow_description = _build_workflow_description(compilation)
-    content = f"---\n{frontmatter}---\n{workflow_description}\n---\n{{{{instruction}}}}\n"
+    content = f"---\n{frontmatter}---\n{workflow_description}\n---\n"
     Path(output_path).write_text(content, encoding="utf-8")
 
 
