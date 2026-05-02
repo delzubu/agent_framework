@@ -139,9 +139,15 @@ class WorkflowRaiseStep(ProgrammaticWorkflowStep):
 
 
 def resolve_workflow_value(value: Any, state: ProgrammaticWorkflowState) -> Any:
-    """Resolve direct values and state-aware callables uniformly."""
+    """Resolve direct values and state-aware callables uniformly.
+
+    Callables are invoked with *state*. Dict values are resolved recursively
+    so per-key resolver lambdas work alongside plain values.
+    """
     if callable(value):
         return value(state)
+    if isinstance(value, dict):
+        return {k: resolve_workflow_value(v, state) for k, v in value.items()}
     return value
 
 
