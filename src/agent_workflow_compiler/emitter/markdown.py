@@ -12,13 +12,12 @@ def emit_markdown(
     output_path: str | Path,
     *,
     source_agent_path: str | Path | None = None,
-    behavior_module: str | None = None,
 ) -> None:
     """Write a ``<agent>.md`` agent definition file.
 
     Copies frontmatter from *source_agent_path* if provided; otherwise generates
-    minimal frontmatter. The system prompt section describes the workflow so the
-    file remains human-readable as a specification.
+    minimal frontmatter. Runtime fields (behavior, model, planning, …) live in
+    the companion ``<agent>.json`` sidecar, not in the ``.md``.
 
     Args:
         compilation: Compiled planning data.
@@ -27,14 +26,10 @@ def emit_markdown(
         source_agent_path: Optional path to the original agent's ``.md`` file.
             Its frontmatter (id, role, parameters, subagents, allowed_tools, etc.)
             is copied and adapted for the new compiled agent.
-        behavior_module: Python module path for the behavior class. Defaults to
-            ``<agent_id>_behavior``.
     """
-    behavior_mod = behavior_module or f"{agent_id}_behavior"
     frontmatter = _build_frontmatter(
         compilation=compilation,
         agent_id=agent_id,
-        behavior_module=behavior_mod,
         source_agent_path=source_agent_path,
     )
     workflow_description = _build_workflow_description(compilation)
@@ -50,21 +45,15 @@ def _build_frontmatter(
     *,
     compilation: PlanCompilation,
     agent_id: str,
-    behavior_module: str,
     source_agent_path: str | Path | None,
 ) -> str:
     """Build the YAML frontmatter block (without leading/trailing ``---``)."""
     if source_agent_path is not None:
-        return _adapt_source_frontmatter(
-            Path(source_agent_path),
-            agent_id=agent_id,
-            behavior_module=behavior_module,
-        )
+        return _adapt_source_frontmatter(Path(source_agent_path), agent_id=agent_id)
     # Minimal generated frontmatter
     lines = [
         f"id: {agent_id}",
         f"role: {compilation.source_agent_id}",
-        f"behavior: {behavior_module}",
         "parameters:",
         "  instruction:",
         "    description: Agent instruction.",
@@ -77,7 +66,6 @@ def _adapt_source_frontmatter(
     source_path: Path,
     *,
     agent_id: str,
-    behavior_module: str,
 ) -> str:
     """Read the source agent's frontmatter and adapt it for the compiled agent."""
     try:
@@ -88,41 +76,35 @@ def _adapt_source_frontmatter(
     # Extract the YAML block between the first pair of --- markers
     parts = text.split("---")
     if len(parts) < 3:
-        return f"id: {agent_id}\nbehavior: {behavior_module}\n"
+        return f"id: {agent_id}\n"
 
     yaml_block = parts[1].strip()
     lines = yaml_block.splitlines()
 
-    # Replace or add id and behavior fields; strip planning: block (lives in .json sidecar)
+    # Rewrite id; strip planning: and behavior: blocks (both live in .json sidecar)
     new_lines: list[str] = []
     found_id = False
-    found_behavior = False
-    in_planning_block = False
+    in_skip_block = False  # tracks planning: or behavior: multi-line blocks
     for line in lines:
         stripped = line.lstrip()
-        # Detect start of planning: block
-        if stripped.startswith("planning:"):
-            in_planning_block = True
+        # Detect start of a block we strip
+        if stripped.startswith("planning:") or stripped.startswith("behavior:"):
+            in_skip_block = True
             continue
-        # Detect end of planning: block (next top-level key)
-        if in_planning_block:
+        # Detect end of skipped block (next top-level key)
+        if in_skip_block:
             if line and not line[0].isspace():
-                in_planning_block = False
+                in_skip_block = False
             else:
                 continue
         if stripped.startswith("id:"):
             new_lines.append(f"id: {agent_id}")
             found_id = True
-        elif stripped.startswith("behavior:"):
-            new_lines.append(f"behavior: {behavior_module}")
-            found_behavior = True
         else:
             new_lines.append(line)
 
     if not found_id:
         new_lines.insert(0, f"id: {agent_id}")
-    if not found_behavior:
-        new_lines.append(f"behavior: {behavior_module}")
 
     return "\n".join(new_lines) + "\n"
 

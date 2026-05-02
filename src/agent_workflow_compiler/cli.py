@@ -8,7 +8,7 @@ from pathlib import Path
 from .log_reader import read_events, planning_run_ids
 from .plan_extractor import extract_plan
 from .emitter.behavior import emit_behavior
-from .emitter.json_def import emit_json
+from .emitter.json_def import emit_json, emit_sidecar
 from .emitter.markdown import emit_markdown
 
 
@@ -105,7 +105,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
 
     md_path = output_dir / f"{agent_id}.md"
     json_path = output_dir / f"{agent_id}.workflow.json"
-    behavior_path = output_dir / f"{agent_id}_behavior.py"
+    behavior_path = output_dir / f"{agent_id}.py"
+    sidecar_path = output_dir / f"{agent_id}.json"
 
     emit_markdown(
         compilation,
@@ -115,11 +116,17 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     )
     emit_json(compilation, agent_id=agent_id, output_path=json_path)
     emit_behavior(compilation, agent_id=agent_id, output_path=behavior_path)
+    emit_sidecar(
+        agent_id=agent_id,
+        output_path=sidecar_path,
+        source_agent_path=args.source_agent_path,
+    )
 
     print(f"Compiled {len(compilation.final_steps)} steps from run: {run_id}")
     print(f"  {md_path}")
     print(f"  {json_path}")
     print(f"  {behavior_path}")
+    print(f"  {sidecar_path}")
     if compilation.replan_checkpoints:
         print(
             f"  {len(compilation.replan_checkpoints)} replan checkpoint(s) — "

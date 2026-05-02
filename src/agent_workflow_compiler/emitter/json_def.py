@@ -1,10 +1,46 @@
-"""Emit a human-readable JSON workflow definition file."""
+"""Emit a human-readable JSON workflow definition file and the runtime sidecar."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
 from ..models import CompiledStep, PlanCompilation
+
+_RUNTIME_FIELDS = ("provider", "model", "temperature", "can_query_caller", "can_use_host_interaction")
+
+
+def emit_sidecar(
+    agent_id: str,
+    output_path: str | Path,
+    *,
+    source_agent_path: str | Path | None = None,
+    behavior_module: str | None = None,
+) -> None:
+    """Write the ``<agent>.json`` runtime sidecar consumed by ``load_runtime_metadata``.
+
+    Copies runtime fields (provider, model, temperature, …) from the source
+    agent's ``.json`` sidecar if present. The ``behavior`` field is always set
+    to the generated behavior module. ``planning`` is intentionally excluded —
+    compiled workflow agents are deterministic and don't use planning.
+    """
+    behavior_mod = behavior_module or agent_id
+    sidecar: dict = {"behavior": behavior_mod}
+
+    if source_agent_path is not None:
+        source_json = Path(source_agent_path).with_suffix(".json")
+        if source_json.exists():
+            try:
+                source_data = json.loads(source_json.read_text(encoding="utf-8"))
+                for field in _RUNTIME_FIELDS:
+                    if field in source_data:
+                        sidecar[field] = source_data[field]
+            except (OSError, json.JSONDecodeError):
+                pass
+
+    Path(output_path).write_text(
+        json.dumps(sidecar, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def emit_json(compilation: PlanCompilation, agent_id: str, output_path: str | Path) -> None:
