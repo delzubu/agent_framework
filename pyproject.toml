@@ -42,6 +42,7 @@ docs = [
 [project.scripts]
 agent-eval = "agent_framework_evaluator.cli:main"
 agent-framework-skills = "agent_framework_skills.cli:main"
+compile-workflow = "agent_workflow_compiler.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -57,3 +58,4 @@ where = ["src"]
 "agent_framework.agents" = ["*.md"]
 "agent_framework_evaluator" = ["web/**/*", "examples/**/*.md"]
 "agent_framework_skills" = ["skills/**/*"]
+"agent_workflow_compiler" = []

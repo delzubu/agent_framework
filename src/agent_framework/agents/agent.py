@@ -70,9 +70,15 @@ from .tool_start_event import ToolStartEvent
 from .workflow import (
     ProgrammaticWorkflow,
     ProgrammaticWorkflowState,
+    WorkflowAbort,
+    WorkflowAbortedError,
     WorkflowBranchStep,
     WorkflowCallSubagentStep,
     WorkflowCallSubagentsStep,
+    WorkflowCallToolStep,
+    WorkflowContinue,
+    WorkflowGoto,
+    WorkflowReplace,
     WorkflowRaiseStep,
     WorkflowReturnStep,
     coerce_workflow_result,
@@ -1110,7 +1116,19 @@ class Agent:
                 state.step_results[step.step_id] = result
                 state.last_step_id = step.step_id
                 state.last_value = result
-                step_id = self._resolve_workflow_next_step(step.next_step, state, current_step_id=step.step_id)
+                next_step_id = self._apply_workflow_step_end(
+                    workflow=workflow,
+                    step_id=step.step_id,
+                    result=result,
+                    state=state,
+                    default_next=step.next_step,
+                )
+                if isinstance(next_step_id, str):
+                    step_id = next_step_id
+                    continue
+                # WorkflowReplace: next_step_id is a new ProgrammaticWorkflow
+                workflow = next_step_id
+                step_id = workflow.entry_step
                 continue
 
             if isinstance(step, WorkflowCallSubagentsStep):
@@ -1131,7 +1149,51 @@ class Agent:
                 state.step_results[step.step_id] = result
                 state.last_step_id = step.step_id
                 state.last_value = result
-                step_id = self._resolve_workflow_next_step(step.next_step, state, current_step_id=step.step_id)
+                next_step_id = self._apply_workflow_step_end(
+                    workflow=workflow,
+                    step_id=step.step_id,
+                    result=result,
+                    state=state,
+                    default_next=step.next_step,
+                )
+                if isinstance(next_step_id, str):
+                    step_id = next_step_id
+                    continue
+                workflow = next_step_id
+                step_id = workflow.entry_step
+                continue
+
+            if isinstance(step, WorkflowCallToolStep):
+                resolved_arguments = resolve_workflow_value(step.arguments, state)
+                if not isinstance(resolved_arguments, dict):
+                    raise TypeError(
+                        f"Workflow step {step.step_id!r} arguments must resolve to dict, "
+                        f"got {type(resolved_arguments).__name__}."
+                    )
+                _LOGGER.debug(
+                    "WorkflowCallToolStep executing",
+                    extra={
+                        "workflow_step_id": step.step_id,
+                        "agent_id": self.agent_id,
+                        "tool_name": step.tool_name,
+                    },
+                )
+                result = host.execute_tool(step.tool_name, resolved_arguments)
+                state.step_results[step.step_id] = result
+                state.last_step_id = step.step_id
+                state.last_value = result
+                next_step_id = self._apply_workflow_step_end(
+                    workflow=workflow,
+                    step_id=step.step_id,
+                    result=result,
+                    state=state,
+                    default_next=step.next_step,
+                )
+                if isinstance(next_step_id, str):
+                    step_id = next_step_id
+                    continue
+                workflow = next_step_id
+                step_id = workflow.entry_step
                 continue
 
             if isinstance(step, WorkflowReturnStep):
@@ -1159,6 +1221,31 @@ class Agent:
                 f"Workflow step {current_step_id!r} must resolve a non-empty next_step."
             )
         return resolved
+
+    def _apply_workflow_step_end(
+        self,
+        *,
+        workflow: ProgrammaticWorkflow,
+        step_id: str,
+        result: Any,
+        state: ProgrammaticWorkflowState,
+        default_next: Any,
+    ) -> str | ProgrammaticWorkflow:
+        """Invoke on_step_end callback and return next step_id or a replacement workflow.
+
+        Returns a str (next step ID) or a ProgrammaticWorkflow (workflow replacement).
+        Raises WorkflowAbortedError if the callback returns WorkflowAbort.
+        """
+        if workflow.on_step_end is not None:
+            mutation = workflow.on_step_end(step_id, result, state, workflow)
+            if isinstance(mutation, WorkflowGoto):
+                return mutation.step_id
+            if isinstance(mutation, WorkflowReplace):
+                return mutation.workflow
+            if isinstance(mutation, WorkflowAbort):
+                raise WorkflowAbortedError(mutation.reason)
+            # WorkflowContinue or None → fall through to default_next
+        return self._resolve_workflow_next_step(default_next, state, current_step_id=step_id)
 
     def _validate_subagent_permission(
         self,

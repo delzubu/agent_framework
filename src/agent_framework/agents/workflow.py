@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Union
 
 from .agent_decision import SubagentCallSpec
 from .agent_result import AgentResult
@@ -28,13 +28,56 @@ class ProgrammaticWorkflowState:
         return self.step_results[step_id]
 
 
+# ---------------------------------------------------------------------------
+# Mutation types for on_step_end callbacks
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True, slots=True)
+class WorkflowContinue:
+    """Continue to the step's own next_step (default behaviour)."""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowGoto:
+    """Jump to a specific step instead of the step's own next_step."""
+
+    step_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowReplace:
+    """Swap the active workflow; execution resumes at the new workflow's entry_step."""
+
+    workflow: ProgrammaticWorkflow
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowAbort:
+    """Abort the workflow immediately with a failure message."""
+
+    reason: str
+
+
+WorkflowMutation = Union[WorkflowContinue, WorkflowGoto, WorkflowReplace, WorkflowAbort]
+
+OnStepEnd = Callable[
+    [str, Any, "ProgrammaticWorkflowState", "ProgrammaticWorkflow"],
+    "WorkflowMutation | None",
+]
+
+
+class WorkflowAbortedError(RuntimeError):
+    """Raised when a workflow is aborted via WorkflowAbort mutation."""
+
+
+@dataclass(frozen=True)
 class ProgrammaticWorkflow:
     """Structured deterministic workflow definition."""
 
     entry_step: str
     steps: dict[str, "ProgrammaticWorkflowStep"]
     max_steps: int = 100
+    on_step_end: OnStepEnd | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +93,15 @@ class WorkflowCallSubagentStep(ProgrammaticWorkflowStep):
 
     subagent_id: str | WorkflowValueResolver
     parameters: dict[str, Any] | WorkflowValueResolver = field(default_factory=dict)
+    next_step: str | WorkflowNextStepResolver | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowCallToolStep(ProgrammaticWorkflowStep):
+    """Invoke a registered tool by name."""
+
+    tool_name: str
+    arguments: dict[str, Any] | WorkflowValueResolver = field(default_factory=dict)
     next_step: str | WorkflowNextStepResolver | None = None
 
 
@@ -97,6 +149,8 @@ def coerce_workflow_result(value: Any) -> AgentResult:
     """Normalize workflow return values to AgentResult."""
     if isinstance(value, AgentResult):
         return value
+    if isinstance(value, WorkflowAbortedError):
+        return AgentResult(status="error", message=str(value))
     if isinstance(value, str):
         return AgentResult(status="completed", message=value)
     if value is None:
@@ -108,13 +162,21 @@ def coerce_workflow_result(value: Any) -> AgentResult:
 
 
 __all__ = [
+    "OnStepEnd",
     "ProgrammaticWorkflow",
     "ProgrammaticWorkflowState",
     "ProgrammaticWorkflowStep",
+    "WorkflowAbort",
+    "WorkflowAbortedError",
     "WorkflowBranchStep",
     "WorkflowCallSubagentStep",
     "WorkflowCallSubagentsStep",
+    "WorkflowCallToolStep",
+    "WorkflowContinue",
+    "WorkflowGoto",
+    "WorkflowMutation",
     "WorkflowRaiseStep",
+    "WorkflowReplace",
     "WorkflowReturnStep",
     "coerce_workflow_result",
     "resolve_workflow_value",
