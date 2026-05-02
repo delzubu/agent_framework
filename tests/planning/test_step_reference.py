@@ -191,6 +191,123 @@ def test_bool_passthrough():
 
 
 # ---------------------------------------------------------------------------
+# Numeric list indexing
+# ---------------------------------------------------------------------------
+
+_LIST_CTX = dict(
+    invocation_parameters={},
+    step_results={"items": ["a", "b", "c"], "nested": {"tags": ["x", "y"]}},
+    run_id="r", agent_id="a", step_id="s",
+)
+
+
+def test_numeric_index_first_element():
+    assert resolve("{{items.0}}", **_LIST_CTX) == "a"
+
+
+def test_numeric_index_last_element():
+    assert resolve("{{items.2}}", **_LIST_CTX) == "c"
+
+
+def test_numeric_index_nested():
+    assert resolve("{{nested.tags.1}}", **_LIST_CTX) == "y"
+
+
+def test_numeric_index_out_of_range_resolves_empty(caplog):
+    with caplog.at_level(logging.WARNING, logger="agent_framework.planning.step_reference"):
+        result = resolve("{{items.5}}", **_LIST_CTX)
+    assert result == ""
+    assert "out of range" in caplog.text
+
+
+def test_non_digit_segment_on_list_resolves_empty(caplog):
+    with caplog.at_level(logging.WARNING, logger="agent_framework.planning.step_reference"):
+        result = resolve("{{items.name}}", **_LIST_CTX)
+    assert result == ""
+    assert caplog.records
+
+
+def test_digit_segment_on_dict_is_string_key_lookup():
+    # Digit segments only get numeric treatment on lists, not dicts.
+    ctx = dict(
+        invocation_parameters={},
+        step_results={"d": {"0": "zero_value"}},
+        run_id="r", agent_id="a", step_id="s",
+    )
+    assert resolve("{{d.0}}", **ctx) == "zero_value"
+
+
+def test_numeric_index_type_preserved():
+    ctx = dict(
+        invocation_parameters={},
+        step_results={"arr": [{"id": 1}, {"id": 2}]},
+        run_id="r", agent_id="a", step_id="s",
+    )
+    assert resolve("{{arr.0}}", **ctx) == {"id": 1}
+    assert resolve("{{arr.1.id}}", **ctx) == 2
+
+
+# ---------------------------------------------------------------------------
+# Leftover-token warning (malformed / unmatched {{ }} syntax)
+# ---------------------------------------------------------------------------
+
+def test_leftover_token_warning_on_digit_root(caplog):
+    """{{0.something}} — digit root, regex won't match, passes through, warns."""
+    with caplog.at_level(logging.WARNING, logger="agent_framework.planning.step_reference"):
+        result = resolve("{{0.something}}", **_CTX)
+    assert "{{" in result  # passed through unchanged
+    assert caplog.records  # warning was logged
+
+
+def test_leftover_token_no_warning_on_resolved_string(caplog):
+    """A string with no {{ passes through without warning."""
+    with caplog.at_level(logging.WARNING, logger="agent_framework.planning.step_reference"):
+        result = resolve("no tokens here", **_CTX)
+    assert result == "no tokens here"
+    assert not any("unresolved" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Subagent result dict shape (message/response/status)
+# ---------------------------------------------------------------------------
+
+def test_subagent_result_message_access():
+    ctx = dict(
+        invocation_parameters={},
+        step_results={"sub": {"message": "summary text", "response": None, "status": "completed"}},
+        run_id="r", agent_id="a", step_id="s",
+    )
+    assert resolve("{{sub.message}}", **ctx) == "summary text"
+
+
+def test_subagent_result_response_field_access():
+    ctx = dict(
+        invocation_parameters={},
+        step_results={"sub": {
+            "message": "ok",
+            "response": {"declared_intents": [{"action": "move"}, {"action": "look"}]},
+            "status": "completed",
+        }},
+        run_id="r", agent_id="a", step_id="s",
+    )
+    assert resolve("{{sub.response.declared_intents.0.action}}", **ctx) == "move"
+    assert resolve("{{sub.response.declared_intents.1.action}}", **ctx) == "look"
+
+
+def test_subagent_result_full_response_dict():
+    ctx = dict(
+        invocation_parameters={},
+        step_results={"sub": {
+            "message": "done",
+            "response": {"key": "value"},
+            "status": "completed",
+        }},
+        run_id="r", agent_id="a", step_id="s",
+    )
+    assert resolve("{{sub.response}}", **ctx) == {"key": "value"}
+
+
+# ---------------------------------------------------------------------------
 # StepReferenceResolver Protocol structural check
 # ---------------------------------------------------------------------------
 

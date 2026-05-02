@@ -50,6 +50,25 @@ def _extract_token_roots(value: Any) -> set[str]:
     return roots
 
 
+def _display_step_result(result: Any) -> Any:
+    """Convert a step result to a display-friendly form for the <step_results> reminder.
+
+    Subagent results are stored as dicts (message/response/status) for token
+    resolution. For display we re-render them through the subagent envelope so
+    the model sees the familiar <subagent_result> format.
+    Plain strings longer than 200 characters are truncated.
+    """
+    if isinstance(result, dict) and "message" in result and "status" in result:
+        from agent_framework.agents.result_envelope import render_subagent_envelope
+        return render_subagent_envelope(
+            message=result.get("message", "") or "",
+            response=result.get("response"),
+        )
+    if isinstance(result, str) and len(result) > 200:
+        return result[:200]
+    return result
+
+
 def _select_ready_batch(
     plan_state: PlanState,
     *,
@@ -110,8 +129,7 @@ def _inject_reminder(run: "AgentRun", plan_state: PlanState, *, end_of_plan: boo
         indent=2,
     )
     results_summary = json.dumps(
-        {k: (v[:200] if isinstance(v, str) and len(v) > 200 else v)
-         for k, v in plan_state.step_results.items()},
+        {k: _display_step_result(v) for k, v in plan_state.step_results.items()},
         indent=2,
         default=str,
     )
@@ -211,14 +229,21 @@ def _dispatch_step(
             result = host.execute_tool(step.tool_name, params)
 
         elif step.kind == "call_subagent":
-            from agent_framework.agents.agent import _render_result_for_injection
             agent_result = host.call_subagent(
                 caller=agent,
                 callee_id=step.subagent_id,
                 parameters=params,
                 parent_run_id=run.run_id,
             )
-            result = _render_result_for_injection(agent_result)
+            # Store as a structured dict so {{step.response.field}} and
+            # {{step.message}} tokens resolve correctly via the step reference
+            # resolver. The rendered envelope (for prompt injection) is produced
+            # lazily in _inject_reminder via _render_subagent_result_for_display.
+            result = {
+                "message": getattr(agent_result, "message", "") or "",
+                "response": getattr(agent_result, "response", None),
+                "status": getattr(agent_result, "status", "completed"),
+            }
 
         elif step.kind == "invoke_skill":
             # Delegate to the agent's skill invocation handler.

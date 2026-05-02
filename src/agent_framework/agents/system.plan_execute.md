@@ -79,6 +79,8 @@ Step `parameters` values may contain `{{token}}` references resolved at executio
 
 - `{{step_id}}` — the full result of a completed step (type-preserving when the entire value)
 - `{{step_id.field}}` — dot-path into a dict result
+- `{{step_id.field.0}}` — numeric segment indexes into a list at that path (e.g. `{{step_id.items.0}}`)
+- For `call_subagent` results, the structured payload lives under `.response` and the prose under `.message`. Use `{{step_id.response.field}}` to access structured output and `{{step_id.message}}` for the summary text.
 - Tokens inside longer strings are stringified: `"result={{step_id.count}}"`
 - Missing token → resolved to empty string with a runtime warning; treat as undefined
 

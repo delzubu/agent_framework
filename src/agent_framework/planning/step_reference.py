@@ -10,25 +10,35 @@ Resolution rules
 - String-contains-tokens: ``"prefix {{x}} suffix"`` — tokens are stringified and
   substituted via ``re.sub``; the result is always a string.
 - Dot-path: ``{{step_id.field.nested}}`` navigates into the resolved root value
-  using the dot-separated key sequence. Each segment must be a dict key; missing
-  segments resolve to ``""`` and emit a WARNING.
+  using the dot-separated key sequence. Segments may be dict keys or numeric
+  list indices (e.g. ``{{step_id.items.0}}``). Missing segments resolve to
+  ``""`` and emit a WARNING.
+- Numeric list indexing: a digit-only segment (e.g. ``.0``) indexes into a list.
+  Out-of-range indices resolve to ``""`` and emit a WARNING.
+- Subagent results: ``call_subagent`` step results are stored as a dict with
+  ``message``, ``response``, and ``status`` keys. Use ``{{step_id.response.field}}``
+  to drill into the structured response.
 - Lookup precedence: ``step_results`` is checked first, then
   ``invocation_parameters``. Step results take priority over invocation params
   if names collide.
 - Lenient: missing references resolve to ``""`` and emit a WARNING log (never
   raise). The step still executes.
+- Leftover tokens: strings that still contain ``{{`` after substitution emit a
+  WARNING (e.g. a token whose path segment is syntactically invalid).
 
 Examples
 --------
 Given::
 
-    step_results = {"fetch": {"content": "hello", "count": 3}}
+    step_results = {"fetch": {"content": "hello", "items": ["a", "b"]}}
     invocation_parameters = {"player_id": "42"}
 
-``"{{fetch.content}}"`` → ``"hello"``
-``"{{fetch}}"``         → ``{"content": "hello", "count": 3}``  (whole-string, type preserved)
-``"id={{player_id}}"``  → ``"id=42"``  (embedded token, stringified)
-``"{{missing}}"``       → ``""``  (WARNING emitted)
+``"{{fetch.content}}"``   → ``"hello"``
+``"{{fetch}}"``           → ``{"content": "hello", "items": ["a", "b"]}``  (whole-string, type preserved)
+``"{{fetch.items.0}}"``   → ``"a"``  (numeric list index)
+``"id={{player_id}}"``    → ``"id=42"``  (embedded token, stringified)
+``"{{missing}}"``         → ``""``  (WARNING emitted)
+``"{{fetch.items.bad}}"`` → ``""``  (WARNING: non-numeric segment on list)
 """
 
 from __future__ import annotations
@@ -40,8 +50,10 @@ from typing import Any, Protocol
 _LOGGER = logging.getLogger("agent_framework.planning.step_reference")
 
 _TOKEN_RE = re.compile(
-    r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\}\}"
+    r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\.(?:[a-zA-Z_][a-zA-Z0-9_]*|[0-9]+))*)\s*\}\}"
 )
+# Matches anything that looks like an unresolved {{…}} leftover after substitution.
+_LEFTOVER_RE = re.compile(r"\{\{[^}]*\}\}")
 
 
 class StepReferenceResolver(Protocol):
@@ -96,24 +108,37 @@ def _lookup_token(
     # Dot-path traversal for remaining segments.
     value = root_value
     for segment in parts[1:]:
-        if not isinstance(value, dict):
+        if isinstance(value, list) and segment.isdigit():
+            idx = int(segment)
+            if idx >= len(value):
+                _LOGGER.warning(
+                    "step_reference: token {{%s}} — list index %d out of range "
+                    "(length=%d) — resolving to empty string "
+                    "(run_id=%s, agent_id=%s, step_id=%s, path=%s)",
+                    token, idx, len(value),
+                    run_id, agent_id, step_id, path_hint,
+                )
+                return ""
+            value = value[idx]
+        elif isinstance(value, dict):
+            if segment not in value:
+                _LOGGER.warning(
+                    "step_reference: token {{%s}} — key %r not found in dict at this "
+                    "traversal level — resolving to empty string "
+                    "(run_id=%s, agent_id=%s, step_id=%s, path=%s)",
+                    token, segment, run_id, agent_id, step_id, path_hint,
+                )
+                return ""
+            value = value[segment]
+        else:
             _LOGGER.warning(
                 "step_reference: token {{%s}} — cannot traverse segment %r into "
-                "non-dict value %r — resolving to empty string "
+                "%s — resolving to empty string "
                 "(run_id=%s, agent_id=%s, step_id=%s, path=%s)",
                 token, segment, type(value).__name__,
                 run_id, agent_id, step_id, path_hint,
             )
             return ""
-        if segment not in value:
-            _LOGGER.warning(
-                "step_reference: token {{%s}} — key %r not found in dict at this "
-                "traversal level — resolving to empty string "
-                "(run_id=%s, agent_id=%s, step_id=%s, path=%s)",
-                token, segment, run_id, agent_id, step_id, path_hint,
-            )
-            return ""
-        value = value[segment]
 
     _LOGGER.debug(
         "step_reference: {{%s}} → %s (run_id=%s, step_id=%s)",
@@ -159,7 +184,19 @@ def _resolve_string(
         )
         return str(resolved)
 
-    return _TOKEN_RE.sub(_sub, s)
+    result = _TOKEN_RE.sub(_sub, s)
+
+    # Warn if the string still contains {{ }} after substitution — this indicates
+    # a token whose path syntax was invalid (e.g. a digit-only root, unsupported
+    # bracket notation) that the regex didn't match and therefore passed through silently.
+    if isinstance(result, str) and _LEFTOVER_RE.search(result):
+        _LOGGER.warning(
+            "step_reference: string at path %r still contains unresolved {{…}} after "
+            "substitution — check token syntax (run_id=%s, agent_id=%s, step_id=%s): %r",
+            path_hint, run_id, agent_id, step_id, result,
+        )
+
+    return result
 
 
 def resolve(

@@ -572,3 +572,208 @@ def test_semantic_failure_logged_at_error(tmp_path: Path, caplog):
         host.run_agent("planner", "test")
 
     assert any("semantic validation failed" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Subagent result stored as dict — {{step.response.field}} and list indexing
+# ---------------------------------------------------------------------------
+
+def _register_subagent(host: AgentHost, subagent_id: str, response_payload: dict) -> None:
+    """Register a child agent that immediately returns a final_message with response_payload."""
+    import textwrap
+    from pathlib import Path as _Path
+
+    sub_path = _Path(host.config.agent_directory) / f"{subagent_id}.md"
+    sub_path.write_text(
+        textwrap.dedent(f"""\
+            ---
+            id: {subagent_id}
+            role: worker
+            ---
+            You are a worker.
+            ---
+            Do the work.
+        """),
+        encoding="utf-8",
+    )
+
+    class _FixedDriver:
+        def set_trace_callbacks(self, *, on_request=None, on_response=None):
+            pass
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            from agent_framework.model import ModelResponse
+            payload = {"kind": "final_message", "message": "sub done", "response": response_payload}
+            return ModelResponse(payload=payload, raw_text=str(payload))
+
+    host.model_driver = _FixedDriver()
+
+
+def test_subagent_step_result_stored_as_dict(tmp_path: Path):
+    """call_subagent step results are stored as dict with message/response/status keys."""
+    stored: dict[str, Any] = {}
+
+    from agent_framework.tool import Tool, ToolDefinition, ToolParameter
+
+    class CaptureTool(Tool):
+        definition = ToolDefinition(
+            tool_id="capture",
+            description="Capture the value parameter.",
+            parameters=(ToolParameter("value", "value", required=False),),
+        )
+
+        def invoke(self, parameters: dict, host: Any) -> str:
+            stored.update(parameters)
+            return "captured"
+
+    sub_id = "worker_sub"
+    response_data = {"items": ["alpha", "beta"], "count": 2}
+
+    # Two-driver approach: first driver handles the planner, but we need a fixed
+    # subagent driver. Use _ScriptedDriver for planner, override for subagent calls.
+    agent_path = tmp_path / "planner.md"
+    agent_path.write_text(
+        "---\nid: planner\nrole: planner\nplanning:\n  enabled: true\n\n"
+        "---\nYou are a planning agent.\n---\nExecute the plan.\n",
+        encoding="utf-8",
+    )
+    sub_path = tmp_path / f"{sub_id}.md"
+    sub_path.write_text(
+        f"---\nid: {sub_id}\nrole: worker\n---\nYou are a worker.\n---\nDo work.\n",
+        encoding="utf-8",
+    )
+    env = tmp_path / ".env"
+    env.write_text(
+        "\n".join([
+            "OPENAI_API_KEY=test-key",
+            "DEFAULT_PROVIDER=openai",
+            "DEFAULT_MODEL=gpt-4o-mini",
+            f"AGENT_DIRECTORY={tmp_path}",
+            "ROOT_AGENT=planner",
+        ]),
+        encoding="utf-8",
+    )
+    host = AgentHost.from_env(env)
+    host.tool_registry.register(CaptureTool(definition=CaptureTool.definition))
+
+    planner_payloads = [
+        {
+            "kind": "submit_plan",
+            "message": "call sub then use result",
+            "plan": [
+                {"id": "sub_step", "kind": "call_subagent", "subagent_id": sub_id, "parameters": {}},
+                {
+                    "id": "use_step", "kind": "call_tool", "tool_name": "capture",
+                    "parameters": {"value": "{{sub_step.response.items.0}}"},
+                    "depends_on": ["sub_step"],
+                },
+            ],
+        },
+        {"kind": "final_message", "message": "done"},
+    ]
+
+    class _SplitDriver:
+        """Routes to planner payloads for the planner agent, fixed response for subagent."""
+        _planner_payloads = list(planner_payloads)
+
+        def set_trace_callbacks(self, *, on_request=None, on_response=None):
+            pass
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            from agent_framework.model import ModelResponse
+            if agent_id == "planner":
+                payload = self._planner_payloads.pop(0)
+            else:
+                payload = {"kind": "final_message", "message": "sub done", "response": response_data}
+            return ModelResponse(payload=payload, raw_text=str(payload))
+
+    host.model_driver = _SplitDriver()
+
+    result = host.run_agent("planner", "test subagent result")
+    assert result.status == "completed"
+    # The capture tool should have received "alpha" (items[0]), not a literal token string
+    assert stored.get("value") == "alpha", f"Expected 'alpha', got {stored.get('value')!r}"
+
+
+def test_subagent_step_response_list_index_resolves(tmp_path: Path):
+    """{{sub.response.declared_intents.0.action}} resolves end-to-end."""
+    stored: dict[str, Any] = {}
+
+    from agent_framework.tool import Tool, ToolDefinition, ToolParameter
+
+    class CaptureTool(Tool):
+        definition = ToolDefinition(
+            tool_id="capture2",
+            description="Capture intent.",
+            parameters=(ToolParameter("intent", "intent", required=False),),
+        )
+
+        def invoke(self, parameters: dict, host: Any) -> str:
+            stored.update(parameters)
+            return "ok"
+
+    sub_id = "intent_parser"
+    response_data = {"declared_intents": [{"action": "move", "target": "north"}]}
+
+    agent_path = tmp_path / "planner.md"
+    agent_path.write_text(
+        "---\nid: planner\nrole: planner\nplanning:\n  enabled: true\n\n"
+        "---\nYou are a planning agent.\n---\nExecute the plan.\n",
+        encoding="utf-8",
+    )
+    sub_path = tmp_path / f"{sub_id}.md"
+    sub_path.write_text(
+        f"---\nid: {sub_id}\nrole: worker\n---\nYou are a worker.\n---\nDo work.\n",
+        encoding="utf-8",
+    )
+    env = tmp_path / ".env"
+    env.write_text(
+        "\n".join([
+            "OPENAI_API_KEY=test-key",
+            "DEFAULT_PROVIDER=openai",
+            "DEFAULT_MODEL=gpt-4o-mini",
+            f"AGENT_DIRECTORY={tmp_path}",
+            "ROOT_AGENT=planner",
+        ]),
+        encoding="utf-8",
+    )
+    host = AgentHost.from_env(env)
+    host.tool_registry.register(CaptureTool(definition=CaptureTool.definition))
+
+    planner_payloads = [
+        {
+            "kind": "submit_plan",
+            "message": "parse intent then route",
+            "plan": [
+                {"id": "parse", "kind": "call_subagent", "subagent_id": sub_id, "parameters": {}},
+                {
+                    "id": "route", "kind": "call_tool", "tool_name": "capture2",
+                    "parameters": {"intent": "{{parse.response.declared_intents.0}}"},
+                    "depends_on": ["parse"],
+                },
+            ],
+        },
+        {"kind": "final_message", "message": "routed"},
+    ]
+
+    class _SplitDriver:
+        _planner_payloads = list(planner_payloads)
+
+        def set_trace_callbacks(self, *, on_request=None, on_response=None):
+            pass
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            from agent_framework.model import ModelResponse
+            if agent_id == "planner":
+                payload = self._planner_payloads.pop(0)
+            else:
+                payload = {"kind": "final_message", "message": "parsed", "response": response_data}
+            return ModelResponse(payload=payload, raw_text=str(payload))
+
+    host.model_driver = _SplitDriver()
+
+    result = host.run_agent("planner", "route intent")
+    assert result.status == "completed"
+    # route step received the full first intent dict, not a literal token
+    assert stored.get("intent") == {"action": "move", "target": "north"}, \
+        f"Expected intent dict, got {stored.get('intent')!r}"
