@@ -93,12 +93,23 @@ def _adapt_source_frontmatter(
     yaml_block = parts[1].strip()
     lines = yaml_block.splitlines()
 
-    # Replace or add id and behavior fields
+    # Replace or add id and behavior fields; strip planning: block (lives in .json sidecar)
     new_lines: list[str] = []
     found_id = False
     found_behavior = False
+    in_planning_block = False
     for line in lines:
         stripped = line.lstrip()
+        # Detect start of planning: block
+        if stripped.startswith("planning:"):
+            in_planning_block = True
+            continue
+        # Detect end of planning: block (next top-level key)
+        if in_planning_block:
+            if line and not line[0].isspace():
+                in_planning_block = False
+            else:
+                continue
         if stripped.startswith("id:"):
             new_lines.append(f"id: {agent_id}")
             found_id = True

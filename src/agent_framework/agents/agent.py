@@ -270,7 +270,9 @@ class Agent:
             behavior_ids=behavior_ids,
             source_path=source_path,
             terminal_tools=tuple(metadata.get("terminal_tools", []) or ()),
-            planning_config=_parse_planning_config(metadata.get("planning"), source_path),
+            planning_config=_parse_planning_config(
+                runtime_metadata.get("planning") or metadata.get("planning"), source_path
+            ),
         )
         agent._validate_template_contract()
         agent._attach_behaviors()
