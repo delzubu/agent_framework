@@ -118,16 +118,21 @@ Each step in `plan`:
 
 ### `runtime.agent_finished`
 
-Emitted when an agent run completes (including subagents).
+Emitted when an agent run completes (including subagents and programmatic workflow agents).
 
 ```
 payload:
-  run_id          str
-  status          str     — "success" | "error" | "callback" | "aborted"
-  message         str     — agent's final natural-language message
-  response        Any     — structured response payload (if any)
-  usage           dict    — token usage for this run only
+  status              str           — "completed" | "error" | "callback" | "stopped"
+  caller_id           str|null
+  message             str|null      — agent's final message (may be a JSON envelope string)
+  response            Any|null      — structured response payload (if any)
+  usage_self          dict          — token usage for this run only
+  usage_inclusive     dict          — token usage including all child runs
+  decision_envelope   dict|null     — present when message is a parseable JSON decision envelope;
+                                      contains {kind, message, response, ...} as structured fields
 ```
+
+`decision_envelope` is populated from `result.decision` (LLM-loop completions) or by parsing `result.message` as JSON when it carries a `{"kind": ...}` envelope (common for workflow agents and subagent results). Use this field instead of parsing `message` manually.
 
 To get a subagent's result: find `runtime.agent_finished` where `context.run_id == parent_run_id + "." + subagent_id`.
 

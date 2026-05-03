@@ -117,18 +117,37 @@ class RuntimeTraceBehavior(AgentBehavior):
             finish_runtime_usage = getattr(h, "finish_runtime_usage", None)
             if callable(finish_runtime_usage):
                 usage_summary = finish_runtime_usage(run_id=run.run_id)
+
+            # Expose a parsed decision envelope so callers don't need to parse message manually.
+            # result.decision is set for normal LLM-loop completions; for early-exit paths
+            # (e.g. programmatic workflow) the message may carry a JSON envelope string instead.
+            decision_envelope: dict[str, Any] | None = None
+            if result.decision is not None:
+                decision_envelope = _decision_payload(result.decision)
+            elif result.message:
+                try:
+                    parsed = json.loads(result.message)
+                    if isinstance(parsed, dict) and "kind" in parsed:
+                        decision_envelope = parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+            payload: dict[str, Any] = {
+                "status": result.status,
+                "caller_id": caller_id,
+                "message": result.message or None,
+                "response": result.response or None,
+                "usage_self": usage_summary.get("usage_self", {}),
+                "usage_inclusive": usage_summary.get("usage_inclusive", {}),
+            }
+            if decision_envelope is not None:
+                payload["decision_envelope"] = decision_envelope
+
             h.publish_trace_event(
                 kind="runtime.agent_finished",
                 title=f"Agent {agent.agent_id} finished",
                 span_id=run.run_id,
-                payload={
-                    "status": result.status,
-                    "caller_id": caller_id,
-                    "message": result.message or None,
-                    "response": result.response or None,
-                    "usage_self": usage_summary.get("usage_self", {}),
-                    "usage_inclusive": usage_summary.get("usage_inclusive", {}),
-                },
+                payload=payload,
                 context=_merge_context(h, run_id=run.run_id, agent_id=agent.agent_id, caller_id=caller_id),
             )
         self._host = None
