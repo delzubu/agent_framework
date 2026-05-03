@@ -88,6 +88,17 @@ from .workflow import (
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class _ToolCallResult:
+    """Internal holder returned by ``Agent._execute_tool_step``."""
+
+    effective_input: dict[str, Any]
+    result: Any
+    system_message: str | None
+    error_exc: Exception | None
+    early_exit: "AgentResult | None"
+
+
 @dataclass(frozen=True, slots=True)
 class CallbackRoutingPolicy:
     """Caller-escalation policy loaded from agent runtime metadata.
@@ -1202,7 +1213,18 @@ class Agent:
                         "tool_name": step.tool_name,
                     },
                 )
-                result = host.execute_tool(step.tool_name, resolved_arguments)
+                tc = self._execute_tool_step(
+                    host=host,
+                    run=run,
+                    caller_id=caller_id,
+                    tool_name=step.tool_name,
+                    tool_input=resolved_arguments,
+                )
+                if tc.early_exit is not None:
+                    return coerce_workflow_result(tc.early_exit)
+                if tc.error_exc is not None:
+                    raise tc.error_exc
+                result = tc.result
                 state.step_results[step.step_id] = result
                 state.last_step_id = step.step_id
                 state.last_value = result
@@ -1679,103 +1701,45 @@ class Agent:
                 prompt=run.rendered_prompt,
             )
 
-        tool_call_id = str(uuid4())
-        event = ToolStartEvent(
-            invocation=self._hook_invocation(run, caller_id),
-            tool_call_id=tool_call_id,
+        tc = self._execute_tool_step(
+            host=host,
+            run=run,
+            caller_id=caller_id,
             tool_name=decision.tool_name,
             tool_input=dict(decision.parameters),
             decision=decision,
         )
-        pre_decision = self._run_pre_tool_hooks(
-            host=host,
-            run=run,
-            caller_id=caller_id,
-            event=event,
-        )
-        if pre_decision.final_result is not None:
-            return pre_decision.final_result
-        if not pre_decision.continue_run:
-            return AgentResult(status="stopped", message="", prompt=run.rendered_prompt)
+        if tc.early_exit is not None:
+            return tc.early_exit
 
-        tool_input = pre_decision.updated_tool_input or dict(event.tool_input)
-        from agent_framework.agent_event_publisher import agent_events
-
-        agent_events.audit_named_event(
-            run_id=run.run_id,
-            agent_id=self.agent_id,
-            event={
-                "type": "tool_call",
-                "tool_name": event.tool_name,
-                "parameters": dict(tool_input),
-            },
-        )
         run.transcript_entries.append(
-            f"<tool_call name=\"{event.tool_name}\">{_stringify_parameter_value(tool_input)}</tool_call>"
+            f"<tool_call name=\"{decision.tool_name}\">{_stringify_parameter_value(tc.effective_input)}</tool_call>"
         )
         run.conversation_messages.append(
-            {"role": "assistant", "content": f"Tool call {event.tool_name}: {_stringify_parameter_value(tool_input)}"}
+            {"role": "assistant", "content": f"Tool call {decision.tool_name}: {_stringify_parameter_value(tc.effective_input)}"}
         )
         _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_call")
-        try:
-            result = host.execute_tool(event.tool_name, tool_input)
-        except Exception as exc:
-            agent_events.on_tool_execution_failed(
-                run_id=run.run_id,
-                agent_id=self.agent_id,
-                tool_name=event.tool_name,
-                exc=exc,
-            )
-            agent_events.audit_named_event(
-                run_id=run.run_id,
-                agent_id=self.agent_id,
-                event={
-                    "type": "tool_error",
-                    "tool_name": event.tool_name,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
-            )
-            if pre_decision.system_message:
-                run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
+        if tc.error_exc is not None:
+            exc = tc.error_exc
+            if tc.system_message:
+                run.prompt_fragments.append(f"<system_message>{tc.system_message}</system_message>")
             run.prompt_fragments.append(
-                f"<tool_error name=\"{event.tool_name}\">{type(exc).__name__}: {exc}</tool_error>"
+                f"<tool_error name=\"{decision.tool_name}\">{type(exc).__name__}: {exc}</tool_error>"
             )
             run.transcript_entries.append(
-                f"<tool_error name=\"{event.tool_name}\">{type(exc).__name__}: {exc}</tool_error>"
+                f"<tool_error name=\"{decision.tool_name}\">{type(exc).__name__}: {exc}</tool_error>"
             )
             run.conversation_messages.append(
-                {"role": "user", "content": f"Tool error {event.tool_name}: {type(exc).__name__}: {exc}"}
+                {"role": "user", "content": f"Tool error {decision.tool_name}: {type(exc).__name__}: {exc}"}
             )
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_error")
             return None
-        self._run_post_tool_hooks(
-            host=host,
-            run=run,
-            caller_id=caller_id,
-            event=ToolEndEvent(
-                invocation=event.invocation,
-                tool_call_id=tool_call_id,
-                tool_name=event.tool_name,
-                tool_input=tool_input,
-                result=result,
-            ),
-        )
-        if pre_decision.system_message:
-            run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
-        agent_events.audit_named_event(
-            run_id=run.run_id,
-            agent_id=self.agent_id,
-            event={
-                "type": "tool_result",
-                "tool_name": event.tool_name,
-                "result": result,
-            },
-        )
-        run.transcript_entries.append(f"<tool_result name=\"{event.tool_name}\">{result}</tool_result>")
-        run.conversation_messages.append({"role": "user", "content": f"Tool result {event.tool_name}: {result}"})
+        if tc.system_message:
+            run.prompt_fragments.append(f"<system_message>{tc.system_message}</system_message>")
+        run.transcript_entries.append(f"<tool_result name=\"{decision.tool_name}\">{tc.result}</tool_result>")
+        run.conversation_messages.append({"role": "user", "content": f"Tool result {decision.tool_name}: {tc.result}"})
         _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_result")
-        run.prompt_fragments.append(f"<tool_result name=\"{event.tool_name}\">{result}</tool_result>")
+        run.prompt_fragments.append(f"<tool_result name=\"{decision.tool_name}\">{tc.result}</tool_result>")
         return None
 
     def _create_run(
@@ -1830,6 +1794,75 @@ class Agent:
         run.parameter_values = resolved
         run.missing_parameters = missing
         run.invalid_parameters = invalid
+
+    def _execute_tool_step(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        caller_id: str | None,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        decision: AgentDecision | None = None,
+    ) -> "_ToolCallResult":
+        """Fire pre/post hooks, emit audit events, and execute a tool.
+
+        Handles the hook scaffolding shared by both the LLM decision loop
+        (``handle_tool_call``) and ``WorkflowCallToolStep``. Does NOT inject
+        results into the conversation or transcript — that is the caller's
+        responsibility.
+        """
+        from agent_framework.agent_event_publisher import agent_events
+
+        tool_call_id = str(uuid4())
+        event = ToolStartEvent(
+            invocation=self._hook_invocation(run, caller_id),
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            decision=decision,
+        )
+        pre_decision = self._run_pre_tool_hooks(host=host, run=run, caller_id=caller_id, event=event)
+        if pre_decision.final_result is not None:
+            return _ToolCallResult(effective_input=tool_input, result=None, system_message=None, error_exc=None, early_exit=pre_decision.final_result)
+        if not pre_decision.continue_run:
+            return _ToolCallResult(effective_input=tool_input, result=None, system_message=None, error_exc=None, early_exit=AgentResult(status="stopped", message="", prompt=run.rendered_prompt))
+
+        effective_input = pre_decision.updated_tool_input or dict(event.tool_input)
+        agent_events.audit_named_event(
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={"type": "tool_call", "tool_name": tool_name, "parameters": dict(effective_input)},
+        )
+        try:
+            result = host.execute_tool(tool_name, effective_input)
+        except Exception as exc:
+            agent_events.on_tool_execution_failed(run_id=run.run_id, agent_id=self.agent_id, tool_name=tool_name, exc=exc)
+            agent_events.audit_named_event(
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                event={"type": "tool_error", "tool_name": tool_name, "error_type": type(exc).__name__, "error": str(exc)},
+            )
+            return _ToolCallResult(effective_input=effective_input, result=None, system_message=pre_decision.system_message, error_exc=exc, early_exit=None)
+
+        self._run_post_tool_hooks(
+            host=host,
+            run=run,
+            caller_id=caller_id,
+            event=ToolEndEvent(
+                invocation=event.invocation,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                tool_input=effective_input,
+                result=result,
+            ),
+        )
+        agent_events.audit_named_event(
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={"type": "tool_result", "tool_name": tool_name, "result": result},
+        )
+        return _ToolCallResult(effective_input=effective_input, result=result, system_message=pre_decision.system_message, error_exc=None, early_exit=None)
 
     def _run_pre_tool_hooks(
         self,

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from __future__ import annotations
 
-from .agent_decision import AgentDecision
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
 from .agent_invocation import AgentInvocation
+
+if TYPE_CHECKING:
+    from .agent_decision import AgentDecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +21,6 @@ class ToolStartEvent:
     tool_call_id: str
     tool_name: str
     tool_input: dict[str, Any]
-    decision: AgentDecision
+    decision: AgentDecision | None = None
 
 __all__ = ["ToolStartEvent"]
