@@ -4,240 +4,173 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-This project implements a flexible, standalone agent framework that allows quick development and deployment of AI agents. It contains the agent runtime (agent class, including the agent loop and system prompts), the agent host (allows quick usage from any code), and accompanying utilities
-and skills. 
-Target audience are experienced Python developers who want to introduce LLM agents in their software.
+A flexible, standalone agent runtime for Python developers who want to embed LLM agents in their software. Agents and tools are defined in Markdown files; their behavior is controlled by the prompts in those files, not just Python code.
 
-
-
-
-## Similar frameworks
-
-### Agentic frameworks
-
-Research and consult these when I instruct you to "research similar frameworks to see how x functionality is usually implemented"
-
-- **LangGraph** (https://github.com/langchain-ai/langgraph) (https://langchain-ai.github.io/langgraph/)
-- **LangChain** (https://github.com/langchain-ai/langchain) (https://python.langchain.com/)
-- **Microsoft Agent Framework** (https://github.com/microsoft/agent-framework) (https://aka.ms/agent-framework)
-- **Google ADK (Agent Development Kit)** (https://github.com/google/adk-python) (https://google.github.io/adk-docs/)
-- **CrewAI** (https://github.com/joaomdmoura/crewAI) (https://docs.crewai.com/)
-- **AutoGen** (https://github.com/microsoft/autogen) (https://microsoft.github.io/autogen/)
-- **DSPy** (https://github.com/stanfordnlp/dspy) (https://dspy-docs.vercel.app/)
-- **LlamaIndex (Agents)** (https://github.com/jerryjliu/llama_index) (https://docs.llamaindex.ai/)
-- **Haystack (Agents)** (https://github.com/deepset-ai/haystack) (https://docs.haystack.deepset.ai/)
-- **SuperAGI** (https://github.com/TransformerOptimus/SuperAGI) (https://superagi.com/docs/)
-- **OpenDevin** (https://github.com/OpenDevin/OpenDevin) (https://opendevin.github.io/OpenDevin/)
-
-### SDKs
-
-Research and consult these when I instruct you to "design a framework-agnostic solution"
-
-- **OpenAI SDK** (https://github.com/openai/openai-python) (https://platform.openai.com/docs/)
-- **Anthropic SDK** (https://github.com/anthropics/anthropic-sdk-python) (https://docs.anthropic.com/)
-- **Google GenAI SDK** (https://github.com/google/generative-ai-python) (https://ai.google.dev/docs)
-- **Azure AI SDK** (https://github.com/Azure/azure-sdk-for-python) (https://learn.microsoft.com/azure/ai-services/)
-- **EPAM DIAL** (https://github.com/epam/dial) (https://epam-railway.github.io/dial/)
-- **LiteLLM** (https://github.com/BerriAI/litellm) (https://docs.litellm.ai/)
-- **Vercel AI SDK** (https://github.com/vercel/ai) (https://sdk.vercel.ai/docs)
-- **Hugging Face Transformers** (https://github.com/huggingface/transformers) (https://huggingface.co/docs)
-- **Model Context Protocol (MCP)** (https://github.com/modelcontextprotocol/spec) (https://modelcontextprotocol.io/)
-
-## Non-negotiable: structured model output
-
-Do **not** add heuristics that reinterpret invalid or non-contract model JSON into valid `AgentDecision` values (for example mapping unknown `kind` strings such as `gather_context` to `call_tool` or `callback`). **Validate strictly** and **fail with a clear error** (`AgentDecision.from_model_response` raises `ValueError` for unsupported `kind`). Fix the problem at the source: agent prompts, `response_format` / JSON mode, or provider configuration — not silent repair in Python.
-
-### Breaking changes (observability)
-
-- All drivers (OpenAI, DIAL, …): non-**text** **`response_mode`** → assistant output must be valid JSON object text → else **`ModelDriverError`** (shared **`parse_json_object_model_output`** in **`model.py`**).
-- Decision JSON must include **`kind`**; both **`subagent_id`** and **`tool_name`** set → **`ValueError`**.
-- **`run_tool_loop`**: bad tool **`arguments`** JSON → **`ValueError`** after error log.
-
-## Structured model responses — no guessing
-
-When working on this repository:
-
-- **Do not** implement repair logic, fuzzy mapping, or heuristics that turn **invalid** or **non-contract** model JSON into valid `AgentDecision` objects (e.g. unknown `kind` values like `gather_context` must **not** be coerced into `call_tool` / `callback`).
-- **Do** enforce the contract: unsupported `kind` → **raise** (`ValueError` from `AgentDecision.from_model_response`) so failures are explicit.
-- **Do** fix invalid output upstream: prompts, `response_format` / JSON mode, provider settings — not silent recovery in Python.
-
-This policy is mirrored in `CLAUDE.md` under **Non-negotiable: structured model output**.
-
+Four installable packages live under `src/`:
+- `agent_framework` — core runtime (agent loop, host, tools, drivers)
+- `agent_framework_evaluator` — web UI + CLI for running and evaluating agents
+- `agent_framework_skills` — CLI installer for pre-built skill packs
+- `agent_workflow_compiler` — compiles planning-agent audit logs into deterministic workflow agents
 
 ## Commands
 
 ```bash
 # Install (development mode)
 pip install -e ".[dev]"
-
-# Install with DIAL driver support
-pip install -e ".[dev,dial]"
+pip install -e ".[dev,dial]"     # include DIAL driver
 
 # Run tests
 pytest
-pytest tests/test_framework_runtime.py::TestName  # single test
+pytest tests/test_framework_runtime.py::TestName   # single test
 
-# Run CLI
+# CLI
 python -m agent_framework --console                            # interactive
 python -m agent_framework --instruction "..."                  # one-shot
 python -m agent_framework --agent <id> --instruction "..."    # specific agent
-python -m agent_framework --evaluate path/to/evaluation.xml   # regression eval
 python -m agent_framework --llm-trace console|file|both       # with LLM tracing
 
-# Run Eval
-python -m agent_framework_evaluator run --env .env --agent agent --prompt "prompt" # runs a specific prompt
-python -m agent_framework_evaluator evaluate --initializer initializer --case-file case file  --verbose # evaluates a specific case file with initializer
+# Evaluator
+python -m agent_framework_evaluator web                        # local web UI
+python -m agent_framework_evaluator run --env .env --agent <id> --prompt "..."
+python -m agent_framework_evaluator evaluate --initializer <path> --case-file <path> --verbose
 
+# Workflow compiler
+compile-workflow compile --log <audit.jsonl> --agent-id <new_id> --output-dir <dir> \
+    --source-agent-path <agent.md>
 ```
 
-## Documentation and GitHub Pages
+## Non-negotiable: structured model output
 
-Product documentation is maintained in this repository under `docs/`.
+Do **not** add heuristics that reinterpret invalid or non-contract model JSON into valid `AgentDecision` values (e.g. mapping unknown `kind` strings like `gather_context` to `call_tool`). **Validate strictly and fail with a clear error** — `AgentDecision.from_model_response` raises `ValueError` for unsupported `kind`. Fix invalid output upstream: agent prompts, `response_format` / JSON mode, or provider configuration — not silent repair in Python.
 
-Public documentation pages are maintained in this repository under `docs/pages/` and deployed with the GitHub Pages workflow in `.github/workflows/static.yml`.
-
-Routine public documentation edits belong in `docs/pages/`; deeper product and developer documentation belongs in the relevant `docs/` subdirectory.
-
-Documentation information architecture is defined in [`docs/pages-information-architecture.md`](docs/pages-information-architecture.md).
+- Non-text `response_mode` → output must be valid JSON object → else `ModelDriverError` (via `parse_json_object_model_output` in `model.py`).
+- Decision JSON must include `kind`; both `subagent_id` and `tool_name` set → `ValueError`.
+- Bad tool `arguments` JSON in `run_tool_loop` → `ValueError` after error log.
 
 ## Architecture
 
-This is a **markdown-defined agent runtime**. Agents and tools are defined in Markdown files with YAML frontmatter — their behavior is controlled by the prompts in those files, not just Python code.
+### Agent definition format
 
-Model/LLM layering (merged `ModelContext`, `ModelDriverBase`, ADR): see [`docs/architecture/adr-model-context-and-drivers.md`](docs/architecture/adr-model-context-and-drivers.md).
+Each agent is a `.md` file with three `---`-delimited sections:
+1. YAML frontmatter: `id`, `role`, parameters, model config, `terminal_tools`, `tools`, `subagents`
+2. System prompt
+3. User prompt template (rendered with invocation parameters via `{{param_name}}`)
 
-### Core Concepts
+Runtime metadata (`behavior`, `model`, `temperature`, etc.) lives in a sibling `.json` sidecar file — NOT in the `.md` frontmatter. The framework reads the `.json` first, falling back to `.md` YAML for legacy fields. The `planning:` config block belongs in the `.json` sidecar.
 
-**Agents** (`src/agent_framework/agents/`): Each agent is a `.md` file with:
-- YAML frontmatter: `id`, `role`, parameters, model config, `terminal_tools` list
-- System prompt instructions
-- User prompt template (rendered with invocation parameters)
+### Core execution flow
 
-**Tools** (`tool.py`): Also `.md` files with a Python sibling module. The module must export `build_tool(definition: ToolDefinition) -> Tool`.
+`AgentHost.run_agent` → `Agent.run()` → parameter binding (`refresh_parameter_state`) → pre-run hooks (`_run_pre_agent_hooks`, including `AgentBehavior.before_run` then `on_pre_agent` callbacks) → post-hook parameter refresh → model decision loop (`TurnDriver.run_turn`) → `AgentDecision` dispatch → repeat.
 
-**AgentHost** (`host.py`): Central orchestration runtime. Owns the agent registry (`AgentRegistry`), tool registry (`ToolRegistry`), command registry (`CommandRegistry`), model driver, conversation store, call context stack, audit tracer, user communication (`UserCommunication`), and optional MCP manager. All agent invocations flow through the host. Also provides `complete()`, `complete_async()` for headless model calls. Lifecycle: `await host.start()` (discovers registries, starts MCP), `await host.aclose()` (shuts down MCP and async driver). Factory: `AgentHost.create(model_driver=..., builtin_tools=True)` — no `.env` needed. CLI path: `AgentHost.from_env_console(env_path)` — wires `ConsoleUserCommunication` and calls `start()` synchronously.
+Key files: `host.py`, `agents/agent.py`, `agents/agent_decision.py`, `agents/turn_driver.py`.
 
-**File reference injection** (`file_reference.py`): `@filename` or `@"path with spaces.ext"` tokens in any prompt string passed to `AgentHost.run_agent` (and in evaluator case markdown prompt blocks) are automatically expanded to their file contents before the agent sees them. Text files are wrapped in `<file name="...">` tags; binary files are base64-encoded in `<file name="..." encoding="base64">` tags. Unresolvable references (file not found) are left unchanged. Resolver is pluggable via `host.file_ref_resolver` (`FileReferenceResolver` protocol) — override in an initializer's `register(host, ctx)` hook for custom handling (e.g. extracting pptx text). Evaluator `MarkdownCaseLoader` accepts the same `resolver=` keyword; references in case prompts resolve relative to the case file's directory.
+### Decision loop
 
-**Registries** (`tool_registry.py`, `agent_registry.py`, `command.py`): Formal dataclass registries following the `SkillRegistry` pattern. Each supports `discover()` (eager catalog scan), `get()` (lazy load), `reload()`, and `list_names()`. `ToolRegistry` also accepts `register(tool)` for programmatic registration (builtins, MCP bridges).
+Decision kinds (closed set):
+- `final_message` — done, returns `AgentResult`
+- `call_tool` — invoke registered tool
+- `call_subagent` — delegate to child agent
+- `call_subagents` — parallel/sequential batch of child agents
+- `callback` — escalate to caller with an intent (`information_request`, `proposal_review`, `execution_recovery`, `delegation_return`, `policy_or_approval`, `guardrail_trip`)
+- `invoke_skill` — inject skill content into conversation
 
-**Built-in tools** (`builtin_tools/`): Seven `Tool` subclasses registered programmatically (no `.md` files): `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`. Permission-gated tools (`Write`, `Edit`, `Bash`, `WebFetch`) call `host.user_comm.request_permission()` before acting. Registered by `register_builtin_tools(registry)`. Enabled by default in `AgentHost.create()`.
+**Terminal tools** (`terminal_tools` in frontmatter): exit the loop immediately when called, returning `AgentResult(status="completed", message=json.dumps(tool_args))`.
 
-**Commands** (`command.py`): Parametrized markdown prompts in a configured directory. Claude Code frontmatter format (`description`, `argument-hint`, `allowed-tools`, `model`). `render(cmd, raw_args)` substitutes `$ARGUMENTS` and `$1`–`$9`. Unknown commands dispatch to a `_command_fallback` callable on the host. Execute via `await host.execute_command(name, raw_args) -> str | None`.
+### Programmatic workflows
 
-**UserCommunication** (`user_communication.py`, `console_communication.py`): Async Protocol replacing the old `input_reader`/`output_writer` callables. Key methods: `send_message`, `read_user_input`, `request_permission`, `ask_confirmation`. `NullUserCommunication` — no-op (default for `AgentHost.create()`). `ConsoleUserCommunication` — `asyncio.to_thread`-based console I/O with `[y/n/a/d]` permission prompts and session-level allow/deny caching.
+`Agent.execute_programmatic_workflow` runs a `ProgrammaticWorkflow` — a dict of typed step objects — without calling the model. Used by compiled agents to run deterministic plans.
 
-**MCP** (`mcp/`): Client-only MCP integration. `McpManager` connects to stdio/HTTP MCP servers (`start_all()`, `stop_all()`), then `bridge_mcp_tools()` registers each MCP tool as a `McpBridgeTool` in `ToolRegistry`. Config via `.mcp.json` (auto-discovered from cwd upward) or `MCP_CONFIG_PATH`. Qualified tool names: `mcp__<server>__<tool>`.
+Step types: `WorkflowCallToolStep`, `WorkflowCallSubagentStep`, `WorkflowCallSubagentsStep`, `WorkflowInvokeSkillStep`, `WorkflowReturnStep`, `WorkflowBranchStep`, `WorkflowRaiseStep`.
 
-**Skills** (`skills_directories`): Markdown-defined instruction sets discovered from one or more configured directories. Each skill is a `.md` file with YAML frontmatter (`id`, `description`, `priority`). The skills catalog (names + descriptions) is injected as a first-turn conversation message (`{"role": "user"}` at index 2) with priority-based truncation to stay within the `SKILLS_CATALOG_MAX_TOKENS` budget — lower-priority skills are dropped first. When a model emits an `invoke_skill` decision, `handle_skill_invocation()` injects `Base directory: <path>` and a `<skill_files>` file list directly into the conversation (no resource tool required). Configure with `SKILLS_DIRECTORY`/`SKILLS_DIRECTORIES` and `SKILLS_CATALOG_MAX_TOKENS`.
+Parameter values can be lambdas `(state: ProgrammaticWorkflowState) -> Any`; `resolve_workflow_value` recursively resolves these (including per-key lambdas inside dicts). `state.initial_parameters` holds the agent's invocation parameters; `state.step_results` holds per-step outputs.
 
-**Errors** (`errors.py`): `ModelDriverError` (structured HTTP error with `status_code` and `upstream_body`) and `ConversationNotFoundError` (raised when a conversation_id is not found in the store).
+`ProgrammaticWorkflow.on_step_end` callback fires after each step and returns a `WorkflowMutation`: `WorkflowContinue` (default), `WorkflowGoto`, `WorkflowReplace`, or `WorkflowAbort`. This is the replan-checkpoint hook used by compiled agents.
 
-**Messages** (`messages.py`): Typed multimodal chat message model — `ChatMessage`, `ContentPart`, `ImageUrl`, `FunctionCall`, `ToolCallMessage`. All frozen dataclasses with `to_dict()` / `from_dict()` round-trip. Does NOT change `ModelContext.messages` type (stays `tuple[dict, ...]`).
+### AgentBehavior
 
-**Conversation store** (`conversation.py`): `ConversationStore` and `AsyncConversationStore` are `typing.Protocol` classes for storage-agnostic multi-turn conversation history. `InMemoryConversationStore` is the reference implementation with optional TTL and thread-safety.
+Subclass `AgentBehavior` (`agent_behavior.py`) to customize execution:
+- `before_run()` — after pre-agent hooks, before the model loop. Return `AgentHookDecision(final_result=...)` to short-circuit (used by compiled workflow agents).
+- `respond_to_callback()` — handle callbacks from subagents.
+- `after_run()` — post-execution, can override result.
 
-**Validation** (`validation.py`): `_normalize_json_text(raw)` strips markdown fences — private primitive used by `model.py` drivers and `parse_json_object_model_output`. No public parsing API; structured output correctness is enforced upstream via `response_format` / JSON mode, not Python-side retries.
+The `on_pre_agent` hook (old-style, fires AFTER `before_run` behaviors) can inject `system_message` fragments via `AgentHookDecision`. These fragments are picked up by the subsequent `refresh_parameter_state` call, so parameter values injected via hooks are available in `state.initial_parameters` at workflow start.
 
-**Drivers** (`drivers/`): Optional provider drivers. `DialChatCompletionsDriver` (async, DIAL/OpenAI-compatible chat completions) requires `[dial]` extra. Uses `aidial-sdk` for typed request construction.
+### Audit events and tracing
 
-### Decision Loop
+Events are published via `agent_events` (`agent_event_publisher.py`) and captured by `InMemoryAuditTracer` → JSONL in `logs/`. Key event kinds:
 
-Each agent runs a loop: call model → parse `AgentDecision` → act → repeat.
+- `runtime.agent_started` — fires in `before_run`; `parameters` = seed params only (before hook injection)
+- `runtime.parameters_bound` — fires after all pre-run hooks; `bound_parameters` = fully resolved param snapshot (including hook-injected values). **Compilers and log consumers should prefer this over `runtime.agent_started.parameters`.**
+- `runtime.audit.agent_call_started` — full rendered system/user prompt
+- `runtime.audit.named_event` with `type: plan_updated` — planning agent plan snapshots
+- `runtime.agent_finished` — subagent result payload
 
-Decision kinds (closed set; any other top-level `kind` after alias normalization is invalid):
-- `final_message` — agent is done, returns `AgentResult`
-- `call_tool` — invoke a registered tool, add result to context
-- `call_subagent` — delegate to a single child agent via `host.call_subagent`
-- `call_subagents` — dispatch a batch of child agents (parallel or sequential) via `host.call_subagent_batch`; each entry specifies `subagent_id`, `parameters`, `output_key`
-- `callback` — escalate to caller (human or parent agent)
-- `invoke_skill` — invoke a named skill from the catalog
+### Workflow compiler (`agent_workflow_compiler`)
 
-Top-level callback **intent** names (e.g. `information_request`) are normalized to `kind: callback` per `agents/agent_decision.py`.
+Compiles a planning-agent JSONL audit log into three files:
+- `<id>.md` — agent definition (system prompt describes the workflow)
+- `<id>.json` — sidecar wiring `behavior` to the generated Python module
+- `<id>.py` — `AgentBehavior` subclass that builds and runs a `ProgrammaticWorkflow`
 
-**Terminal tools** (`terminal_tools` in frontmatter): Tool names that exit the loop immediately when called, without executing the tool. The result is `AgentResult(status="completed", message=json.dumps(tool_args))`. Useful for clarification/escalation exit points.
+Compilation pipeline: `log_reader` → `plan_extractor.extract_plan` → `PlanCompilation` → `emitter/{markdown,json_def,behavior}`.
 
-Callback intents: `information_request`, `proposal_review`, `execution_recovery`, `delegation_return`, `policy_or_approval`, `guardrail_trip`
+Parameter resolution in emitted code (priority order):
+1. `{{token}}` strings in plan parameters → `lambda s: _ref(s, ...)` via `_value_to_python_expr`
+2. Literal values matching a known invocation parameter → `lambda s: _ref(s, 'param_name')` via `find_invocation_param`
+3. Replan-introduced literals found in step results → `lambda s: _ref(s, step_id, ...)` via `infer_param_ref` (with an explanatory comment listing all candidate paths)
+4. Plain literal
 
-### Response Modes
+The `_ref(state, step_id, *path)` helper (inlined in generated code) resolves `state.step_results[step_id]` first, then falls back to `state.initial_parameters[step_id]` — so parameter references and step-result references share the same lookup syntax.
 
-System prompt templates in `agents/` control output format:
-- `system.md` — base template (tools, subagents, workflow)
-- `system.decision.md` — structured action JSON (default)
-- `system.text.md` — plain text responses
-- `system.json_object.md` — arbitrary JSON with callback patterns
+Replan checkpoints appear as stubs in `_on_step_end`; edit them to activate `WorkflowGoto` / `WorkflowReplace` rerouting.
+
+### Response modes
+
+System prompt templates (`agents/` in the package): `system.md` (base), `system.decision.md` (structured JSON, default), `system.text.md` (plain text), `system.json_object.md` (arbitrary JSON).
 
 ### Configuration (`.env`)
 
 ```
-# OpenAI
+DEFAULT_PROVIDER=openai            # or: dial
 OPENAI_API_KEY=...
-DEFAULT_PROVIDER=openai
-DEFAULT_MODEL=gpt-4o-mini          # comma-separated list for fallback: gpt-4o,gpt-4o-mini
+DEFAULT_MODEL=gpt-4o-mini          # comma-separated for fallback
 
-# DIAL (alternative to OpenAI)
-DEFAULT_PROVIDER=dial
-DIAL_BASE_URL=https://your-dial.example.com
+DIAL_BASE_URL=...
 DIAL_API_VERSION=2024-10-21
 DIAL_API_KEY=...
 
-# Shared
 AGENT_DIRECTORY=path/to/agents
 TOOLS_DIRECTORY=path/to/tools
-WORLD_DIRECTORY=path/to/sandbox
 ROOT_AGENT=<agent_id>
-AGENT_MODELS=agent1=m1,m2|agent2=m3   # | separates agents, , separates models per agent
-SKILLS_DIRECTORY=path/to/skills        # single skills directory
-SKILLS_DIRECTORIES=path/a,path/b       # multiple skills directories
-SKILLS_CATALOG_MAX_TOKENS=2000         # max tokens for skills catalog injected into conversation
-MISSING_TOOL_POLICY=graceful            # graceful = skip unloadable tools + trace; strict = fail run
+AGENT_MODELS=agent1=m1,m2|agent2=m3
 
-# Commands
-COMMANDS_DIRECTORY=path/to/commands    # single commands directory
-COMMANDS_DIRECTORIES=path/a,path/b     # multiple commands directories (comma-separated)
+SKILLS_DIRECTORY=path/to/skills
+SKILLS_DIRECTORIES=path/a,path/b
+SKILLS_CATALOG_MAX_TOKENS=2000
 
-# MCP
-MCP_CONFIG_PATH=path/to/mcp.json       # explicit .mcp.json path (default: auto-discover)
-MCP_ENABLED=true                        # set false to disable MCP entirely
+COMMANDS_DIRECTORY=path/to/commands
+MCP_CONFIG_PATH=path/to/.mcp.json  # default: auto-discover upward
+MCP_ENABLED=true
 
-# Parallel sub-agents
-SUBAGENT_BATCH_TIMEOUT_SECONDS=300     # wall-clock deadline per call_subagents batch (default: 300)
-SUBAGENT_MAX_PARALLELISM=8             # max entries per call_subagents decision (default: 8)
-SUBAGENT_BATCH_MAX_CALLBACK_ROUNDS=5   # max callback-resolve-resume rounds per batch (default: 5)
+SUBAGENT_BATCH_TIMEOUT_SECONDS=300
+SUBAGENT_MAX_PARALLELISM=8
+SUBAGENT_BATCH_MAX_CALLBACK_ROUNDS=5
+MISSING_TOOL_POLICY=graceful        # graceful = skip + trace; strict = fail
 ```
 
-### Extensibility
+### Evaluator (`agent_framework_evaluator`)
 
-**`AgentBehavior`** (`agent_behavior.py`): Subclass to customize agent execution:
-- `before_run()` — after parameter binding, before main loop
-- `respond_to_callback()` — handle callbacks from subagents
-- `after_run()` — post-execution, can override result
+CLI: `python -m agent_framework_evaluator <web|run|evaluate>`. The `evaluate` subcommand runs cases headless. All evaluation orchestration is **server-side** — the JS frontend is a thin observer; do not re-introduce client-side result forwarding, batch loops, or postfix injection.
 
-**Event/hook system**: `SequentialHook` fires typed lifecycle events (`AgentStartEvent`, `ModelStartEvent`, `ToolStartEvent`, etc.) that behaviors can observe.
+Key files: `app.py` (FastAPI + WS), `session_manager.py`, `runtime/session_runner.py`, `evaluation.py`, `cli.py`.
 
-**`DriverCapabilities`**: Drivers declare capabilities via `ClassVar[DriverCapabilities]` with flags `is_async`, `supports_multimodal`, `supports_response_format`, `supports_tools`, `supports_streaming`. Query with `get_driver_capabilities(driver)`.
+### Documentation
 
-**`AsyncModelDriver`**: Protocol for async drivers. `SyncToAsyncAdapter` and `AsyncToSyncAdapter` bridge sync/async worlds. `AgentHost.get_model_driver()` auto-wraps async drivers for the sync agent loop.
+Public docs: `docs/pages/` (deployed via GitHub Pages). Developer/architecture docs: `docs/`. Information architecture: `docs/pages-information-architecture.md`. Do **not** push to the GitHub wiki for routine edits.
 
-### Agent Evaluator (`agent_framework_evaluator`)
+## Reference frameworks
 
-Three CLI subcommands (all use `python -m agent_framework_evaluator <cmd>`):
-- `web` — starts the local FastAPI UI with WebSocket trace streaming
-- `run` — headless single-agent invocation
-- `evaluate` — runs and evaluates one or all cases from an initializer (or a standalone `.md` case file) entirely CLI-side; no web UI required. Key flags: `--initializer`, `--case N`, `--case-file`, `--output`, `--verbose`, `--agent`
+Consult these when asked to "research similar frameworks" or "design a framework-agnostic solution":
 
-All evaluation orchestration is **server-side**:
-- `result_field` selection from `last_run_result` — both in `/api/evaluate-result` and `/api/evaluate-case`. Returns HTTP 400 (or CLI exit 1) if the field is missing.
-- `case_run_mode: no_callbacks` postfix applied server-side in the WS `run` handler (constant `CASE_NO_CALLBACKS_POSTFIX` in `evaluation.py`).
-- Batch iteration in `/api/evaluate-batch` (NDJSON streaming) and `evaluate` CLI — not client-side.
-- `SessionRecord.last_run_result` stores the payload dict from `_agent_result_payload(result)` after each run; the evaluate endpoints read from it. **Do not re-introduce client-side agent result forwarding.**
-
-Key evaluator files: `app.py` (FastAPI endpoints + WS handler), `session_manager.py` (`SessionRecord`), `runtime/session_runner.py` (`run_once`), `evaluation.py` (`run_evaluation`, `select_agent_result_field`, `CASE_NO_CALLBACKS_POSTFIX`), `cli.py` (subcommands including `evaluate`), `web/app.js` (thin observer — no payload extraction, no batch loop, no postfix).
-
-### Tracing & Audit
-
-- `InMemoryAuditTracer` captures immutable `AgentCallAuditRecord` per run
-- JSONL dumps go to `logs/`
-- `trace_viewer.html` — standalone HTML viewer for trace files
-- LLM-level request/response logging via `--llm-trace`
-- Both `OpenAiModelDriver` and `DialChatCompletionsDriver` use `ProviderRequestTrace` / `ProviderResponseTrace` callbacks — wire via `host.enable_audit_trace()` or `host.enable_llm_trace_logging()`
+- LangGraph, LangChain, Microsoft Agent Framework, Google ADK, CrewAI, AutoGen, DSPy, LlamaIndex, Haystack
+- OpenAI SDK, Anthropic SDK, Google GenAI SDK, Azure AI SDK, EPAM DIAL, LiteLLM, HuggingFace Transformers, MCP
