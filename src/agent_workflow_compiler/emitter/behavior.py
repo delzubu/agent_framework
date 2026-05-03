@@ -1,12 +1,11 @@
 """Emit a Python behavior file that runs the compiled workflow."""
 from __future__ import annotations
 
-import textwrap
 from pathlib import Path
 from typing import Any
 
-from ..models import CompiledStep, PlanCompilation, ReplanCheckpoint
-from ._tokens import _value_to_python_expr, _contains_token, _literal_python, infer_param_ref, find_invocation_param
+from ..models import CompiledStep, PlanCompilation
+from ._tokens import _value_to_python_expr, _contains_token, _literal_python, find_invocation_param
 
 
 _REF_HELPER = '''\
@@ -38,12 +37,6 @@ def emit_behavior(compilation: PlanCompilation, agent_id: str, output_path: str 
         output_path: Where to write the ``<agent>_behavior.py`` file.
     """
     class_name = _to_class_name(agent_id)
-
-    # Steps introduced by replanning — their literal params may be inferred from step results
-    replan_step_ids: set[str] = set()
-    for cp in compilation.replan_checkpoints:
-        replan_step_ids.update(cp.added_step_ids)
-
     lines: list[str] = []
 
     # Header
@@ -96,8 +89,6 @@ def emit_behavior(compilation: PlanCompilation, agent_id: str, output_path: str 
             step,
             indent=12,
             override_next="_wf_final" if is_last else None,
-            is_replan_step=step.step_id in replan_step_ids,
-            step_results=compilation.step_results,
             invocation_parameters=compilation.invocation_parameters,
         ))
 
@@ -160,8 +151,6 @@ def _emit_step(
     step: CompiledStep,
     indent: int,
     override_next: str | None = None,
-    is_replan_step: bool = False,
-    step_results: dict[str, Any] | None = None,
     invocation_parameters: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return source lines for one workflow step entry."""
@@ -174,21 +163,18 @@ def _emit_step(
         lines.append(f"{pad}    tool_name={repr(step.tool_name)},")
         lines.extend(_emit_arguments(
             step.parameters, pad + "    ", label="arguments",
-            is_replan_step=is_replan_step, step_results=step_results,
             invocation_parameters=invocation_parameters,
         ))
     elif step.kind == "call_subagent":
         lines.append(f"{pad}    subagent_id={repr(step.subagent_id)},")
         lines.extend(_emit_arguments(
             step.parameters, pad + "    ", label="parameters",
-            is_replan_step=is_replan_step, step_results=step_results,
             invocation_parameters=invocation_parameters,
         ))
     elif step.kind == "invoke_skill":
         lines.append(f"{pad}    skill_name={repr(step.skill_name)},")
         lines.extend(_emit_arguments(
             step.parameters, pad + "    ", label="parameters",
-            is_replan_step=is_replan_step, step_results=step_results,
             invocation_parameters=invocation_parameters,
         ))
 
@@ -204,8 +190,6 @@ def _emit_arguments(
     params: dict[str, Any],
     pad: str,
     label: str,
-    is_replan_step: bool = False,
-    step_results: dict[str, Any] | None = None,
     invocation_parameters: dict[str, Any] | None = None,
 ) -> list[str]:
     """Emit the arguments/parameters dict, wrapping in lambda if tokens present.
@@ -213,14 +197,12 @@ def _emit_arguments(
     Resolution order per value:
     1. {{token}} strings → _value_to_python_expr (lambda / f-string).
     2. Matches an invocation parameter by value → _ref(s, param_name) + comment.
-    3. Replan-introduced literal → infer from step_results + comment.
-    4. Plain literal.
+    3. Plain literal.
     """
     if not params:
         return []
 
     if _contains_token(params):
-        # Any token in any key → emit per-key expression dict
         lines: list[str] = [f"{pad}{label}={{"]
         for k, v in params.items():
             expr = _value_to_python_expr(v)
@@ -228,60 +210,25 @@ def _emit_arguments(
         lines.append(f"{pad}}},")
         return lines
 
-    # Check whether any value matches an invocation param or needs replan inference.
-    # If so, emit per-key expanded form; otherwise use compact one-liner.
-    needs_expansion = (
-        (invocation_parameters and _any_matches_param(params, invocation_parameters))
-        or (is_replan_step and step_results and _any_infer_candidate(params))
-    )
-    if not needs_expansion:
+    if not (invocation_parameters and _any_matches_param(params, invocation_parameters)):
         pairs = ", ".join(f"{repr(k)}: {_literal_python(v)}" for k, v in params.items())
         return [f"{pad}{label}={{{pairs}}},"]
 
     lines: list[str] = [f"{pad}{label}={{"]
     for k, v in params.items():
-        # 1. Check invocation parameters first (highest confidence).
-        if invocation_parameters:
-            param_name = find_invocation_param(v, invocation_parameters)
-            if param_name is not None:
-                expr = f"lambda s: _ref(s, {repr(param_name)})"
-                lines.append(f"{pad}    # Bound from agent parameter {repr(param_name)}.")
-                lines.append(f"{pad}    {repr(k)}: {expr},")
-                continue
-        # 2. Replan step — try reverse lookup from step results.
-        if is_replan_step and step_results and _is_infer_candidate(v):
-            best_path, all_paths = infer_param_ref(v, step_results)
-            if best_path:
-                parts = best_path.split(".")
-                args_str = ", ".join(repr(p) for p in parts)
-                expr = f"lambda s: _ref(s, {args_str})"
-                source_step = parts[0]
-                comment = (
-                    f"# Parameter inferred: assuming {v!r} came from output of {source_step!r} call."
-                )
-                if len(all_paths) > 1:
-                    others = ", ".join(repr(p) for p in all_paths[1:])
-                    comment += f" Same value also found at: {others} — double-check which is correct."
-                lines.append(f"{pad}    {comment}")
-                lines.append(f"{pad}    {repr(k)}: {expr},")
-                continue
-        # 3. Plain literal.
-        lines.append(f"{pad}    {repr(k)}: {_literal_python(v)},")
+        param_name = find_invocation_param(v, invocation_parameters)
+        if param_name is not None:
+            expr = f"lambda s: _ref(s, {repr(param_name)})"
+            lines.append(f"{pad}    # Bound from agent parameter {repr(param_name)}.")
+            lines.append(f"{pad}    {repr(k)}: {expr},")
+        else:
+            lines.append(f"{pad}    {repr(k)}: {_literal_python(v)},")
     lines.append(f"{pad}}},")
     return lines
 
 
 def _any_matches_param(params: dict[str, Any], invocation_parameters: dict[str, Any]) -> bool:
     return any(find_invocation_param(v, invocation_parameters) is not None for v in params.values())
-
-
-def _any_infer_candidate(params: dict[str, Any]) -> bool:
-    return any(_is_infer_candidate(v) for v in params.values())
-
-
-def _is_infer_candidate(value: Any) -> bool:
-    """Return True if value is a scalar that could be inferred from step results."""
-    return isinstance(value, (str, int, float)) and value is not None and value != ""
 
 
 def _step_class(kind: str) -> str:
