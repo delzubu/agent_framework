@@ -42,6 +42,17 @@ Each package has its own `CLAUDE.md` with the source tree, workflow pseudocode, 
 | `agent_framework_skills` | `src/agent_framework_skills/` | Pre-built skill pack installer (`agent-framework-skills` CLI) |
 | `agent_workflow_compiler` | `src/agent_workflow_compiler/` | Compiles planning-agent audit logs into deterministic agents |
 
+## Development workflow
+
+**Branching.** Major new features are implemented on a dedicated feature branch. Bug fixes are committed directly to the active branch (normally `master` once a prior PR is merged, unless stated otherwise).
+
+**Committing.** Commit after each self-contained piece of work is done — not at the end of everything.
+
+**Pushing.** Push only when a full feature is complete. A feature is complete when all three of the following are true:
+1. All coding is done.
+2. All tests pass (`pytest`).
+3. All documentation is updated — this means: architecture notes (in `docs/` and the relevant `CLAUDE.md` files), user-facing documentation (in `docs/pages/`), and any skill knowledge files that describe new or changed behavior.
+
 ## Architectural standards
 
 **Agent definition files are the source of truth for behavior.** Python code implements mechanics; `.md` files define what an agent does, what tools it can use, and how it interprets its inputs. When changing agent behavior, change the prompt first.
