@@ -163,6 +163,37 @@ Supported values:
 - `str`
 - `None`
 
+**Output contract (mandatory).** The framework routes the returned `AgentResult` to the caller exactly like any other agent result. That means `message` and `response` carry the same semantics as a model-driven `final_message` decision:
+
+- `message` — **human-readable prose only**. Never serialize a dict, list, or any structured data into this field. Callers and the evaluator treat it as a displayable string.
+- `response` — structured output as a JSON-serializable dict. Use this for any typed payload the caller needs to extract programmatically.
+- Both fields may be set together: prose summary in `message`, full payload in `response`.
+
+Violating this contract breaks callers that read `message` as prose and evaluators that extract `response` fields.
+
+```python
+# correct
+WorkflowReturnStep(
+    step_id="finish",
+    value=lambda state: AgentResult(
+        status="completed",
+        message="Analysis complete.",          # prose
+        response={"score": state.require_step_result("score_step").response},
+    ),
+)
+
+# wrong — never do this
+WorkflowReturnStep(
+    step_id="finish",
+    value=lambda state: AgentResult(
+        status="completed",
+        message=json.dumps(state.require_step_result("score_step").response),  # JSON in message
+    ),
+)
+```
+
+When `value` is a plain `str`, it becomes `message` directly — the same prose-only rule applies.
+
 ### `WorkflowRaiseStep`
 
 Use to abort with a specific exception or error message.

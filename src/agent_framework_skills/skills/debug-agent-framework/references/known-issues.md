@@ -115,3 +115,39 @@ The planning config's `max_iterations` is too low for the number of steps.
 **Cause:** The model wrapped its JSON in a markdown code fence (`` ```json ... ``` ``). `_normalize_json_text` strips these, but only the outermost fence.
 
 **Fix:** Check `llm.response.raw_text`. If nested fences appear, the model needs stronger formatting instructions in the system prompt.
+
+---
+
+## Decision envelope contract violations
+
+The runtime enforces a standard JSON decision envelope for all agent output (defined in `system.decision.md`). Valid `kind` values: `final_message`, `call_tool`, `call_subagent`, `call_subagents`, `callback`, `callback_to_caller`, `request_user_input`, `request_resolution`, `invoke_skill`, `submit_plan`, `continue_plan`.
+
+For `final_message` decisions the output channels are:
+
+- `message` — human-readable prose only. **Never serialized JSON.**
+- `response` — structured payload as a JSON object. Use when the caller needs typed data.
+
+### Symptom: Caller reads `message` and gets a JSON string instead of prose
+
+**Cause:** A workflow agent or model-driven agent serialized a dict or list into `message` instead of using `response`. Common in `WorkflowReturnStep` values that do `json.dumps(...)` or `str(dict_value)` on the result of a child run.
+
+**Diagnosis:** Find `runtime.agent_finished` for the agent run. Check `payload.decision_envelope.message` — if it starts with `{` or `[`, the contract is violated. Also check `payload.message` directly if `decision_envelope` is absent.
+
+**Fix:** Move structured data to `AgentResult.response`; set `message` to a short prose summary.
+
+---
+
+### Symptom: `decision_envelope` absent from `runtime.agent_finished` for a workflow agent
+
+**Cause A — Workflow returned a plain `str`**
+`coerce_workflow_result` converts a plain `str` return to `AgentResult(message=str_value)` with no `decision`. The envelope is built by parsing `result.message` as JSON; if the string is not valid JSON with a `kind` field, no envelope is emitted.
+
+**Cause B — Workflow returned `None`**
+`coerce_workflow_result` converts `None` to `AgentResult(message=None)`. With no message and no decision, the envelope is omitted.
+
+**Cause C — Old log (pre-`decision_envelope` framework version)**
+`decision_envelope` was added in the same release as `runtime.parameters_bound`. If the log predates that, neither field appears.
+
+**Diagnosis:** Check `payload.status` and `payload.message` in `runtime.agent_finished`. If status is `completed` and message is set, it's Cause A/B. If the log also lacks `runtime.parameters_bound` events, it's Cause C.
+
+**Fix for A/B:** Return an explicit `AgentResult` from `WorkflowReturnStep` with both `message` (prose) and `response` (structured data) set.
