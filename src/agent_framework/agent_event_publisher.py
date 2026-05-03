@@ -152,6 +152,30 @@ class AgentEventPublisher:
             ),
         )
 
+    def audit_parameters_bound(
+        self,
+        *,
+        run_id: str,
+        agent_id: str,
+        bound_parameters: dict[str, Any],
+    ) -> None:
+        """Emit after all pre-run hooks have executed and parameters are fully resolved.
+
+        Unlike ``runtime.agent_started`` (which fires before on_pre_agent hooks),
+        this event captures the complete post-binding parameter set, including values
+        injected by hooks or extracted from rendered prompt fragments.
+        """
+        self._publish(
+            make_trace_event(
+                channel="runtime",
+                kind="runtime.parameters_bound",
+                title=f"Parameters fully bound for {agent_id}",
+                span_id=run_id,
+                context=TraceContext(run_id=run_id, agent_id=agent_id),
+                payload={"bound_parameters": bound_parameters},
+            ),
+        )
+
     def audit_agent_call_finished(
         self,
         *,

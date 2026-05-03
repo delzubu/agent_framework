@@ -31,8 +31,12 @@ def extract_plan(events: list[AuditEvent], run_id: str) -> PlanCompilation:
 
     for e in planner_events:
         if e.kind == "runtime.agent_started":
+            # Seed parameters only (before on_pre_agent hooks). Used as fallback.
             invocation_parameters = dict(e.payload.get("parameters") or {})
             invocation_prompt = str(e.payload.get("prompt") or "")
+        if e.kind == "runtime.parameters_bound":
+            # Full post-hook parameter snapshot; overrides the seed-only snapshot.
+            invocation_parameters = dict(e.payload.get("bound_parameters") or {})
         if e.kind == "runtime.audit.agent_call_started":
             source_agent_id = source_agent_id or str(e.payload.get("agent_name") or "")
 
@@ -95,6 +99,12 @@ def extract_plan(events: list[AuditEvent], run_id: str) -> PlanCompilation:
                 )
             )
 
+    # ------------------------------------------------------------------
+    # Step results — subagent calls only (tool results are not captured
+    # at this log level)
+    # ------------------------------------------------------------------
+    step_results = _extract_step_results(run_events, final_steps)
+
     return PlanCompilation(
         source_run_id=run_id,
         source_agent_id=source_agent_id,
@@ -102,6 +112,7 @@ def extract_plan(events: list[AuditEvent], run_id: str) -> PlanCompilation:
         invocation_prompt=invocation_prompt,
         final_steps=final_steps,
         replan_checkpoints=replan_checkpoints,
+        step_results=step_results,
     )
 
 
@@ -198,6 +209,41 @@ def _find_last_completed_step(
         return 1 + max(depth(d, visited) for d in deps_in_completed[sid])
 
     return max(completed_ids, key=depth)
+
+
+def _extract_step_results(
+    run_events: list[AuditEvent],
+    steps: list[CompiledStep],
+) -> dict[str, Any]:
+    """Map step_id → result for subagent steps whose result is in the log.
+
+    Subagent results appear as ``runtime.agent_finished`` events on child runs.
+    A child run's run_id ends with ``.<subagent_id>`` relative to the parent.
+    Tool step results are not captured at this audit-log level and are absent.
+    """
+    # Build a map: subagent_id → step_id for subagent steps
+    subagent_steps: dict[str, str] = {}
+    for step in steps:
+        if step.kind == "call_subagent" and step.subagent_id:
+            subagent_steps[step.subagent_id] = step.step_id
+
+    results: dict[str, Any] = {}
+    for e in run_events:
+        if e.kind != "runtime.agent_finished":
+            continue
+        run_id = e.context.get("run_id") or ""
+        # Last segment of the run_id is the agent name
+        last_segment = run_id.rsplit(".", 1)[-1] if "." in run_id else ""
+        if last_segment in subagent_steps:
+            step_id = subagent_steps[last_segment]
+            payload = e.payload or {}
+            # Store the full result payload (message + response)
+            results[step_id] = {
+                k: payload[k]
+                for k in ("message", "response", "status")
+                if k in payload
+            }
+    return results
 
 
 def _infer_trigger_message(plan_update: dict[str, Any]) -> str:

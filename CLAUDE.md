@@ -2,6 +2,47 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project overview
+
+This project implements a flexible, standalone agent framework that allows quick development and deployment of AI agents. It contains the agent runtime (agent class, including the agent loop and system prompts), the agent host (allows quick usage from any code), and accompanying utilities
+and skills. 
+Target audience are experienced Python developers who want to introduce LLM agents in their software.
+
+
+
+
+## Similar frameworks
+
+### Agentic frameworks
+
+Research and consult these when I instruct you to "research similar frameworks to see how x functionality is usually implemented"
+
+- **LangGraph** (https://github.com/langchain-ai/langgraph) (https://langchain-ai.github.io/langgraph/)
+- **LangChain** (https://github.com/langchain-ai/langchain) (https://python.langchain.com/)
+- **Microsoft Agent Framework** (https://github.com/microsoft/agent-framework) (https://aka.ms/agent-framework)
+- **Google ADK (Agent Development Kit)** (https://github.com/google/adk-python) (https://google.github.io/adk-docs/)
+- **CrewAI** (https://github.com/joaomdmoura/crewAI) (https://docs.crewai.com/)
+- **AutoGen** (https://github.com/microsoft/autogen) (https://microsoft.github.io/autogen/)
+- **DSPy** (https://github.com/stanfordnlp/dspy) (https://dspy-docs.vercel.app/)
+- **LlamaIndex (Agents)** (https://github.com/jerryjliu/llama_index) (https://docs.llamaindex.ai/)
+- **Haystack (Agents)** (https://github.com/deepset-ai/haystack) (https://docs.haystack.deepset.ai/)
+- **SuperAGI** (https://github.com/TransformerOptimus/SuperAGI) (https://superagi.com/docs/)
+- **OpenDevin** (https://github.com/OpenDevin/OpenDevin) (https://opendevin.github.io/OpenDevin/)
+
+### SDKs
+
+Research and consult these when I instruct you to "design a framework-agnostic solution"
+
+- **OpenAI SDK** (https://github.com/openai/openai-python) (https://platform.openai.com/docs/)
+- **Anthropic SDK** (https://github.com/anthropics/anthropic-sdk-python) (https://docs.anthropic.com/)
+- **Google GenAI SDK** (https://github.com/google/generative-ai-python) (https://ai.google.dev/docs)
+- **Azure AI SDK** (https://github.com/Azure/azure-sdk-for-python) (https://learn.microsoft.com/azure/ai-services/)
+- **EPAM DIAL** (https://github.com/epam/dial) (https://epam-railway.github.io/dial/)
+- **LiteLLM** (https://github.com/BerriAI/litellm) (https://docs.litellm.ai/)
+- **Vercel AI SDK** (https://github.com/vercel/ai) (https://sdk.vercel.ai/docs)
+- **Hugging Face Transformers** (https://github.com/huggingface/transformers) (https://huggingface.co/docs)
+- **Model Context Protocol (MCP)** (https://github.com/modelcontextprotocol/spec) (https://modelcontextprotocol.io/)
+
 ## Non-negotiable: structured model output
 
 Do **not** add heuristics that reinterpret invalid or non-contract model JSON into valid `AgentDecision` values (for example mapping unknown `kind` strings such as `gather_context` to `call_tool` or `callback`). **Validate strictly** and **fail with a clear error** (`AgentDecision.from_model_response` raises `ValueError` for unsupported `kind`). Fix the problem at the source: agent prompts, `response_format` / JSON mode, or provider configuration — not silent repair in Python.
@@ -42,6 +83,11 @@ python -m agent_framework --instruction "..."                  # one-shot
 python -m agent_framework --agent <id> --instruction "..."    # specific agent
 python -m agent_framework --evaluate path/to/evaluation.xml   # regression eval
 python -m agent_framework --llm-trace console|file|both       # with LLM tracing
+
+# Run Eval
+python -m agent_framework_evaluator run --env .env --agent agent --prompt "prompt" # runs a specific prompt
+python -m agent_framework_evaluator evaluate --initializer initializer --case-file case file  --verbose # evaluates a specific case file with initializer
+
 ```
 
 ## Documentation and GitHub Pages
@@ -50,7 +96,7 @@ Product documentation is maintained in this repository under `docs/`.
 
 Public documentation pages are maintained in this repository under `docs/pages/` and deployed with the GitHub Pages workflow in `.github/workflows/static.yml`.
 
-Do **not** copy, commit, or push documentation into the GitHub wiki repository unless the user explicitly asks to restore or update the wiki. Routine public documentation edits belong in `docs/pages/`; deeper product and developer documentation belongs in the relevant `docs/` subdirectory.
+Routine public documentation edits belong in `docs/pages/`; deeper product and developer documentation belongs in the relevant `docs/` subdirectory.
 
 Documentation information architecture is defined in [`docs/pages-information-architecture.md`](docs/pages-information-architecture.md).
 

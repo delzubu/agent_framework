@@ -452,6 +452,15 @@ class Agent:
                     caller_id=caller_id,
                     result=early_result,
                 )[0]
+            # Refresh parameter state after all pre-run hooks have had a chance
+            # to inject prompt fragments (e.g. on_pre_agent hooks that add context).
+            # This gives the complete bound parameter snapshot before the first model call.
+            self.refresh_parameter_state(run)
+            agent_events.audit_parameters_bound(
+                run_id=run.run_id,
+                agent_id=self.agent_id,
+                bound_parameters=dict(run.parameter_values or {}),
+            )
             driver = self._select_turn_driver(planning_override=planning_override)
             while self.should_continue(run):
                 outcome = driver.run_turn(
@@ -1061,6 +1070,19 @@ class Agent:
         initial_parameters: dict[str, Any] | None = None,
     ) -> AgentResult:
         """Run a deterministic workflow without entering the model decision loop."""
+        if initial_parameters is None:
+            # Validate required parameters the same way the LLM loop does.
+            self.refresh_parameter_state(run)
+            if run.missing_parameters:
+                raise ValueError(
+                    f"Missing required parameter(s) {run.missing_parameters!r} "
+                    f"for workflow agent {self.agent_id!r}."
+                )
+            if run.invalid_parameters:
+                raise ValueError(
+                    f"Invalid parameter value(s) {run.invalid_parameters!r} "
+                    f"for workflow agent {self.agent_id!r}."
+                )
         state = ProgrammaticWorkflowState(
             initial_parameters=dict(initial_parameters or run.parameter_values),
         )

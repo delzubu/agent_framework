@@ -52,3 +52,7 @@ class PlanCompilation:
     invocation_prompt: str
     final_steps: list[CompiledStep]
     replan_checkpoints: list[ReplanCheckpoint]
+    # Results of completed steps, keyed by step_id.
+    # Only subagent steps are populated (tool results are not captured at this
+    # log level); tool-step results remain absent here.
+    step_results: dict[str, Any] = field(default_factory=dict)
