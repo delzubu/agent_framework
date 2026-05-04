@@ -9,7 +9,7 @@ from typing import Any, TYPE_CHECKING
 
 import yaml
 
-from agent_framework.agents.helpers import SECTION_PATTERN
+from agent_framework.agents.helpers import SECTION_PATTERN, load_runtime_metadata
 from agent_framework.model_overrides import normalize_model_override_names
 
 if TYPE_CHECKING:
@@ -146,18 +146,29 @@ class AgentRegistry:
     def load_from_path(self, source_path: Path) -> "Agent":
         """Load an Agent from markdown, apply model overrides, and cache it."""
         from agent_framework.agents.agent import Agent
+        from agent_framework.agents.workflow_agent import WorkflowAgent
 
         cfg = self.config
         default_provider = getattr(cfg, "default_provider", "openai") if cfg else "openai"
         default_model = getattr(cfg, "default_model", ("gpt-4o-mini",)) if cfg else ("gpt-4o-mini",)
+        runtime_metadata = load_runtime_metadata(source_path)
+        agent_type = str(runtime_metadata.get("agent_type", "model") or "model").strip().lower()
+        if agent_type in {"", "model"}:
+            agent_cls = Agent
+        elif agent_type == "workflow":
+            agent_cls = WorkflowAgent
+        else:
+            raise ValueError(f"Unsupported agent_type {agent_type!r} in {source_path.with_suffix('.json')}.")
 
         try:
-            agent = Agent.from_markdown(
+            agent = agent_cls.from_markdown(
                 source_path,
                 default_provider=default_provider,
                 default_model=default_model,
                 model_override=self.runtime_model_override,
             )
+            if isinstance(agent, WorkflowAgent):
+                agent.configure_workflow(runtime_metadata)
         except Exception:
             _LOGGER.error("failed to load agent markdown %s", source_path, exc_info=True)
             raise

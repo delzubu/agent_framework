@@ -1,28 +1,40 @@
 # agent_framework — Workflow-Based Agent Development
 
-Use this reference when building a deterministic controller agent that should orchestrate child agents from Python code instead of asking the parent model to decide each next step.
+Use this reference when building a controller agent that should orchestrate child agents, tools, deterministic transforms, or same-agent model phases from Python code.
 
 ---
 
 ## When to choose a workflow-based agent
 
-Choose this pattern when the parent control flow is deterministic:
+Choose this pattern when the parent control flow is code-defined:
 
 - intake first, then specialist reviews, then consolidation
 - approval or escalation chains
 - fixed state-machine transitions
 - branching on structured state already known to Python
+- semantic checkpoints that should run as same-agent model phases in one shared run context
 
-Do not choose it just because the logic is complex. If the parent still needs LLM reasoning about what to do next, keep the normal model-driven decision loop.
+Do not choose it just because the logic is complex. If the parent still needs open-ended LLM reasoning about what to do next, keep the normal model-driven decision loop or use a planning agent.
 
 ---
 
 ## Core pattern
 
-Workflow-based agents use two layers:
+First-class workflow agents use three layers:
 
 1. Agent `.md` still defines the agent identity, parameters, allowed subagents, and normal prompt contract.
-2. A Python `AgentBehavior` short-circuits from `before_run(...)` and calls `agent.execute_programmatic_workflow(...)`.
+2. Adjacent `.json` sets `"agent_type": "workflow"` and points at a Python workflow module.
+3. The workflow module exports `build_workflow(agent) -> ProgrammaticWorkflow`.
+
+```json
+{
+  "agent_type": "workflow",
+  "workflow": {"path": "my_agent_workflow.py"},
+  "behaviors": ["guardrails"]
+}
+```
+
+Existing behavior-based workflows that short-circuit from `before_run(...)` and call `agent.execute_programmatic_workflow(...)` remain supported as a compatibility path.
 
 This is important: do not call `host.call_subagent(...)` directly as your main orchestration surface unless you deliberately accept losing native parent-side workflow parity.
 
@@ -35,8 +47,12 @@ The workflow runner exists so deterministic code can still produce the same kind
 The public workflow surface is:
 
 - `Agent.execute_programmatic_workflow(...)`
+- `WorkflowAgent`
 - `ProgrammaticWorkflow`
 - `ProgrammaticWorkflowState`
+- `WorkflowModelStep`
+- `WorkflowTransformStep`
+- `WorkflowCallToolStep`
 - `WorkflowCallSubagentStep`
 - `WorkflowCallSubagentsStep`
 - `WorkflowBranchStep`

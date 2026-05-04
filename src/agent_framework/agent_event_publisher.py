@@ -198,7 +198,15 @@ class AgentEventPublisher:
             ),
         )
 
-    def audit_decision(self, *, run_id: str, agent_id: str, decision: AgentDecision) -> None:
+    def audit_decision(
+        self,
+        *,
+        run_id: str,
+        agent_id: str,
+        decision: AgentDecision,
+        workflow_step_id: str | None = None,
+        workflow_phase_id: str | None = None,
+    ) -> None:
         d: dict[str, Any] = {
             "kind": decision.kind,
             "message": decision.message,
@@ -208,6 +216,10 @@ class AgentEventPublisher:
             "callback_intent": decision.callback_intent,
             "skill_name": decision.skill_name,
         }
+        if workflow_step_id is not None:
+            d["workflow_step_id"] = workflow_step_id
+        if workflow_phase_id is not None:
+            d["phase_id"] = workflow_phase_id
         self._publish(
             make_trace_event(
                 channel="runtime",

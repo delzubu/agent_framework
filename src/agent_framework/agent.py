@@ -28,19 +28,24 @@ from agent_framework.agents import (
     ToolEndEvent,
     ToolHookDecision,
     ToolStartEvent,
+    WorkflowAgent,
     ProgrammaticWorkflow,
     ProgrammaticWorkflowState,
     ProgrammaticWorkflowStep,
     WorkflowBranchStep,
     WorkflowCallSubagentStep,
     WorkflowCallSubagentsStep,
+    WorkflowCallToolStep,
+    WorkflowModelStep,
     WorkflowRaiseStep,
     WorkflowReturnStep,
+    WorkflowTransformStep,
 )
 from agent_framework.model import CapabilityDefinition, CapabilityParameter
 
 __all__ = [
     "Agent",
+    "WorkflowAgent",
     "AgentBehavior",
     "AgentDecision",
     "AgentEndEvent",
@@ -72,6 +77,9 @@ __all__ = [
     "WorkflowBranchStep",
     "WorkflowCallSubagentStep",
     "WorkflowCallSubagentsStep",
+    "WorkflowCallToolStep",
+    "WorkflowModelStep",
     "WorkflowRaiseStep",
     "WorkflowReturnStep",
+    "WorkflowTransformStep",
 ]

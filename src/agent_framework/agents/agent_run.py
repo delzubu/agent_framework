@@ -35,6 +35,8 @@ class AgentRun:
     memory_projection_requests: tuple[str, ...] = ()
     in_parallel_batch: bool = False
     plan_state: "PlanState | None" = None
+    workflow_step_id: str | None = None
+    workflow_phase_id: str | None = None
     consecutive_validation_failures: int = 0
     planning_semantic_failures: int = 0
 

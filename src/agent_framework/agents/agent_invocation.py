@@ -15,5 +15,7 @@ class AgentInvocation:
     caller_id: str | None
     parameters: dict[str, Any]
     rendered_prompt: str
+    workflow_step_id: str | None = None
+    workflow_phase_id: str | None = None
 
 __all__ = ["AgentInvocation"]

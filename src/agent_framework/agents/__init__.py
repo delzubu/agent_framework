@@ -1,6 +1,7 @@
 """Public agent-runtime classes organized as one class per file."""
 
 from .agent import Agent
+from .workflow_agent import WorkflowAgent
 from .helpers import AgentMarkdownError
 from .agent_behavior import AgentBehavior
 from .agent_decision import AgentDecision, SubagentCallSpec
@@ -33,12 +34,16 @@ from .workflow import (
     WorkflowBranchStep,
     WorkflowCallSubagentStep,
     WorkflowCallSubagentsStep,
+    WorkflowCallToolStep,
+    WorkflowModelStep,
     WorkflowRaiseStep,
     WorkflowReturnStep,
+    WorkflowTransformStep,
 )
 
 __all__ = [
     "Agent",
+    "WorkflowAgent",
     "AgentMarkdownError",
     "AgentBehavior",
     "AgentDecision",
@@ -72,6 +77,9 @@ __all__ = [
     "WorkflowBranchStep",
     "WorkflowCallSubagentStep",
     "WorkflowCallSubagentsStep",
+    "WorkflowCallToolStep",
+    "WorkflowModelStep",
     "WorkflowRaiseStep",
     "WorkflowReturnStep",
+    "WorkflowTransformStep",
 ]

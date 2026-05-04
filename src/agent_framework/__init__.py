@@ -18,14 +18,18 @@ from agent_framework.agent import (
     ToolEndEvent,
     ToolHookDecision,
     ToolStartEvent,
+    WorkflowAgent,
     ProgrammaticWorkflow,
     ProgrammaticWorkflowState,
     ProgrammaticWorkflowStep,
     WorkflowBranchStep,
     WorkflowCallSubagentStep,
     WorkflowCallSubagentsStep,
+    WorkflowCallToolStep,
+    WorkflowModelStep,
     WorkflowRaiseStep,
     WorkflowReturnStep,
+    WorkflowTransformStep,
 )
 from agent_framework.config import HostConfig, load_host_config
 from agent_framework.conversation import (
@@ -100,6 +104,7 @@ from agent_framework.model_validation import (
 __all__ = [
     # Agent runtime
     "Agent",
+    "WorkflowAgent",
     "AgentBehavior",
     "AgentDecision",
     "AgentEndEvent",
@@ -123,8 +128,11 @@ __all__ = [
     "WorkflowBranchStep",
     "WorkflowCallSubagentStep",
     "WorkflowCallSubagentsStep",
+    "WorkflowCallToolStep",
+    "WorkflowModelStep",
     "WorkflowRaiseStep",
     "WorkflowReturnStep",
+    "WorkflowTransformStep",
     # Configuration
     "HostConfig",
     "load_host_config",

@@ -19,6 +19,7 @@ class ProgrammaticWorkflowState:
 
     initial_parameters: dict[str, Any]
     step_results: dict[str, Any] = field(default_factory=dict)
+    context_entries: list[str] = field(default_factory=list)
     last_step_id: str | None = None
     last_value: Any = None
 
@@ -116,6 +117,26 @@ class WorkflowCallSubagentsStep(ProgrammaticWorkflowStep):
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowModelStep(ProgrammaticWorkflowStep):
+    """Run a phase-scoped model loop in the workflow agent's own context."""
+
+    phase_id: str
+    prompt_fragment: str | WorkflowValueResolver
+    allowed_decision_kinds: frozenset[str] | None = None
+    final_response_schema: dict[str, Any] | None = None
+    max_turns: int = 8
+    next_step: str | WorkflowNextStepResolver | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowTransformStep(ProgrammaticWorkflowStep):
+    """Run deterministic Python state transformation or validation."""
+
+    transform: WorkflowValueResolver
+    next_step: str | WorkflowNextStepResolver | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowBranchStep(ProgrammaticWorkflowStep):
     """Choose the next deterministic step from Python code."""
 
@@ -148,6 +169,10 @@ def resolve_workflow_value(value: Any, state: ProgrammaticWorkflowState) -> Any:
         return value(state)
     if isinstance(value, dict):
         return {k: resolve_workflow_value(v, state) for k, v in value.items()}
+    if isinstance(value, list):
+        return [resolve_workflow_value(v, state) for v in value]
+    if isinstance(value, tuple):
+        return tuple(resolve_workflow_value(v, state) for v in value)
     return value
 
 
@@ -180,10 +205,12 @@ __all__ = [
     "WorkflowCallToolStep",
     "WorkflowContinue",
     "WorkflowGoto",
+    "WorkflowModelStep",
     "WorkflowMutation",
     "WorkflowRaiseStep",
     "WorkflowReplace",
     "WorkflowReturnStep",
+    "WorkflowTransformStep",
     "coerce_workflow_result",
     "resolve_workflow_value",
 ]

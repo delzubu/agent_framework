@@ -5,193 +5,208 @@ layout: default
 
 # Programmatic Workflow Agents
 
-Who this is for: developers building deterministic controller agents that should orchestrate child agents without spending a parent LLM turn on each routing step.
+Who this is for: developers building controller agents that need code-defined
+workflow control, native tool/subagent parity, and optional same-agent model
+phases.
 
 ## When to use this pattern
 
-Use a programmatic workflow agent when the top-level control flow is deterministic and code-driven:
+Use a workflow agent when the top-level control flow is code-driven:
 
 - intake first, then specialist reviewers, then consolidation
 - approval or escalation chains
 - fixed state-machine transitions
-- workflows whose next step depends on structured state, not open-ended reasoning
+- workflows whose next step depends on structured state
+- same-agent semantic checkpoints that must share one run context
 
-Do not use this pattern just because Python is available. If the parent agent still needs genuine model reasoning about what to do next, keep the normal decision loop.
+If the task is open-ended and does not need deterministic workflow control, use
+a normal model agent. If the model should generate and revise a plan, use a
+planning agent.
+
+## First-class workflow agents
+
+Workflow agents can be loaded as their own runtime type instead of being
+started by a `before_run(...)` behavior. The workflow graph is defined in a
+Python sidecar module. Markdown remains the agent identity, prompt, parameter,
+tool, subagent, and skill contract.
+
+The adjacent JSON sidecar selects the runtime explicitly:
+
+```json
+{
+  "agent_type": "workflow",
+  "workflow": {
+    "path": "action_resolver_workflow.py"
+  },
+  "behaviors": ["guardrails"]
+}
+```
+
+Rules:
+
+- omitting `agent_type`, or setting it to `"model"`, loads the normal model-loop agent
+- `"workflow"` loads a `WorkflowAgent`
+- `workflow.path` resolves relative to the agent Markdown file
+- the workflow module must export `build_workflow(agent) -> ProgrammaticWorkflow`
+- existing `behavior` and `behaviors` keys are unchanged and attach to workflow agents normally
+- filenames do not imply runtime type
 
 ## Core API
 
-The public workflow surface is agent-owned:
+The public workflow surface is:
 
+- `WorkflowAgent`
 - `Agent.execute_programmatic_workflow(...)`
 - `ProgrammaticWorkflow`
 - `ProgrammaticWorkflowState`
+- `WorkflowModelStep`
+- `WorkflowTransformStep`
+- `WorkflowCallToolStep`
 - `WorkflowCallSubagentStep`
 - `WorkflowCallSubagentsStep`
 - `WorkflowBranchStep`
 - `WorkflowReturnStep`
 - `WorkflowRaiseStep`
 
-The important design choice is parity with native orchestration. Programmatic steps delegate back into framework-owned subagent execution, so the parent run still emits the same kinds of artifacts as model-driven `call_subagent` / `call_subagents`.
-
-## What parity means in practice
-
-When a programmatic workflow step delegates to children, the parent run still gets:
-
-- `runtime.audit.named_event` records such as `subagent_call`, `subagent_result`, `subagent_batch_started`, and `subagent_batch_finished`
-- parent hook history like `before_subagent:*` and `after_subagent:*`
-- transcript and prompt fragments such as `<subagent_call>`, `<subagent_result>`, and `<subagent_results>`
-- native callback routing and batch resume semantics through the existing host machinery
-
-That is the reason to use `Agent.execute_programmatic_workflow(...)` instead of calling `host.call_subagent(...)` directly from behavior code.
+`Agent.execute_programmatic_workflow(...)` remains for compatibility with older
+behavior-based workflows. New workflow agents should prefer the sidecar
+`agent_type: "workflow"` path.
 
 ## Basic pattern
 
-The supported first-iteration pattern is:
-
-1. Attach a Python `AgentBehavior`.
-2. In `before_run(...)`, inspect `run.parameter_values`.
-3. Build a `ProgrammaticWorkflow`.
-4. Call `agent.execute_programmatic_workflow(...)`.
-5. Return `AgentHookDecision(final_result=...)` so the parent skips the normal LLM loop.
-
-Example:
+Example workflow module:
 
 ```python
 from agent_framework import (
-    AgentBehavior,
-    AgentHookDecision,
     AgentResult,
     ProgrammaticWorkflow,
     SubagentCallSpec,
     WorkflowBranchStep,
     WorkflowCallSubagentStep,
     WorkflowCallSubagentsStep,
+    WorkflowModelStep,
     WorkflowReturnStep,
 )
 
 
-class DeckReviewWorkflowBehavior(AgentBehavior):
-    def attach(self, agent):
-        return None
-
-    def before_run(self, agent, host, *, run, caller_id):
-        workflow = ProgrammaticWorkflow(
-            entry_step="maybe_intake",
-            steps={
-                "maybe_intake": WorkflowBranchStep(
-                    step_id="maybe_intake",
-                    condition=lambda state: bool(run.parameter_values.get("intake_complete")),
-                    then_step="review_axes",
-                    else_step="run_intake",
+def build_workflow(agent):
+    return ProgrammaticWorkflow(
+        entry_step="validity_check",
+        steps={
+            "validity_check": WorkflowModelStep(
+                step_id="validity_check",
+                phase_id="validity_check",
+                prompt_fragment="Decide whether the routed action is executable.",
+                allowed_decision_kinds=frozenset({"final_message", "call_tool"}),
+                next_step="review_axes",
+            ),
+            "review_axes": WorkflowCallSubagentsStep(
+                step_id="review_axes",
+                calls=lambda state: (
+                    SubagentCallSpec("rules_reviewer", state.initial_parameters, "rules"),
+                    SubagentCallSpec("world_reviewer", state.initial_parameters, "world"),
                 ),
-                "run_intake": WorkflowCallSubagentStep(
-                    step_id="run_intake",
-                    subagent_id="deck_review_intake",
-                    parameters=lambda state: {
-                        "deck": run.parameter_values["deck"],
-                        "intake": run.parameter_values.get("intake", ""),
+                mode="parallel",
+                next_step="finish",
+            ),
+            "finish": WorkflowReturnStep(
+                step_id="finish",
+                value=lambda state: AgentResult(
+                    status="completed",
+                    message="Workflow complete.",
+                    response={
+                        "validity": state.require_step_result("validity_check").response,
                     },
-                    next_step="review_axes",
                 ),
-                "review_axes": WorkflowCallSubagentsStep(
-                    step_id="review_axes",
-                    calls=lambda state: (
-                        SubagentCallSpec("axis_audience", {"deck": run.parameter_values["deck"]}, "audience"),
-                        SubagentCallSpec("axis_design", {"deck": run.parameter_values["deck"]}, "design"),
-                    ),
-                    mode="parallel",
-                    next_step="finish",
-                ),
-                "finish": WorkflowReturnStep(
-                    step_id="finish",
-                    value=lambda state: AgentResult(
-                        status="completed",
-                        message=str(state.require_step_result("review_axes")),
-                    ),
-                ),
-            },
-        )
-        result = agent.execute_programmatic_workflow(
-            host=host,
-            run=run,
-            caller_id=caller_id,
-            workflow=workflow,
-        )
-        return AgentHookDecision(final_result=result)
+            ),
+        },
+    )
 ```
 
 ## Step model
 
-### `WorkflowCallSubagentStep`
+### `WorkflowModelStep`
 
-Use for one child call.
+Runs a phase-scoped mini model loop in the workflow agent's current `AgentRun`.
 
-- `subagent_id`: direct string or callable resolved against `ProgrammaticWorkflowState`
-- `parameters`: direct dict or callable resolved against `ProgrammaticWorkflowState`
+- `phase_id`: stable phase identifier for tracing and context
+- `prompt_fragment`: direct prompt text or callable resolved against state
+- `allowed_decision_kinds`: optional set of allowed decisions for the phase
+- `final_response_schema`: optional JSON Schema dict for `final_message.response`
+- `max_turns`: safety cap for the phase loop
 - `next_step`: next step id or callable returning one
 
-### `WorkflowCallSubagentsStep`
+A phase-local `final_message` completes the phase and stores an `AgentResult`
+under `state.step_results[step_id]`. It does not complete the workflow agent;
+use `WorkflowReturnStep` for that.
 
-Use for a native batch call.
+### `WorkflowTransformStep`
 
-- `calls`: `tuple[SubagentCallSpec, ...]` or callable resolving to one
-- `mode`: `"parallel"` or `"sequential"`
-- `timeout_seconds`: optional wall-clock timeout
+Runs deterministic Python transformation or validation.
+
+- `transform`: callable resolved against `ProgrammaticWorkflowState`
 - `next_step`: next step id or callable returning one
 
-### `WorkflowBranchStep`
+Raised exceptions fail the workflow run.
 
-Use for deterministic branching.
+### Tool and subagent steps
 
-- `condition`: callable returning truthy/falsey
-- `then_step`: next step when true
-- `else_step`: next step when false
+`WorkflowCallToolStep`, `WorkflowCallSubagentStep`, and
+`WorkflowCallSubagentsStep` use the same framework-owned execution helpers as
+model-driven tool and subagent decisions. That preserves hooks, callback
+routing, memory normalization, transcript updates, trace events, and audit
+events.
 
-### `WorkflowReturnStep`
+### Branch, return, and raise
 
-Use to finish the workflow.
+`WorkflowBranchStep` chooses the next step from Python state.
+`WorkflowReturnStep` completes the workflow agent with an `AgentResult`, string,
+or `None`. `WorkflowRaiseStep` fails fast with an exception or message.
 
-Allowed return values:
-
-- `AgentResult`
-- `str`
-- `None`
-
-Strings and `None` are normalized into `AgentResult(status="completed", ...)`.
-
-### `WorkflowRaiseStep`
-
-Use to fail fast with a specific exception or message.
-
-## Using workflow state
+## Shared context and memory
 
 `ProgrammaticWorkflowState` stores:
 
-- `initial_parameters`: a snapshot of the starting run parameters
-- `step_results`: outputs from prior workflow steps
+- `initial_parameters`
+- `step_results`
+- `context_entries`
 - `last_step_id`
 - `last_value`
 
-Use `state.require_step_result("step_id")` when later steps need earlier outputs.
+All `WorkflowModelStep` phases in one workflow agent share the same `AgentRun`:
+conversation messages, prompt fragments, memory projections, tool/subagent
+results, callbacks, and phase outputs remain visible to later phases.
 
-## Recommended design rules
+Persistent `ConversationStore` behavior is unchanged; workflow phases share
+in-run conversation memory.
 
-- Keep routing deterministic. If a step needs model reasoning, let the child agent do it.
-- Keep parameter mapping explicit and local to the step.
-- Prefer branch callables over hidden prompt conventions.
-- Use the workflow runner for orchestration, not for generic business logic unrelated to agent flow.
-- Let child agents own their own prompts and decisions. The workflow agent should route, not impersonate them.
+## Observability and extension
+
+Workflow agents use the same behavior attachment schema as model agents.
+Lifecycle hooks fire for workflow agents and for nested model/tool/subagent,
+skill, and callback work inside phases.
+
+Workflow execution emits workflow-level trace/audit events:
+
+- `workflow.step_started`
+- `workflow.step_completed`
+- `workflow.phase_started`
+- `workflow.phase_completed`
+- `workflow.phase_failed`
+
+Nested events include `workflow_step_id` and, for model phases, `phase_id`.
 
 ## Current limits
 
-The first iteration is intentionally small:
+The first-class workflow runtime does not include:
 
-- no declarative `$step` / `$param` mapping language yet
-- no explicit workflow-level `on_callback`, `on_error`, or retry policy model yet
-- no loops as first-class step types yet
-- no persistence or external workflow DSL format yet
+- Markdown, YAML, or JSON workflow graph parsing
+- durable workflow persistence across process restarts
+- automatic context compaction
+- GUI workflow authoring
+- a full BPMN/statechart engine
 
-The supported pattern today is deterministic Python orchestration with native runtime parity, not a full workflow engine.
+Workflow structure is intentionally Python-defined for now.
 
 ## Related docs
 

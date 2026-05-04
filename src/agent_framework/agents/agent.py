@@ -6,6 +6,7 @@ import importlib.util
 import json
 import logging
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -78,9 +79,11 @@ from .workflow import (
     WorkflowCallToolStep,
     WorkflowContinue,
     WorkflowGoto,
+    WorkflowModelStep,
     WorkflowReplace,
     WorkflowRaiseStep,
     WorkflowReturnStep,
+    WorkflowTransformStep,
     coerce_workflow_result,
     resolve_workflow_value,
 )
@@ -710,7 +713,13 @@ class Agent:
         decision = self._normalize_decision_capabilities(decision, host=host)
         from agent_framework.agent_event_publisher import agent_events
 
-        agent_events.audit_decision(run_id=run.run_id, agent_id=self.agent_id, decision=decision)
+        agent_events.audit_decision(
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            decision=decision,
+            workflow_step_id=run.workflow_step_id,
+            workflow_phase_id=run.workflow_phase_id,
+        )
         handlers = {
             "final_message": self.handle_final_message,
             "callback": self.handle_callback,
@@ -1111,7 +1120,9 @@ class Agent:
             step = workflow.steps[step_id]
 
             if isinstance(step, WorkflowBranchStep):
+                self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
                 branch_taken = bool(resolve_workflow_value(step.condition, state))
+                self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result={"branch_taken": branch_taken})
                 step_id = self._resolve_workflow_next_step(
                     step.then_step if branch_taken else step.else_step,
                     state,
@@ -1119,7 +1130,65 @@ class Agent:
                 )
                 continue
 
+            if isinstance(step, WorkflowModelStep):
+                result = self._execute_workflow_model_phase(
+                    host=host,
+                    run=run,
+                    caller_id=caller_id,
+                    state=state,
+                    step=step,
+                )
+                state.step_results[step.step_id] = result
+                state.last_step_id = step.step_id
+                state.last_value = result
+                state.context_entries.append(
+                    f"<workflow_phase_result step_id=\"{step.step_id}\" phase_id=\"{step.phase_id}\">"
+                    f"{_stringify_parameter_value({'message': result.message, 'response': result.response})}"
+                    f"</workflow_phase_result>"
+                )
+                next_step_id = self._apply_workflow_step_end(
+                    workflow=workflow,
+                    step_id=step.step_id,
+                    result=result,
+                    state=state,
+                    default_next=step.next_step,
+                )
+                if isinstance(next_step_id, str):
+                    step_id = next_step_id
+                    continue
+                workflow = next_step_id
+                step_id = workflow.entry_step
+                continue
+
+            if isinstance(step, WorkflowTransformStep):
+                self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
+                with self._workflow_scope(run, step_id=step.step_id, phase_id=None):
+                    result = resolve_workflow_value(step.transform, state)
+                state.step_results[step.step_id] = result
+                state.last_step_id = step.step_id
+                state.last_value = result
+                state.context_entries.append(
+                    f"<workflow_transform_result step_id=\"{step.step_id}\">"
+                    f"{_stringify_parameter_value(result)}</workflow_transform_result>"
+                )
+                self._append_workflow_context(host, run, state.context_entries[-1], source="workflow_transform_result")
+                self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=result)
+                next_step_id = self._apply_workflow_step_end(
+                    workflow=workflow,
+                    step_id=step.step_id,
+                    result=result,
+                    state=state,
+                    default_next=step.next_step,
+                )
+                if isinstance(next_step_id, str):
+                    step_id = next_step_id
+                    continue
+                workflow = next_step_id
+                step_id = workflow.entry_step
+                continue
+
             if isinstance(step, WorkflowCallSubagentStep):
+                self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
                 resolved_subagent_id = str(resolve_workflow_value(step.subagent_id, state))
                 resolved_parameters = resolve_workflow_value(step.parameters, state)
                 if not isinstance(resolved_parameters, dict):
@@ -1140,17 +1209,19 @@ class Agent:
                         ),
                     },
                 )
-                result = self._execute_single_subagent_flow(
-                    host=host,
-                    run=run,
-                    caller_id=caller_id,
-                    subagent_id=resolved_subagent_id,
-                    subagent_input=dict(resolved_parameters),
-                    decision=None,
-                )
+                with self._workflow_scope(run, step_id=step.step_id, phase_id=None):
+                    result = self._execute_single_subagent_flow(
+                        host=host,
+                        run=run,
+                        caller_id=caller_id,
+                        subagent_id=resolved_subagent_id,
+                        subagent_input=dict(resolved_parameters),
+                        decision=None,
+                    )
                 state.step_results[step.step_id] = result
                 state.last_step_id = step.step_id
                 state.last_value = result
+                self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=result)
                 next_step_id = self._apply_workflow_step_end(
                     workflow=workflow,
                     step_id=step.step_id,
@@ -1167,23 +1238,26 @@ class Agent:
                 continue
 
             if isinstance(step, WorkflowCallSubagentsStep):
+                self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
                 resolved_calls = resolve_workflow_value(step.calls, state)
                 if not isinstance(resolved_calls, tuple):
                     raise TypeError(
                         f"Workflow step {step.step_id!r} calls must resolve to tuple[SubagentCallSpec, ...], "
                         f"got {type(resolved_calls).__name__}."
                     )
-                result = self._execute_subagent_batch_flow(
-                    host=host,
-                    run=run,
-                    caller_id=caller_id,
-                    specs=resolved_calls,
-                    mode=step.mode,
-                    timeout_seconds=step.timeout_seconds,
-                )
+                with self._workflow_scope(run, step_id=step.step_id, phase_id=None):
+                    result = self._execute_subagent_batch_flow(
+                        host=host,
+                        run=run,
+                        caller_id=caller_id,
+                        specs=resolved_calls,
+                        mode=step.mode,
+                        timeout_seconds=step.timeout_seconds,
+                    )
                 state.step_results[step.step_id] = result
                 state.last_step_id = step.step_id
                 state.last_value = result
+                self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=result)
                 next_step_id = self._apply_workflow_step_end(
                     workflow=workflow,
                     step_id=step.step_id,
@@ -1199,6 +1273,7 @@ class Agent:
                 continue
 
             if isinstance(step, WorkflowCallToolStep):
+                self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
                 resolved_arguments = resolve_workflow_value(step.arguments, state)
                 if not isinstance(resolved_arguments, dict):
                     raise TypeError(
@@ -1213,13 +1288,14 @@ class Agent:
                         "tool_name": step.tool_name,
                     },
                 )
-                tc = self._execute_tool_step(
-                    host=host,
-                    run=run,
-                    caller_id=caller_id,
-                    tool_name=step.tool_name,
-                    tool_input=resolved_arguments,
-                )
+                with self._workflow_scope(run, step_id=step.step_id, phase_id=None):
+                    tc = self._execute_tool_step(
+                        host=host,
+                        run=run,
+                        caller_id=caller_id,
+                        tool_name=step.tool_name,
+                        tool_input=resolved_arguments,
+                    )
                 if tc.early_exit is not None:
                     return coerce_workflow_result(tc.early_exit)
                 if tc.error_exc is not None:
@@ -1228,6 +1304,7 @@ class Agent:
                 state.step_results[step.step_id] = result
                 state.last_step_id = step.step_id
                 state.last_value = result
+                self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=result)
                 next_step_id = self._apply_workflow_step_end(
                     workflow=workflow,
                     step_id=step.step_id,
@@ -1243,16 +1320,255 @@ class Agent:
                 continue
 
             if isinstance(step, WorkflowReturnStep):
+                self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
                 value = resolve_workflow_value(step.value, state)
-                return coerce_workflow_result(value)
+                result = coerce_workflow_result(value)
+                self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=result)
+                return result
 
             if isinstance(step, WorkflowRaiseStep):
+                self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
                 error = resolve_workflow_value(step.error, state)
                 if isinstance(error, BaseException):
                     raise error
                 raise RuntimeError(str(error))
 
             raise TypeError(f"Unsupported workflow step type {type(step).__name__}.")
+
+    def _execute_workflow_model_phase(
+        self,
+        *,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        caller_id: str | None,
+        state: ProgrammaticWorkflowState,
+        step: WorkflowModelStep,
+    ) -> AgentResult:
+        """Run a phase-local model loop and return the phase final result."""
+        if step.max_turns < 1:
+            raise ValueError(f"Workflow model step {step.step_id!r} max_turns must be >= 1.")
+
+        self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
+        self._emit_workflow_event(host, run, "workflow.phase_started", step.step_id, phase_id=step.phase_id)
+        prompt_fragment = str(resolve_workflow_value(step.prompt_fragment, state))
+        phase_fragment = self._render_workflow_phase_fragment(step, prompt_fragment, state)
+        state.context_entries.append(phase_fragment)
+        self._append_workflow_context(host, run, phase_fragment, source="workflow_phase_prompt")
+
+        with self._workflow_scope(run, step_id=step.step_id, phase_id=step.phase_id):
+            for turn_index in range(1, step.max_turns + 1):
+                self.before_iteration(run)
+                decision = self.resolve_runtime_decision(run=run)
+                if decision is None:
+                    context = self.build_context(host=host, run=run)
+                    decision = self.decide(host=host, run=run, context=context)
+                if (
+                    step.allowed_decision_kinds is not None
+                    and decision.kind not in step.allowed_decision_kinds
+                ):
+                    reminder = (
+                        "<workflow_phase_error>"
+                        f"Decision kind {decision.kind!r} is not allowed in phase {step.phase_id!r}. "
+                        f"Allowed kinds: {sorted(step.allowed_decision_kinds)}."
+                        "</workflow_phase_error>"
+                    )
+                    run.conversation_messages.append({"role": "user", "content": reminder})
+                    _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_phase_error")
+                    self.after_iteration(run)
+                    continue
+                if decision.kind == "final_message":
+                    if step.final_response_schema is not None:
+                        validate_json_schema(
+                            instance=decision.response or {},
+                            schema=step.final_response_schema,
+                        )
+                    result = AgentResult(
+                        status="completed",
+                        message=decision.message,
+                        response=decision.response,
+                        decision=decision,
+                        prompt=run.rendered_prompt,
+                    )
+                    # Record the final decision in the shared ledger without invoking
+                    # the normal final-message handler, because this is phase-local.
+                    from agent_framework.agent_event_publisher import agent_events
+
+                    agent_events.audit_decision(
+                        run_id=run.run_id,
+                        agent_id=self.agent_id,
+                        decision=decision,
+                        workflow_step_id=step.step_id,
+                        workflow_phase_id=step.phase_id,
+                    )
+                    run.transcript_entries.append(
+                        f"<workflow_phase_decision step_id=\"{step.step_id}\" phase_id=\"{step.phase_id}\">"
+                        f"{_stringify_parameter_value(_decision_to_dict(decision))}"
+                        f"</workflow_phase_decision>"
+                    )
+                    run.conversation_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": _stringify_parameter_value(_decision_to_dict(decision)),
+                        }
+                    )
+                    _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_phase_decision")
+                    self.after_iteration(run)
+                    self._emit_workflow_event(
+                        host,
+                        run,
+                        "workflow.phase_completed",
+                        step.step_id,
+                        phase_id=step.phase_id,
+                        result=result,
+                    )
+                    self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=result)
+                    return result
+
+                outcome = self.dispatch_decision(
+                    host=host,
+                    run=run,
+                    decision=decision,
+                    caller_id=caller_id,
+                )
+                self.after_iteration(run)
+                if outcome is not None:
+                    # Non-final terminal outcomes, such as callback failure or
+                    # terminal tools, end the phase and are stored as its result.
+                    self._emit_workflow_event(
+                        host,
+                        run,
+                        "workflow.phase_completed",
+                        step.step_id,
+                        phase_id=step.phase_id,
+                        result=outcome,
+                    )
+                    self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=outcome)
+                    return outcome
+
+        message = (
+            f"Workflow phase {step.phase_id!r} in step {step.step_id!r} exceeded "
+            f"max_turns={step.max_turns} without a final_message."
+        )
+        failed = AgentResult(status="failed", message=message, prompt=run.rendered_prompt)
+        self._emit_workflow_event(
+            host,
+            run,
+            "workflow.phase_failed",
+            step.step_id,
+            phase_id=step.phase_id,
+            result=failed,
+        )
+        return failed
+
+    def _render_workflow_phase_fragment(
+        self,
+        step: WorkflowModelStep,
+        prompt_fragment: str,
+        state: ProgrammaticWorkflowState,
+    ) -> str:
+        state_summary = {
+            "initial_parameters": state.initial_parameters,
+            "step_results": {
+                key: self._workflow_jsonable_summary(value)
+                for key, value in state.step_results.items()
+            },
+            "last_step_id": state.last_step_id,
+        }
+        return (
+            f"<workflow_phase id=\"{step.phase_id}\" step_id=\"{step.step_id}\">\n"
+            f"{prompt_fragment}\n"
+            "<workflow_state_summary>\n"
+            f"{json.dumps(state_summary, ensure_ascii=False, sort_keys=True)}\n"
+            "</workflow_state_summary>\n"
+            "</workflow_phase>"
+        )
+
+    def _append_workflow_context(
+        self,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        fragment: str,
+        *,
+        source: str,
+    ) -> None:
+        run.prompt_fragments.append(fragment)
+        run.transcript_entries.append(fragment)
+        run.conversation_messages.append({"role": "user", "content": fragment})
+        _emit_context_updated(self, host, run, run.conversation_messages[-1], source)
+
+    @contextmanager
+    def _workflow_scope(
+        self,
+        run: AgentRun,
+        *,
+        step_id: str | None,
+        phase_id: str | None,
+    ):
+        previous_step_id = run.workflow_step_id
+        previous_phase_id = run.workflow_phase_id
+        run.workflow_step_id = step_id
+        run.workflow_phase_id = phase_id
+        try:
+            yield
+        finally:
+            run.workflow_step_id = previous_step_id
+            run.workflow_phase_id = previous_phase_id
+
+    def _emit_workflow_event(
+        self,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        kind: str,
+        step_id: str,
+        *,
+        phase_id: str | None = None,
+        result: Any = None,
+    ) -> None:
+        from agent_framework.agent_event_publisher import agent_events
+        from agent_framework.tracing import TraceContext
+
+        payload: dict[str, Any] = {
+            "workflow_step_id": step_id,
+            "phase_id": phase_id,
+        }
+        if result is not None:
+            payload["result"] = self._workflow_jsonable_summary(result)
+        agent_events.audit_named_event(
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={"type": kind, **payload},
+        )
+        publish = getattr(host, "publish_trace_event", None)
+        if callable(publish):
+            publish(
+                kind=kind,
+                title=kind.replace("_", " "),
+                span_id=f"{run.run_id}:{step_id}:{phase_id or 'step'}",
+                parent_span_id=run.run_id,
+                payload=payload,
+                context=TraceContext(run_id=run.run_id, agent_id=self.agent_id),
+            )
+
+    def _workflow_jsonable_summary(self, value: Any) -> Any:
+        if isinstance(value, AgentResult):
+            return {
+                "status": value.status,
+                "message": value.message,
+                "response": value.response,
+            }
+        try:
+            json.dumps(value, ensure_ascii=False)
+            return value
+        except TypeError:
+            return str(value)
+
+    def _workflow_event_metadata(self, run: AgentRun) -> dict[str, str]:
+        metadata: dict[str, str] = {}
+        if run.workflow_step_id is not None:
+            metadata["workflow_step_id"] = run.workflow_step_id
+        if run.workflow_phase_id is not None:
+            metadata["phase_id"] = run.workflow_phase_id
+        return metadata
 
     def _resolve_workflow_next_step(
         self,
@@ -1370,6 +1686,7 @@ class Agent:
                 "type": "subagent_call",
                 "subagent_id": effective_subagent_id,
                 "parameters": dict(effective_subagent_input),
+                **self._workflow_event_metadata(run),
             },
         )
         run.transcript_entries.append(
@@ -1398,6 +1715,7 @@ class Agent:
                     "subagent_id": effective_subagent_id,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
+                    **self._workflow_event_metadata(run),
                 },
             )
             if pre_decision.system_message:
@@ -1439,6 +1757,7 @@ class Agent:
                 "subagent_id": effective_subagent_id,
                 "result": payload,
                 "status": result.status,
+                **self._workflow_event_metadata(run),
             },
         )
         run.transcript_entries.append(
@@ -1483,6 +1802,7 @@ class Agent:
                 "mode": mode,
                 "count": len(specs),
                 "calls": [{"subagent_id": s.subagent_id, "output_key": s.output_key} for s in specs],
+                **self._workflow_event_metadata(run),
             },
         )
 
@@ -1532,6 +1852,7 @@ class Agent:
                     "batch_id": batch_id,
                     "status": "error",
                     "error": str(exc),
+                    **self._workflow_event_metadata(run),
                 },
             )
             raise
@@ -1548,6 +1869,7 @@ class Agent:
                 "failed": statuses.count("failed"),
                 "timed_out": statuses.count("timed_out"),
                 "blocked": statuses.count("blocked"),
+                **self._workflow_event_metadata(run),
             },
         )
         self._emit_subagent_batch_results(host, run, results)
@@ -1832,7 +2154,12 @@ class Agent:
         agent_events.audit_named_event(
             run_id=run.run_id,
             agent_id=self.agent_id,
-            event={"type": "tool_call", "tool_name": tool_name, "parameters": dict(effective_input)},
+            event={
+                "type": "tool_call",
+                "tool_name": tool_name,
+                "parameters": dict(effective_input),
+                **self._workflow_event_metadata(run),
+            },
         )
         try:
             result = host.execute_tool(tool_name, effective_input)
@@ -1841,7 +2168,13 @@ class Agent:
             agent_events.audit_named_event(
                 run_id=run.run_id,
                 agent_id=self.agent_id,
-                event={"type": "tool_error", "tool_name": tool_name, "error_type": type(exc).__name__, "error": str(exc)},
+                event={
+                    "type": "tool_error",
+                    "tool_name": tool_name,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    **self._workflow_event_metadata(run),
+                },
             )
             return _ToolCallResult(effective_input=effective_input, result=None, system_message=pre_decision.system_message, error_exc=exc, early_exit=None)
 
@@ -1860,7 +2193,12 @@ class Agent:
         agent_events.audit_named_event(
             run_id=run.run_id,
             agent_id=self.agent_id,
-            event={"type": "tool_result", "tool_name": tool_name, "result": result},
+            event={
+                "type": "tool_result",
+                "tool_name": tool_name,
+                "result": result,
+                **self._workflow_event_metadata(run),
+            },
         )
         return _ToolCallResult(effective_input=effective_input, result=result, system_message=pre_decision.system_message, error_exc=None, early_exit=None)
 
@@ -2086,6 +2424,8 @@ class Agent:
             caller_id=caller_id,
             parameters=dict(run.parameter_values),
             rendered_prompt=run.rendered_prompt,
+            workflow_step_id=run.workflow_step_id,
+            workflow_phase_id=run.workflow_phase_id,
         )
 
     def _run_pre_agent_hooks(

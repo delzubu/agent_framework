@@ -57,9 +57,11 @@ Eight `SequentialHook` instances on `Agent` (pre/post for agent, tool, subagent,
 
 Agents invoke other agents as subagents via the host. The call tree is explicit, not emergent: each agent has a declared `allowed_child_agents` allowlist, and `CallContext` objects track each call edge with correlation IDs. Subagents can be invoked synchronously (`call_subagent`) or asynchronously via a shared thread pool (`call_subagent_async`).
 
-### 2.6c Programmatic workflow orchestration
+### 2.6c Workflow orchestration
 
-Not all parent orchestration should consume an LLM turn. The runtime now exposes an agent-owned deterministic workflow surface through `Agent.execute_programmatic_workflow(...)` and the `ProgrammaticWorkflow*` step types.
+Not all parent orchestration should consume an LLM turn. The runtime exposes an agent-owned workflow surface through `WorkflowAgent`, `Agent.execute_programmatic_workflow(...)`, and the `ProgrammaticWorkflow*` step types.
+
+First-class workflow agents are selected by adjacent runtime metadata (`agent_type: "workflow"`) and load a Python module that exports `build_workflow(agent) -> ProgrammaticWorkflow`. The `.md` file still defines identity, parameters, prompts, and allowlists; the Python module defines the graph, branches, parallelism, transforms, validation, and optional same-agent model phases.
 
 This is intentionally not a host shortcut. The workflow runner reuses the same parent-side subagent orchestration internals that back model-driven `call_subagent` and `call_subagents` decisions. That preserves:
 
@@ -67,8 +69,9 @@ This is intentionally not a host shortcut. The workflow runner reuses the same p
 - parent transcript and prompt-fragment updates
 - audit events for single-child and batch-child orchestration
 - callback routing and blocked-batch resume behavior already implemented in the host
+- shared in-run conversation context across workflow model phases
 
-Architecturally, this keeps deterministic controller logic at the agent layer while avoiding a second, divergent orchestration stack in `host.py`.
+Architecturally, this keeps workflow controller logic at the agent layer while avoiding a second, divergent orchestration stack in `host.py`. Behavior-based `Agent.execute_programmatic_workflow(...)` remains a compatibility path; new workflow agents should use the sidecar-declared `WorkflowAgent` runtime.
 
 ### 2.6d Run-scoped evaluator model overrides
 

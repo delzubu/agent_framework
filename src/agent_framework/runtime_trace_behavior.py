@@ -48,6 +48,17 @@ def _decision_payload(decision: AgentDecision) -> dict[str, Any]:
     }
 
 
+def _workflow_payload(inv: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    step_id = getattr(inv, "workflow_step_id", None)
+    phase_id = getattr(inv, "workflow_phase_id", None)
+    if step_id is not None:
+        payload["workflow_step_id"] = step_id
+    if phase_id is not None:
+        payload["phase_id"] = phase_id
+    return payload
+
+
 class RuntimeTraceBehavior(AgentBehavior):
     """Emits runtime-channel TraceEvents via ``host.publish_trace_event`` when tracing is active."""
 
@@ -169,7 +180,7 @@ class RuntimeTraceBehavior(AgentBehavior):
             title=f"Tool {event.tool_name}",
             span_id=event.tool_call_id,
             parent_span_id=inv.run_id,
-            payload={"tool_name": event.tool_name, "tool_input": event.tool_input},
+            payload={"tool_name": event.tool_name, "tool_input": event.tool_input, **_workflow_payload(inv)},
             context=_merge_context(
                 h,
                 run_id=inv.run_id,
@@ -190,7 +201,7 @@ class RuntimeTraceBehavior(AgentBehavior):
             title=f"Tool {event.tool_name} done",
             span_id=event.tool_call_id,
             parent_span_id=inv.run_id,
-            payload={"tool_name": event.tool_name, "result": event.result},
+            payload={"tool_name": event.tool_name, "result": event.result, **_workflow_payload(inv)},
             context=_merge_context(
                 h,
                 run_id=inv.run_id,
@@ -211,7 +222,7 @@ class RuntimeTraceBehavior(AgentBehavior):
             title=f"Subagent {event.subagent_id}",
             span_id=event.subagent_call_id,
             parent_span_id=inv.run_id,
-            payload={"subagent_id": event.subagent_id, "input": event.subagent_input},
+            payload={"subagent_id": event.subagent_id, "input": event.subagent_input, **_workflow_payload(inv)},
             context=_merge_context(
                 h,
                 run_id=inv.run_id,
@@ -237,6 +248,7 @@ class RuntimeTraceBehavior(AgentBehavior):
                 "status": event.result.status,
                 "message": event.result.message or None,
                 "response": event.result.response or None,
+                **_workflow_payload(inv),
             },
             context=_merge_context(
                 h,
@@ -258,7 +270,7 @@ class RuntimeTraceBehavior(AgentBehavior):
             title=f"Skill {event.skill_name}",
             span_id=f"{inv.run_id}:skill:{event.skill_name}",
             parent_span_id=inv.run_id,
-            payload={"skill_name": event.skill_name, "parameters": event.parameters},
+            payload={"skill_name": event.skill_name, "parameters": event.parameters, **_workflow_payload(inv)},
             context=_merge_context(h, run_id=inv.run_id, agent_id=inv.agent_id, caller_id=inv.caller_id),
         )
         return None
@@ -273,7 +285,7 @@ class RuntimeTraceBehavior(AgentBehavior):
             title=f"Skill {event.skill_name} injected",
             span_id=f"{inv.run_id}:skill:{event.skill_name}",
             parent_span_id=inv.run_id,
-            payload={"skill_name": event.skill_name, "content": event.content.body or None},
+            payload={"skill_name": event.skill_name, "content": event.content.body or None, **_workflow_payload(inv)},
             context=_merge_context(h, run_id=inv.run_id, agent_id=inv.agent_id, caller_id=inv.caller_id),
         )
         return None
@@ -305,6 +317,7 @@ class RuntimeTraceBehavior(AgentBehavior):
                 "model_names": list(model_names),
                 "provider_name": provider_name,
                 "temperature": temperature,
+                **_workflow_payload(inv),
             },
             context=_merge_context(
                 h,
@@ -331,7 +344,7 @@ class RuntimeTraceBehavior(AgentBehavior):
             summary=json.dumps(payload, ensure_ascii=False),
             span_id=str(uuid4()),
             parent_span_id=inv.run_id,
-            payload=payload,
+            payload={**payload, **_workflow_payload(inv)},
             context=_merge_context(h, run_id=inv.run_id, agent_id=inv.agent_id, caller_id=inv.caller_id),
         )
         return None

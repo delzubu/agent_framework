@@ -1671,9 +1671,29 @@ In the evaluator:
 
 ### Running deterministic programmatic workflows
 
-Some controller agents should not spend an LLM turn deciding the next step.  Typical examples are "run intake, then parallel specialists, then consolidate" or approval chains whose branching is fixed in code.  The supported pattern for that is `AgentBehavior.before_run(...)` plus `Agent.execute_programmatic_workflow(...)`.
+Some controller agents should not spend an LLM turn deciding every next step.  Typical examples are "run intake, then parallel specialists, then consolidate" or approval chains whose branching is fixed in code.
+
+New workflow agents should be declared explicitly in the agent sidecar:
+
+```json
+{
+  "agent_type": "workflow",
+  "workflow": {
+    "path": "my_agent_workflow.py"
+  }
+}
+```
+
+The workflow module exports `build_workflow(agent) -> ProgrammaticWorkflow`.
+The workflow graph, branches, parallelism, parameter binding, model phases, and
+transforms live in Python. Markdown remains the agent identity, parameter,
+prompt, tool, subagent, and skill contract.
 
 The workflow API is framework-owned, not a host-side shortcut, so parent-side subagent tracing and callback semantics are preserved.
+
+Existing behavior-based workflows using `AgentBehavior.before_run(...)` plus
+`Agent.execute_programmatic_workflow(...)` remain supported as a compatibility
+path.
 
 For the full developer reference, examples, step model, and current limits, see [Programmatic Workflow Agents]({{ '/reference/programmatic-workflow-agents/' | relative_url }}).
 
