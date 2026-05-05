@@ -558,6 +558,11 @@ the initial rendered prompt once, then appends each phase prompt to
 same shared conversation. It does not add phase prompts or results to
 `<augmentations>` unless `prompt_fragment_mode` opts into
 `prompt_fragment_only` or `both`.
+Phase prompts are durable by default for compatibility. A step can set
+`prompt_history_policy="ephemeral"` to keep the active phase prompt visible for
+that call, then remove it from LLM-visible `conversation_messages` and
+`prompt_fragments` after the phase result projection is appended. The
+transcript and audit stream still preserve the removed prompt.
 For workflows that contain a default chat-history `WorkflowModelStep`,
 deterministic workflow outputs and action-loop results from transform steps,
 tools, subagents, callback answers, and skill invocations follow the same rule:

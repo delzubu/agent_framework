@@ -113,6 +113,10 @@ to chat-history semantics: the initial rendered prompt is appended once, phase
 prompts are user messages, phase results are semantic assistant projections,
 and workflow state summaries are not injected into provider-facing context
 unless the step explicitly opts into legacy prompt-fragment behavior.
+Phase prompts are append-only by default, but a step can mark its prompt
+`prompt_history_policy="ephemeral"` so the active prompt is visible for its
+phase call and then removed from later LLM-visible history after the semantic
+projection is appended.
 When a workflow uses this chat-history mode, deterministic workflow outputs
 and action-loop results from transforms, tools, subagents, callbacks, and
 skills are also appended as later conversation messages instead of being

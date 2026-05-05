@@ -1475,6 +1475,7 @@ class Agent:
                                 role="assistant",
                                 source="workflow_phase_result",
                             )
+                        self._cleanup_ephemeral_workflow_phase_context(run, step, phase_fragment)
                         self.after_iteration(run)
                         self._emit_workflow_event(
                             host,
@@ -1495,6 +1496,7 @@ class Agent:
                     )
                     self.after_iteration(run)
                     if outcome is not None:
+                        self._cleanup_ephemeral_workflow_phase_context(run, step, phase_fragment)
                         # Non-final terminal outcomes, such as callback failure or
                         # terminal tools, end the phase and are stored as its result.
                         self._emit_workflow_event(
@@ -1600,12 +1602,37 @@ class Agent:
                 f"Workflow model step {step.step_id!r} prompt_fragment_mode must be "
                 "'conversation_only', 'prompt_fragment_only', or 'both'."
             )
+        if step.prompt_history_policy not in {"durable", "ephemeral", "none"}:
+            raise ValueError(
+                f"Workflow model step {step.step_id!r} prompt_history_policy must be "
+                "'durable', 'ephemeral', or 'none'."
+            )
+        if step.prompt_history_policy == "none":
+            run.transcript_entries.append(fragment)
+            return
         if step.prompt_fragment_mode in {"prompt_fragment_only", "both"}:
             run.prompt_fragments.append(fragment)
         run.transcript_entries.append(fragment)
         if step.prompt_fragment_mode in {"conversation_only", "both"}:
             run.conversation_messages.append({"role": "user", "content": fragment})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], source)
+
+    def _cleanup_ephemeral_workflow_phase_context(
+        self,
+        run: AgentRun,
+        step: WorkflowModelStep,
+        fragment: str,
+    ) -> None:
+        if step.prompt_history_policy != "ephemeral":
+            return
+        if step.prompt_fragment_mode in {"prompt_fragment_only", "both"}:
+            run.prompt_fragments = [item for item in run.prompt_fragments if item != fragment]
+        if step.prompt_fragment_mode in {"conversation_only", "both"}:
+            run.conversation_messages = [
+                message
+                for message in run.conversation_messages
+                if not (message.get("role") == "user" and message.get("content") == fragment)
+            ]
 
     def _append_workflow_initial_prompt(
         self,

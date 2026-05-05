@@ -12,6 +12,7 @@ from .agent_result import AgentResult
 WorkflowValueResolver = Callable[["ProgrammaticWorkflowState"], Any]
 WorkflowNextStepResolver = Callable[["ProgrammaticWorkflowState"], str | None]
 WorkflowPromptFragmentMode = Literal["conversation_only", "prompt_fragment_only", "both"]
+WorkflowPromptHistoryPolicy = Literal["durable", "ephemeral", "none"]
 WorkflowProjectionSelector = Literal["message", "response", "both", "auto", "none"]
 
 
@@ -164,6 +165,7 @@ class WorkflowModelStep(ProgrammaticWorkflowStep):
     max_turns: int = 8
     include_state_summary: bool = False
     prompt_fragment_mode: WorkflowPromptFragmentMode = "conversation_only"
+    prompt_history_policy: WorkflowPromptHistoryPolicy = "durable"
     history_projection: WorkflowHistoryProjection | WorkflowHistoryProjector | None = None
     next_step: str | WorkflowNextStepResolver | None = None
 
@@ -250,6 +252,7 @@ __all__ = [
     "WorkflowGoto",
     "WorkflowModelStep",
     "WorkflowMutation",
+    "WorkflowPromptHistoryPolicy",
     "WorkflowRaiseStep",
     "WorkflowReplace",
     "WorkflowReturnStep",

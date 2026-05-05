@@ -136,6 +136,7 @@ Runs a phase-scoped mini model loop in the workflow agent's current `AgentRun`.
 - `max_turns`: safety cap for the phase loop
 - `include_state_summary`: opt-in legacy context dump; defaults to `False`
 - `prompt_fragment_mode`: where to append the phase prompt; defaults to `conversation_only`
+- `prompt_history_policy`: phase prompt lifecycle; `durable` by default, or `ephemeral` to remove it from LLM-visible context after phase completion
 - `history_projection`: callable or `WorkflowHistoryProjection` for compact chat history
 - `next_step`: next step id or callable returning one
 
@@ -154,6 +155,15 @@ By default, model phases behave like a normal shared chat:
   tools, subagents, callbacks, and skills are appended after the existing chat
   history instead of being injected through `<augmentations>`
 - `<workflow_state_summary>` is not sent to the model unless explicitly enabled
+
+Set `prompt_history_policy="ephemeral"` when later phases need the semantic
+phase result but not the completed phase's full instructions. The active phase
+prompt remains visible during its model call; after the phase result projection
+is appended, the completed phase prompt is removed from `conversation_messages`
+and `prompt_fragments`. Transcript and audit records still retain the prompt
+for debugging. The default `durable` policy preserves the older append-only
+chat history. `none` records the prompt in the transcript without adding it to
+LLM-visible history.
 
 When `prompt_fragment` is omitted, the phase prompt is loaded from a matching
 XML tag in the agent markdown system section. For example,
@@ -243,7 +253,7 @@ The first-class workflow runtime does not include:
 
 - Markdown, YAML, or JSON workflow graph parsing
 - durable workflow persistence across process restarts
-- automatic context compaction
+- automatic semantic compression beyond explicit history projection and prompt lifecycle policies
 - GUI workflow authoring
 - a full BPMN/statechart engine
 

@@ -295,6 +295,123 @@ def build_workflow(agent):
     ]
 
 
+def test_workflow_model_phase_ephemeral_prompt_is_removed_after_projection(tmp_path: Path) -> None:
+    env = _write_env(tmp_path)
+    agent_path = tmp_path / "agents" / "root.md"
+    _write_agent(agent_path)
+    (tmp_path / "agents" / "root.json").write_text(
+        json.dumps(
+            {
+                "agent_type": "workflow",
+                "workflow": {"path": "root_workflow.py"},
+                "behaviors": ["capture_behavior"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "agents" / "capture_behavior.py").write_text(
+        """
+from agent_framework import AgentBehavior
+
+class CaptureBehavior(AgentBehavior):
+    def __init__(self):
+        self.last_run = None
+
+    def attach(self, agent):
+        pass
+
+    def after_run(self, agent, host, *, run, caller_id, result):
+        self.last_run = run
+        return result
+
+def build_behavior():
+    return CaptureBehavior()
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "agents" / "root_workflow.py").write_text(
+        """
+from agent_framework import (
+    AgentResult,
+    ProgrammaticWorkflow,
+    WorkflowHistoryProjection,
+    WorkflowModelStep,
+    WorkflowReturnStep,
+)
+
+def build_workflow(agent):
+    return ProgrammaticWorkflow(
+        entry_step="phase_one",
+        steps={
+            "phase_one": WorkflowModelStep(
+                step_id="phase_one",
+                phase_id="phase_one",
+                prompt_fragment="First phase prompt.",
+                prompt_history_policy="ephemeral",
+                allowed_decision_kinds=frozenset({"final_message"}),
+                history_projection=WorkflowHistoryProjection(final_message="response", wrapper_tag="phase_one_result"),
+                next_step="phase_two",
+            ),
+            "phase_two": WorkflowModelStep(
+                step_id="phase_two",
+                phase_id="phase_two",
+                prompt_fragment="Second phase prompt.",
+                prompt_history_policy="ephemeral",
+                allowed_decision_kinds=frozenset({"final_message"}),
+                history_projection=WorkflowHistoryProjection(final_message="response", wrapper_tag="phase_two_result"),
+                next_step="phase_three",
+            ),
+            "phase_three": WorkflowModelStep(
+                step_id="phase_three",
+                phase_id="phase_three",
+                prompt_fragment="Third phase prompt.",
+                prompt_history_policy="ephemeral",
+                allowed_decision_kinds=frozenset({"final_message"}),
+                next_step="done",
+            ),
+            "done": WorkflowReturnStep(
+                step_id="done",
+                value=lambda s: AgentResult(status="completed", message="done"),
+            ),
+        },
+    )
+""",
+        encoding="utf-8",
+    )
+    driver = _SeqModelDriver(
+        [
+            {"kind": "final_message", "message": "one", "response": {"phase": 1}},
+            {"kind": "final_message", "message": "two", "response": {"phase": 2}},
+            {"kind": "final_message", "message": "three"},
+        ]
+    )
+    host = AgentHost.from_env(env, model_driver=driver)
+
+    host.run_root(initial_instruction="<instruction>durable input</instruction>")
+
+    assert len(driver.contexts) == 3
+    first_context = "\n".join(message["content"] for message in driver.contexts[0].messages)
+    second_context = "\n".join(message["content"] for message in driver.contexts[1].messages)
+    third_context = "\n".join(message["content"] for message in driver.contexts[2].messages)
+    assert "First phase prompt." in first_context
+    assert "First phase prompt." not in second_context
+    assert "Second phase prompt." in second_context
+    assert "<phase_one_result>{\"phase\":1}</phase_one_result>" in second_context
+    assert "First phase prompt." not in third_context
+    assert "Second phase prompt." not in third_context
+    assert "<phase_one_result>{\"phase\":1}</phase_one_result>" in third_context
+    assert "<phase_two_result>{\"phase\":2}</phase_two_result>" in third_context
+    assert third_context.count("<instruction>durable input</instruction>") == 1
+    assert "Third phase prompt." in third_context
+
+    behavior = host.get_agent("root").behaviors[0]
+    assert behavior.last_run is not None
+    transcript = "\n".join(behavior.last_run.transcript_entries)
+    assert "First phase prompt." in transcript
+    assert "Second phase prompt." in transcript
+    assert "Third phase prompt." in transcript
+
+
 def _register_tool(host: AgentHost, tool_id: str, result: str) -> None:
     defn = ToolDefinition(tool_id=tool_id, description=f"{tool_id} tool", parameters=())
 

@@ -233,6 +233,14 @@ agent context. Model phases default to chat-history semantics:
 - `<workflow_state_summary>` is not included unless
   `include_state_summary=True`
 
+Phase prompts are durable by default. Use
+`prompt_history_policy="ephemeral"` when later phases should see the compact
+semantic result projection, but not the completed phase's full prompt. The
+active phase prompt remains visible during the phase call, then is removed from
+LLM-visible history after the phase result projection is appended; transcripts
+and audit logs still retain it. `prompt_history_policy="none"` records the
+prompt in the transcript without adding it to LLM-visible history.
+
 If `prompt_fragment` is omitted, the phase prompt is selected from the
 workflow agent markdown's second section by `phase_id`.
 
@@ -275,6 +283,7 @@ Use `WorkflowHistoryProjection` when the semantic result should come from
 WorkflowModelStep(
     step_id="review_audience",
     phase_id="audience_review",
+    prompt_history_policy="ephemeral",
     history_projection=WorkflowHistoryProjection(
         final_message="response",
         wrapper_tag="audience_review",
