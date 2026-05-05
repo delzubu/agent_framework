@@ -83,3 +83,12 @@ both `prompt_fragments` and `conversation_messages`. The initial rendered
 prompt is appended once, phase prompts are user messages, final phase results
 are projected semantic assistant messages, and legacy prompt-fragment behavior
 must be explicit.
+
+**Workflow chat-history runs keep provider prefixes append-only.** If a
+workflow contains any default `WorkflowModelStep`
+(`prompt_fragment_mode="conversation_only"`), deterministic workflow outputs
+and action-loop results from transforms, tool calls, subagent calls, subagent
+batches, callbacks, and skill invocations must be appended only after the
+existing conversation prefix. Do not inject those changing results through
+`run.prompt_fragments`, because `prompt_fragments` render into the early
+`<augmentations>` block and break provider prompt-cache stability.

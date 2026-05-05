@@ -150,6 +150,9 @@ By default, model phases behave like a normal shared chat:
 - each phase prompt is appended as a `user` conversation message
 - phase results are appended as compact semantic history, not full runtime
   decision envelopes
+- deterministic workflow outputs and action-loop results from transform steps,
+  tools, subagents, callbacks, and skills are appended after the existing chat
+  history instead of being injected through `<augmentations>`
 - `<workflow_state_summary>` is not sent to the model unless explicitly enabled
 
 When `prompt_fragment` is omitted, the phase prompt is loaded from a matching

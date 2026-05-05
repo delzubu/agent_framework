@@ -39,6 +39,7 @@ class AgentRun:
     workflow_phase_id: str | None = None
     workflow_context_step: Any | None = None
     workflow_context_state: Any | None = None
+    workflow_chat_history_enabled: bool = False
     workflow_initial_prompt_appended: bool = False
     consecutive_validation_failures: int = 0
     planning_semantic_failures: int = 0

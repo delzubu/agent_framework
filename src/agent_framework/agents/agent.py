@@ -1111,6 +1111,12 @@ class Agent:
         state = ProgrammaticWorkflowState(
             initial_parameters=dict(initial_parameters or run.parameter_values),
         )
+        run.workflow_chat_history_enabled = (
+            run.workflow_chat_history_enabled
+            or self._workflow_uses_chat_history_context(workflow)
+        )
+        if run.workflow_chat_history_enabled:
+            self._append_workflow_initial_prompt(host, run)
         step_id = workflow.entry_step
         steps_executed = 0
 
@@ -1162,6 +1168,10 @@ class Agent:
                     step_id = next_step_id
                     continue
                 workflow = next_step_id
+                run.workflow_chat_history_enabled = (
+                    run.workflow_chat_history_enabled
+                    or self._workflow_uses_chat_history_context(workflow)
+                )
                 step_id = workflow.entry_step
                 continue
 
@@ -1189,6 +1199,10 @@ class Agent:
                     step_id = next_step_id
                     continue
                 workflow = next_step_id
+                run.workflow_chat_history_enabled = (
+                    run.workflow_chat_history_enabled
+                    or self._workflow_uses_chat_history_context(workflow)
+                )
                 step_id = workflow.entry_step
                 continue
 
@@ -1239,6 +1253,10 @@ class Agent:
                     continue
                 # WorkflowReplace: next_step_id is a new ProgrammaticWorkflow
                 workflow = next_step_id
+                run.workflow_chat_history_enabled = (
+                    run.workflow_chat_history_enabled
+                    or self._workflow_uses_chat_history_context(workflow)
+                )
                 step_id = workflow.entry_step
                 continue
 
@@ -1274,6 +1292,10 @@ class Agent:
                     step_id = next_step_id
                     continue
                 workflow = next_step_id
+                run.workflow_chat_history_enabled = (
+                    run.workflow_chat_history_enabled
+                    or self._workflow_uses_chat_history_context(workflow)
+                )
                 step_id = workflow.entry_step
                 continue
 
@@ -1309,6 +1331,14 @@ class Agent:
                 state.step_results[step.step_id] = result
                 state.last_step_id = step.step_id
                 state.last_value = result
+                if run.workflow_chat_history_enabled:
+                    fragment = (
+                        f"<workflow_tool_result step_id=\"{step.step_id}\" name=\"{step.tool_name}\">"
+                        f"{_stringify_parameter_value(result)}</workflow_tool_result>"
+                    )
+                    run.transcript_entries.append(fragment)
+                    run.conversation_messages.append({"role": "user", "content": fragment})
+                    _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_tool_result")
                 self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=result)
                 next_step_id = self._apply_workflow_step_end(
                     workflow=workflow,
@@ -1321,6 +1351,10 @@ class Agent:
                     step_id = next_step_id
                     continue
                 workflow = next_step_id
+                run.workflow_chat_history_enabled = (
+                    run.workflow_chat_history_enabled
+                    or self._workflow_uses_chat_history_context(workflow)
+                )
                 step_id = workflow.entry_step
                 continue
 
@@ -1355,13 +1389,8 @@ class Agent:
 
         self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
         self._emit_workflow_event(host, run, "workflow.phase_started", step.step_id, phase_id=step.phase_id)
-        if step.prompt_fragment_mode == "conversation_only" and not run.workflow_initial_prompt_appended:
-            initial_prompt = _apply_runtime_placeholders(run.rendered_prompt, run.placeholder_values).strip()
-            if initial_prompt:
-                run.conversation_messages.append({"role": "user", "content": initial_prompt})
-                run.transcript_entries.append(initial_prompt)
-                _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_initial_prompt")
-            run.workflow_initial_prompt_appended = True
+        if step.prompt_fragment_mode == "conversation_only":
+            self._append_workflow_initial_prompt(host, run)
         prompt_fragment = self._resolve_workflow_phase_prompt(run, step, state)
         phase_fragment = self._render_workflow_phase_fragment(step, prompt_fragment, state)
         state.context_entries.append(phase_fragment)
@@ -1551,7 +1580,8 @@ class Agent:
         *,
         source: str,
     ) -> None:
-        run.prompt_fragments.append(fragment)
+        if self._workflow_uses_prompt_fragments(run):
+            run.prompt_fragments.append(fragment)
         run.transcript_entries.append(fragment)
         run.conversation_messages.append({"role": "user", "content": fragment})
         _emit_context_updated(self, host, run, run.conversation_messages[-1], source)
@@ -1577,6 +1607,20 @@ class Agent:
             run.conversation_messages.append({"role": "user", "content": fragment})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], source)
 
+    def _append_workflow_initial_prompt(
+        self,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+    ) -> None:
+        if run.workflow_initial_prompt_appended:
+            return
+        initial_prompt = _apply_runtime_placeholders(run.rendered_prompt, run.placeholder_values).strip()
+        if initial_prompt:
+            run.conversation_messages.append({"role": "user", "content": initial_prompt})
+            run.transcript_entries.append(initial_prompt)
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_initial_prompt")
+        run.workflow_initial_prompt_appended = True
+
     def _active_workflow_model_step(self, run: AgentRun) -> WorkflowModelStep | None:
         step = run.workflow_context_step
         return step if isinstance(step, WorkflowModelStep) else None
@@ -1594,7 +1638,17 @@ class Agent:
 
     def _workflow_uses_prompt_fragments(self, run: AgentRun) -> bool:
         step = self._active_workflow_model_step(run)
-        return step is None or step.prompt_fragment_mode != "conversation_only"
+        if step is not None:
+            return step.prompt_fragment_mode != "conversation_only"
+        return not run.workflow_chat_history_enabled
+
+    @staticmethod
+    def _workflow_uses_chat_history_context(workflow: ProgrammaticWorkflow) -> bool:
+        return any(
+            isinstance(step, WorkflowModelStep)
+            and step.prompt_fragment_mode == "conversation_only"
+            for step in workflow.steps.values()
+        )
 
     def _workflow_projection_for_event(
         self,
@@ -1955,7 +2009,7 @@ class Agent:
             run.prompt_fragments.append(
                 f"<subagent_result id=\"{effective_subagent_id}\">{payload}</subagent_result>"
             )
-        else:
+        elif self._active_workflow_model_step(run) is not None:
             self._append_workflow_history_projection(
                 host,
                 run,
@@ -1972,6 +2026,11 @@ class Agent:
                 role="user",
                 source="subagent_result",
             )
+        else:
+            run.conversation_messages.append(
+                {"role": "user", "content": f"Subagent result {effective_subagent_id}: {payload}"}
+            )
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_result")
         return result
 
     def _execute_subagent_batch_flow(
@@ -2105,7 +2164,7 @@ class Agent:
             run.prompt_fragments.append(fragment)
             run.conversation_messages.append({"role": "user", "content": fragment})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_batch_results")
-        else:
+        elif self._active_workflow_model_step(run) is not None:
             payload = {
                 getattr(r, "output_key", f"result_{index}"): self._workflow_jsonable_summary(r)
                 for index, r in enumerate(results)
@@ -2124,6 +2183,9 @@ class Agent:
                 role="user",
                 source="subagent_batch_results",
             )
+        else:
+            run.conversation_messages.append({"role": "user", "content": fragment})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_batch_results")
 
     def handle_skill_invocation(
         self,

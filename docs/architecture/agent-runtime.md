@@ -558,6 +558,13 @@ the initial rendered prompt once, then appends each phase prompt to
 same shared conversation. It does not add phase prompts or results to
 `<augmentations>` unless `prompt_fragment_mode` opts into
 `prompt_fragment_only` or `both`.
+For workflows that contain a default chat-history `WorkflowModelStep`,
+deterministic workflow outputs and action-loop results from transform steps,
+tools, subagents, callback answers, and skill invocations follow the same rule:
+they are appended after the existing conversation prefix and are not inserted
+through `run.prompt_fragments`. This preserves provider prompt-cache stability
+because each later model call has the previous call's messages as an exact
+prefix.
 
 ### 9.2 Upsert Semantics
 

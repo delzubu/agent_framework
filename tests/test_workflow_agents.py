@@ -9,6 +9,7 @@ import pytest
 from agent_framework.agent import WorkflowAgent
 from agent_framework.host import AgentHost
 from agent_framework.model import ModelContext, ModelResponse
+from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tracing import CompositeRuntimeTracer, TraceEvent
 
 
@@ -292,6 +293,388 @@ def build_workflow(agent):
         for message in driver.contexts[1].messages
         if message["role"] == "assistant"
     ]
+
+
+def _register_tool(host: AgentHost, tool_id: str, result: str) -> None:
+    defn = ToolDefinition(tool_id=tool_id, description=f"{tool_id} tool", parameters=())
+
+    class _StaticTool(Tool):
+        def invoke(self, arguments: dict[str, Any], host: AgentHost) -> str:
+            return result
+
+    host.tool_registry.register(_StaticTool(definition=defn))
+
+
+def _write_child_workflow_agent(
+    agents_dir: Path,
+    agent_id: str,
+    message: str,
+    response: dict[str, Any] | None = None,
+) -> None:
+    (agents_dir / f"{agent_id}.md").write_text(
+        f"""---
+id: {agent_id}
+role: child
+parameters: {{}}
+tools: []
+subagents: []
+---
+Child system.
+---
+Child prompt.
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / f"{agent_id}.json").write_text(
+        json.dumps({"agent_type": "workflow", "workflow": {"path": f"{agent_id}_workflow.py"}}),
+        encoding="utf-8",
+    )
+    response_expr = repr(response) if response is not None else "None"
+    (agents_dir / f"{agent_id}_workflow.py").write_text(
+        f"""
+from agent_framework import AgentResult, ProgrammaticWorkflow, WorkflowReturnStep
+
+def build_workflow(agent):
+    return ProgrammaticWorkflow(
+        entry_step="done",
+        steps={{
+            "done": WorkflowReturnStep(
+                step_id="done",
+                value=AgentResult(status="completed", message={message!r}, response={response_expr}),
+            )
+        }},
+    )
+""",
+        encoding="utf-8",
+    )
+
+
+def _assert_provider_prefix_is_append_only(contexts: list[ModelContext]) -> None:
+    assert len(contexts) >= 2
+    for previous, current in zip(contexts, contexts[1:]):
+        assert list(current.messages[: len(previous.messages)]) == list(previous.messages)
+        assert current.user_prompt == ""
+        assert "<augmentations>" not in "\n".join(message["content"] for message in current.messages)
+
+
+def _write_two_phase_action_workflow(tmp_path: Path, first_decision_kind: str, extra: str = "") -> None:
+    (tmp_path / "agents" / "root_workflow.py").write_text(
+        f"""
+from agent_framework import ProgrammaticWorkflow, WorkflowModelStep, WorkflowReturnStep
+
+def build_workflow(agent):
+    return ProgrammaticWorkflow(
+        entry_step="action_phase",
+        steps={{
+            "action_phase": WorkflowModelStep(
+                step_id="action_phase",
+                phase_id="action_phase",
+                prompt_fragment="Perform the action, then finish.",
+                allowed_decision_kinds=frozenset({{{first_decision_kind!r}, "final_message"}}),
+                next_step="followup",
+                max_turns=4,
+            ),
+            "followup": WorkflowModelStep(
+                step_id="followup",
+                phase_id="followup",
+                prompt_fragment="Use the action result from history.",
+                allowed_decision_kinds=frozenset({{"final_message"}}),
+                next_step="done",
+            ),
+            "done": WorkflowReturnStep(step_id="done", value="done"),
+        }},
+    )
+{extra}
+""",
+        encoding="utf-8",
+    )
+
+
+class _StaticUserCommunication:
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
+
+    async def read_user_input(self, prompt: str = "", *, prompt_id: str | None = None, metadata: Any = None) -> str:
+        return self.answer
+
+
+def test_workflow_chat_history_keeps_prefix_stable_across_transform_steps(tmp_path: Path) -> None:
+    env = _write_env(tmp_path)
+    agent_path = tmp_path / "agents" / "root.md"
+    _write_agent(agent_path)
+    (tmp_path / "agents" / "root.json").write_text(
+        json.dumps({"agent_type": "workflow", "workflow": {"path": "root_workflow.py"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "agents" / "root_workflow.py").write_text(
+        """
+from agent_framework import AgentResult, ProgrammaticWorkflow, WorkflowModelStep, WorkflowReturnStep, WorkflowTransformStep
+
+def build_workflow(agent):
+    return ProgrammaticWorkflow(
+        entry_step="intake",
+        steps={
+            "intake": WorkflowModelStep(
+                step_id="intake",
+                phase_id="intake",
+                prompt_fragment="Run intake.",
+                allowed_decision_kinds=frozenset({"final_message"}),
+                next_step="validate_intake",
+            ),
+            "validate_intake": WorkflowTransformStep(
+                step_id="validate_intake",
+                transform=lambda s: {"valid": True, "source": s.require_step_result("intake").message},
+                next_step="audience",
+            ),
+            "audience": WorkflowModelStep(
+                step_id="audience",
+                phase_id="audience",
+                prompt_fragment="Use prior history.",
+                allowed_decision_kinds=frozenset({"final_message"}),
+                next_step="done",
+            ),
+            "done": WorkflowReturnStep(
+                step_id="done",
+                value=lambda s: AgentResult(status="completed", message="done"),
+            ),
+        },
+    )
+""",
+        encoding="utf-8",
+    )
+    driver = _SeqModelDriver(
+        [
+            {"kind": "final_message", "message": "intake-ok"},
+            {"kind": "final_message", "message": "audience-ok"},
+        ]
+    )
+    host = AgentHost.from_env(env, model_driver=driver)
+
+    host.run_root(initial_instruction="<instruction>go</instruction>")
+
+    assert len(driver.contexts) == 2
+    first_messages = list(driver.contexts[0].messages)
+    second_messages = list(driver.contexts[1].messages)
+    assert second_messages[: len(first_messages)] == first_messages
+    assert driver.contexts[1].user_prompt == ""
+    assert "<augmentations>" not in "\n".join(message["content"] for message in second_messages)
+    assert any(
+        message["role"] == "user" and "<workflow_transform_result step_id=\"validate_intake\">" in message["content"]
+        for message in second_messages
+    )
+
+
+def test_workflow_chat_history_keeps_prefix_stable_across_tool_calls(tmp_path: Path) -> None:
+    env = _write_env(tmp_path)
+    agent_path = tmp_path / "agents" / "root.md"
+    agent_path.write_text(
+        """---
+id: root
+role: tester
+parameters:
+  instruction:
+    description: instruction
+    required: true
+tools: [echo]
+subagents: []
+---
+System prompt.
+---
+<instruction>{{instruction}}</instruction>
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "agents" / "root.json").write_text(
+        json.dumps({"agent_type": "workflow", "workflow": {"path": "root_workflow.py"}}),
+        encoding="utf-8",
+    )
+    _write_two_phase_action_workflow(tmp_path, "call_tool")
+    driver = _SeqModelDriver(
+        [
+            {"kind": "call_tool", "tool_name": "echo", "parameters": {}},
+            {"kind": "final_message", "message": "tool phase done"},
+            {"kind": "final_message", "message": "followup done"},
+        ]
+    )
+    host = AgentHost.from_env(env, model_driver=driver)
+    _register_tool(host, "echo", "tool-output")
+
+    host.run_root(initial_instruction="<instruction>go</instruction>")
+
+    _assert_provider_prefix_is_append_only(driver.contexts)
+    assert any("Tool result echo: tool-output" in message["content"] for message in driver.contexts[-1].messages)
+
+
+def test_workflow_chat_history_keeps_prefix_stable_across_subagent_calls(tmp_path: Path) -> None:
+    env = _write_env(tmp_path)
+    agents_dir = tmp_path / "agents"
+    agent_path = agents_dir / "root.md"
+    agent_path.write_text(
+        """---
+id: root
+role: tester
+parameters:
+  instruction:
+    description: instruction
+    required: true
+tools: []
+subagents: [child]
+---
+System prompt.
+---
+<instruction>{{instruction}}</instruction>
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "root.json").write_text(
+        json.dumps({"agent_type": "workflow", "workflow": {"path": "root_workflow.py"}}),
+        encoding="utf-8",
+    )
+    _write_child_workflow_agent(agents_dir, "child", "child-output", {"child": "ok"})
+    _write_two_phase_action_workflow(tmp_path, "call_subagent")
+    driver = _SeqModelDriver(
+        [
+            {"kind": "call_subagent", "subagent_id": "child", "parameters": {}},
+            {"kind": "final_message", "message": "subagent phase done"},
+            {"kind": "final_message", "message": "followup done"},
+        ]
+    )
+    host = AgentHost.from_env(env, model_driver=driver)
+
+    host.run_root(initial_instruction="<instruction>go</instruction>")
+
+    _assert_provider_prefix_is_append_only(driver.contexts)
+    assert any('"child":"ok"' in message["content"] for message in driver.contexts[-1].messages)
+
+
+def test_workflow_chat_history_keeps_prefix_stable_across_subagent_batches(tmp_path: Path) -> None:
+    env = _write_env(tmp_path)
+    agents_dir = tmp_path / "agents"
+    agent_path = agents_dir / "root.md"
+    agent_path.write_text(
+        """---
+id: root
+role: tester
+parameters:
+  instruction:
+    description: instruction
+    required: true
+tools: []
+subagents: [child_a, child_b]
+---
+System prompt.
+---
+<instruction>{{instruction}}</instruction>
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "root.json").write_text(
+        json.dumps({"agent_type": "workflow", "workflow": {"path": "root_workflow.py"}}),
+        encoding="utf-8",
+    )
+    _write_child_workflow_agent(agents_dir, "child_a", "a-output")
+    _write_child_workflow_agent(agents_dir, "child_b", "b-output")
+    _write_two_phase_action_workflow(tmp_path, "call_subagents")
+    driver = _SeqModelDriver(
+        [
+            {
+                "kind": "call_subagents",
+                "mode": "parallel",
+                "calls": [
+                    {"subagent_id": "child_a", "parameters": {}, "output_key": "a"},
+                    {"subagent_id": "child_b", "parameters": {}, "output_key": "b"},
+                ],
+            },
+            {"kind": "final_message", "message": "batch phase done"},
+            {"kind": "final_message", "message": "followup done"},
+        ]
+    )
+    host = AgentHost.from_env(env, model_driver=driver)
+
+    host.run_root(initial_instruction="<instruction>go</instruction>")
+
+    _assert_provider_prefix_is_append_only(driver.contexts)
+    assert any("a-output" in message["content"] for message in driver.contexts[-1].messages)
+    assert any("b-output" in message["content"] for message in driver.contexts[-1].messages)
+
+
+def test_workflow_chat_history_keeps_prefix_stable_across_callbacks(tmp_path: Path) -> None:
+    env = _write_env(tmp_path)
+    agent_path = tmp_path / "agents" / "root.md"
+    _write_agent(agent_path)
+    (tmp_path / "agents" / "root.json").write_text(
+        json.dumps({"agent_type": "workflow", "workflow": {"path": "root_workflow.py"}}),
+        encoding="utf-8",
+    )
+    _write_two_phase_action_workflow(tmp_path, "request_user_input")
+    driver = _SeqModelDriver(
+        [
+            {"kind": "request_user_input", "intent": "information_request", "message": "Need input"},
+            {"kind": "final_message", "message": "callback phase done"},
+            {"kind": "final_message", "message": "followup done"},
+        ]
+    )
+    host = AgentHost.from_env(env, model_driver=driver, user_comm=_StaticUserCommunication("callback-answer"))
+
+    host.run_root(initial_instruction="<instruction>go</instruction>")
+
+    _assert_provider_prefix_is_append_only(driver.contexts)
+    assert any(message["content"] == "callback-answer" for message in driver.contexts[-1].messages)
+
+
+def test_workflow_chat_history_keeps_prefix_stable_across_skill_invocations(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: my-skill
+description: Test skill
+---
+Skill body.
+""",
+        encoding="utf-8",
+    )
+    env = _write_env(tmp_path)
+    with env.open("a", encoding="utf-8") as handle:
+        handle.write(f"\nSKILLS_DIRECTORY={skills_dir}\n")
+    agent_path = tmp_path / "agents" / "root.md"
+    agent_path.write_text(
+        """---
+id: root
+role: tester
+parameters:
+  instruction:
+    description: instruction
+    required: true
+tools: []
+subagents: []
+skills: [my-skill]
+---
+System prompt.
+---
+<instruction>{{instruction}}</instruction>
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "agents" / "root.json").write_text(
+        json.dumps({"agent_type": "workflow", "workflow": {"path": "root_workflow.py"}}),
+        encoding="utf-8",
+    )
+    _write_two_phase_action_workflow(tmp_path, "invoke_skill")
+    driver = _SeqModelDriver(
+        [
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "final_message", "message": "skill phase done"},
+            {"kind": "final_message", "message": "followup done"},
+        ]
+    )
+    host = AgentHost.from_env(env, model_driver=driver)
+
+    host.run_root(initial_instruction="<instruction>go</instruction>")
+
+    _assert_provider_prefix_is_append_only(driver.contexts)
+    assert any("Skill body." in message["content"] for message in driver.contexts[-1].messages)
 
 
 def test_workflow_agent_uses_partitioned_markdown_prompts_by_phase_id(tmp_path: Path) -> None:

@@ -113,6 +113,11 @@ to chat-history semantics: the initial rendered prompt is appended once, phase
 prompts are user messages, phase results are semantic assistant projections,
 and workflow state summaries are not injected into provider-facing context
 unless the step explicitly opts into legacy prompt-fragment behavior.
+When a workflow uses this chat-history mode, deterministic workflow outputs
+and action-loop results from transforms, tools, subagents, callbacks, and
+skills are also appended as later conversation messages instead of being
+re-rendered into the early `<augmentations>` block. That keeps provider input
+prefixes append-only and cacheable across workflow-local LLM phases.
 
 ### 2.9 Immutable Audit Records via Replace
 

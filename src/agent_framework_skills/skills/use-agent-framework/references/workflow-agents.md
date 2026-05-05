@@ -225,6 +225,9 @@ agent context. Model phases default to chat-history semantics:
 - the initial rendered user prompt is appended to history once
 - phase prompts are appended as `user` messages
 - final phase results are projected as compact `assistant` messages
+- deterministic transform/tool/subagent/batch/callback/skill results are
+  appended after the existing conversation history rather than reinserted into
+  an early `<augmentations>` block
 - runtime decision JSON stays available for parsing/tracing, but is not the
   default LLM-visible history artifact
 - `<workflow_state_summary>` is not included unless
