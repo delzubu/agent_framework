@@ -130,15 +130,53 @@ def build_workflow(agent):
 Runs a phase-scoped mini model loop in the workflow agent's current `AgentRun`.
 
 - `phase_id`: stable phase identifier for tracing and context
-- `prompt_fragment`: direct prompt text or callable resolved against state
+- `prompt_fragment`: optional direct prompt text or callable resolved against state
 - `allowed_decision_kinds`: optional set of allowed decisions for the phase
 - `final_response_schema`: optional JSON Schema dict for `final_message.response`
 - `max_turns`: safety cap for the phase loop
+- `include_state_summary`: opt-in legacy context dump; defaults to `False`
+- `prompt_fragment_mode`: where to append the phase prompt; defaults to `conversation_only`
+- `history_projection`: callable or `WorkflowHistoryProjection` for compact chat history
 - `next_step`: next step id or callable returning one
 
 A phase-local `final_message` completes the phase and stores an `AgentResult`
 under `state.step_results[step_id]`. It does not complete the workflow agent;
 use `WorkflowReturnStep` for that.
+
+By default, model phases behave like a normal shared chat:
+
+- the workflow system prompt is stable across phase calls
+- the initial rendered user prompt is appended to chat history once
+- each phase prompt is appended as a `user` conversation message
+- phase results are appended as compact semantic history, not full runtime
+  decision envelopes
+- `<workflow_state_summary>` is not sent to the model unless explicitly enabled
+
+When `prompt_fragment` is omitted, the phase prompt is loaded from a matching
+XML tag in the agent markdown system section. For example,
+`phase_id="audience_review"` reads `<audience_review>...</audience_review>`.
+
+```markdown
+---
+id: deck_reviewer
+role: Deck reviewer
+parameters:
+  instruction:
+    description: instruction
+    required: true
+---
+<workflow_system>
+You are the shared reviewer runtime for this workflow.
+</workflow_system>
+<audience_review>
+Review the deck for audience alignment.
+</audience_review>
+---
+<instruction>{{instruction}}</instruction>
+```
+
+When XML prompt partitioning is used, `<workflow_system>` is the only shared
+system block. Other top-level tags are phase prompts selected by `phase_id`.
 
 ### `WorkflowTransformStep`
 

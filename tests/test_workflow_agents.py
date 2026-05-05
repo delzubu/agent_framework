@@ -211,6 +211,147 @@ def build_workflow(agent):
     second_context = "\n".join(message["content"] for message in driver.contexts[1].messages)
     assert "phase-one" in second_context
     assert "Use phase one: phase-one" in second_context
+    assert "<workflow_state_summary>" not in second_context
+    assert driver.contexts[1].user_prompt == ""
+    assert "<augmentations>" not in driver.contexts[1].user_prompt
+    assistant_messages = [
+        message["content"]
+        for message in driver.contexts[1].messages
+        if message["role"] == "assistant"
+    ]
+    assert assistant_messages == ["phase-one"]
+
+
+def test_workflow_model_phase_can_project_response_history(tmp_path: Path) -> None:
+    env = _write_env(tmp_path)
+    agent_path = tmp_path / "agents" / "root.md"
+    _write_agent(agent_path)
+    (tmp_path / "agents" / "root.json").write_text(
+        json.dumps({"agent_type": "workflow", "workflow": {"path": "root_workflow.py"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "agents" / "root_workflow.py").write_text(
+        """
+from agent_framework import (
+    AgentResult,
+    ProgrammaticWorkflow,
+    WorkflowHistoryProjection,
+    WorkflowModelStep,
+    WorkflowReturnStep,
+)
+
+def build_workflow(agent):
+    return ProgrammaticWorkflow(
+        entry_step="phase_one",
+        steps={
+            "phase_one": WorkflowModelStep(
+                step_id="phase_one",
+                phase_id="audience_review",
+                prompt_fragment="Review the audience.",
+                allowed_decision_kinds=frozenset({"final_message"}),
+                history_projection=WorkflowHistoryProjection(
+                    final_message="response",
+                    wrapper_tag="audience_review",
+                ),
+                next_step="phase_two",
+            ),
+            "phase_two": WorkflowModelStep(
+                step_id="phase_two",
+                phase_id="summary",
+                prompt_fragment="Use <audience_review> from history.",
+                allowed_decision_kinds=frozenset({"final_message"}),
+                next_step="done",
+            ),
+            "done": WorkflowReturnStep(
+                step_id="done",
+                value=lambda s: AgentResult(status="completed", message="done"),
+            ),
+        },
+    )
+""",
+        encoding="utf-8",
+    )
+    driver = _SeqModelDriver(
+        [
+            {
+                "kind": "final_message",
+                "message": "Audience review complete.",
+                "response": {"rating": 6, "findings": []},
+            },
+            {"kind": "final_message", "message": "summary"},
+        ]
+    )
+    host = AgentHost.from_env(env, model_driver=driver)
+
+    host.run_root(initial_instruction="<instruction>go</instruction>")
+
+    second_context = "\n".join(message["content"] for message in driver.contexts[1].messages)
+    assert '<audience_review>{"findings":[],"rating":6}</audience_review>' in second_context
+    assert "Audience review complete." not in [
+        message["content"]
+        for message in driver.contexts[1].messages
+        if message["role"] == "assistant"
+    ]
+
+
+def test_workflow_agent_uses_partitioned_markdown_prompts_by_phase_id(tmp_path: Path) -> None:
+    env = _write_env(tmp_path)
+    agent_path = tmp_path / "agents" / "root.md"
+    agent_path.write_text(
+        """---
+id: root
+role: tester
+parameters:
+  instruction:
+    description: instruction
+    required: true
+tools: []
+subagents: []
+---
+<workflow_system>
+Shared workflow system prompt.
+</workflow_system>
+<phase_one>
+Run only phase one.
+</phase_one>
+---
+<instruction>{{instruction}}</instruction>
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "agents" / "root.json").write_text(
+        json.dumps({"agent_type": "workflow", "workflow": {"path": "root_workflow.py"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "agents" / "root_workflow.py").write_text(
+        """
+from agent_framework import ProgrammaticWorkflow, WorkflowModelStep, WorkflowReturnStep
+
+def build_workflow(agent):
+    return ProgrammaticWorkflow(
+        entry_step="phase_one",
+        steps={
+            "phase_one": WorkflowModelStep(
+                step_id="phase_one",
+                phase_id="phase_one",
+                allowed_decision_kinds=frozenset({"final_message"}),
+                next_step="done",
+            ),
+            "done": WorkflowReturnStep(step_id="done", value="done"),
+        },
+    )
+""",
+        encoding="utf-8",
+    )
+    driver = _SeqModelDriver([{"kind": "final_message", "message": "phase done"}])
+    host = AgentHost.from_env(env, model_driver=driver)
+
+    host.run_root(initial_instruction="<instruction>go</instruction>")
+
+    context = driver.contexts[0]
+    assert "Shared workflow system prompt." in context.system_prompt
+    assert "Run only phase one." not in context.system_prompt
+    assert any("Run only phase one." in message["content"] for message in context.messages)
 
 
 def test_workflow_phase_trace_events_and_nested_metadata(tmp_path: Path) -> None:

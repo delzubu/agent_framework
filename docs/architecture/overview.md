@@ -108,6 +108,12 @@ All escalations from an agent to its caller flow through a single `callback` dec
 
 Rather than rebuilding the full user prompt each iteration, tool results, subagent results, and callback responses are accumulated as typed XML fragments in `AgentRun.prompt_fragments` and wrapped in `<augmentations>` before each model call. `_upsert_prompt_fragment()` applies replace-by-tag-name semantics, so the latest tool result replaces the previous one for the same tool — avoiding context bloat. Behaviors can replace specific fragment tags or append new ones via `AgentEndHookDecision`.
 
+`WorkflowModelStep` is the exception for workflow-local LLM phases. It defaults
+to chat-history semantics: the initial rendered prompt is appended once, phase
+prompts are user messages, phase results are semantic assistant projections,
+and workflow state summaries are not injected into provider-facing context
+unless the step explicitly opts into legacy prompt-fragment behavior.
+
 ### 2.9 Immutable Audit Records via Replace
 
 `InMemoryAuditTracer` uses `dataclasses.replace()` to progressively build up frozen `AgentCallAuditRecord` objects across LLM requests, responses, decisions, callbacks, and events. Records are never directly mutated. When a run completes, the final record is serialized as a JSONL line and appended to the output file — an append-only, immutable audit trail.

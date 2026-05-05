@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Union
+from typing import Any, Callable, Literal, Union
 
 from .agent_decision import SubagentCallSpec
 from .agent_result import AgentResult
@@ -11,6 +11,8 @@ from .agent_result import AgentResult
 
 WorkflowValueResolver = Callable[["ProgrammaticWorkflowState"], Any]
 WorkflowNextStepResolver = Callable[["ProgrammaticWorkflowState"], str | None]
+WorkflowPromptFragmentMode = Literal["conversation_only", "prompt_fragment_only", "both"]
+WorkflowProjectionSelector = Literal["message", "response", "both", "auto", "none"]
 
 
 @dataclass(slots=True)
@@ -27,6 +29,41 @@ class ProgrammaticWorkflowState:
         if step_id not in self.step_results:
             raise KeyError(f"Workflow step {step_id!r} has not produced a result.")
         return self.step_results[step_id]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowHistoryEvent:
+    """Structured event available to workflow history projection callbacks."""
+
+    kind: str
+    step_id: str
+    phase_id: str
+    decision: Any = None
+    result: Any = None
+    message: str = ""
+    response: dict[str, Any] | None = None
+    payload: Any = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+WorkflowHistoryProjector = Callable[
+    [WorkflowHistoryEvent, "ProgrammaticWorkflowState"],
+    str | None,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowHistoryProjection:
+    """Declarative projection from workflow runtime events to chat history."""
+
+    final_message: WorkflowProjectionSelector | WorkflowHistoryProjector = "auto"
+    callback_request: WorkflowProjectionSelector | WorkflowHistoryProjector = "message"
+    callback_answer: WorkflowProjectionSelector | WorkflowHistoryProjector = "message"
+    tool_result: WorkflowProjectionSelector | WorkflowHistoryProjector = "auto"
+    subagent_result: WorkflowProjectionSelector | WorkflowHistoryProjector = "auto"
+    subagent_batch_result: WorkflowProjectionSelector | WorkflowHistoryProjector = "auto"
+    skill_result: WorkflowProjectionSelector | WorkflowHistoryProjector = "message"
+    wrapper_tag: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -121,10 +158,13 @@ class WorkflowModelStep(ProgrammaticWorkflowStep):
     """Run a phase-scoped model loop in the workflow agent's own context."""
 
     phase_id: str
-    prompt_fragment: str | WorkflowValueResolver
+    prompt_fragment: str | WorkflowValueResolver | None = None
     allowed_decision_kinds: frozenset[str] | None = None
     final_response_schema: dict[str, Any] | None = None
     max_turns: int = 8
+    include_state_summary: bool = False
+    prompt_fragment_mode: WorkflowPromptFragmentMode = "conversation_only"
+    history_projection: WorkflowHistoryProjection | WorkflowHistoryProjector | None = None
     next_step: str | WorkflowNextStepResolver | None = None
 
 
@@ -197,6 +237,9 @@ __all__ = [
     "ProgrammaticWorkflow",
     "ProgrammaticWorkflowState",
     "ProgrammaticWorkflowStep",
+    "WorkflowHistoryEvent",
+    "WorkflowHistoryProjection",
+    "WorkflowHistoryProjector",
     "WorkflowAbort",
     "WorkflowAbortedError",
     "WorkflowBranchStep",

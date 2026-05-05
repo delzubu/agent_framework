@@ -37,6 +37,9 @@ class AgentRun:
     plan_state: "PlanState | None" = None
     workflow_step_id: str | None = None
     workflow_phase_id: str | None = None
+    workflow_context_step: Any | None = None
+    workflow_context_state: Any | None = None
+    workflow_initial_prompt_appended: bool = False
     consecutive_validation_failures: int = 0
     planning_semantic_failures: int = 0
 

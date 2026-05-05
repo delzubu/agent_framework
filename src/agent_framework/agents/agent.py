@@ -79,6 +79,10 @@ from .workflow import (
     WorkflowCallToolStep,
     WorkflowContinue,
     WorkflowGoto,
+    WorkflowHistoryEvent,
+    WorkflowHistoryProjection,
+    WorkflowHistoryProjector,
+    WorkflowProjectionSelector,
     WorkflowModelStep,
     WorkflowReplace,
     WorkflowRaiseStep,
@@ -528,6 +532,9 @@ class Agent:
             base_dir = self.source_path.parent if self.source_path is not None else None
             system_prompt = expand_file_refs(system_prompt, resolver, base_dir=base_dir)
         prompt = _apply_runtime_placeholders(run.rendered_prompt, run.placeholder_values)
+        active_workflow_step = self._active_workflow_model_step(run)
+        if active_workflow_step is not None and active_workflow_step.prompt_fragment_mode == "conversation_only":
+            prompt = ""
         if run.prompt_fragments:
             # System and helper augmentations stay outside the original template
             # and are appended separately from the transcript.
@@ -584,21 +591,14 @@ class Agent:
             )
             run.visible_memory_scopes = scopes
             run.resolved_memory_refs = refs
-        message_history: list[dict[str, str]] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-            *(
-                [{"role": "user", "content": skills_catalog}]
-                if skills_catalog
-                else []
-            ),
-            *(
-                [{"role": "user", "content": memory_prompt}]
-                if memory_prompt
-                else []
-            ),
-            *run.conversation_messages,
-        ]
+        message_history: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if prompt.strip():
+            message_history.append({"role": "user", "content": prompt})
+        if skills_catalog:
+            message_history.append({"role": "user", "content": skills_catalog})
+        if memory_prompt:
+            message_history.append({"role": "user", "content": memory_prompt})
+        message_history.extend(run.conversation_messages)
         planning_active = (
             self.planning_config is not None and self.planning_config.enabled
         )
@@ -737,16 +737,18 @@ class Agent:
         run.transcript_entries.append(
             f"<assistant_decision>{_stringify_parameter_value(_decision_to_dict(decision))}</assistant_decision>"
         )
-        run.conversation_messages.append(
-            {"role": "assistant", "content": _stringify_parameter_value(_decision_to_dict(decision))}
-        )
-        _emit_context_updated(
-            self,
-            host,
-            run,
-            run.conversation_messages[-1],
-            "assistant_decision",
-        )
+        active_workflow_step = self._active_workflow_model_step(run)
+        if active_workflow_step is None or self._workflow_uses_legacy_decision_history(active_workflow_step):
+            run.conversation_messages.append(
+                {"role": "assistant", "content": _stringify_parameter_value(_decision_to_dict(decision))}
+            )
+            _emit_context_updated(
+                self,
+                host,
+                run,
+                run.conversation_messages[-1],
+                "assistant_decision",
+            )
         return handler(host=host, run=run, decision=decision, caller_id=caller_id)
 
     def after_iteration(self, run: AgentRun) -> None:
@@ -1007,9 +1009,11 @@ class Agent:
             )
 
         if intent == "information_request" and parameter_name:
-            run.prompt_fragments.append(f"<{parameter_name}>{answer}</{parameter_name}>")
+            if self._workflow_uses_prompt_fragments(run):
+                run.prompt_fragments.append(f"<{parameter_name}>{answer}</{parameter_name}>")
         else:
-            run.prompt_fragments.append(f"<callback_response intent=\"{intent}\">{answer}</callback_response>")
+            if self._workflow_uses_prompt_fragments(run):
+                run.prompt_fragments.append(f"<callback_response intent=\"{intent}\">{answer}</callback_response>")
         return None
 
     def handle_subagent_call(
@@ -1026,7 +1030,8 @@ class Agent:
                 "call_subagent requires subagent_id. "
                 f"Legal subagent ids: {sorted(self.allowed_child_agents)}."
             )
-            run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
+            if self._workflow_uses_prompt_fragments(run):
+                run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
             run.transcript_entries.append(f"<subagent_error>{error_text}</subagent_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
@@ -1350,100 +1355,132 @@ class Agent:
 
         self._emit_workflow_event(host, run, "workflow.step_started", step.step_id)
         self._emit_workflow_event(host, run, "workflow.phase_started", step.step_id, phase_id=step.phase_id)
-        prompt_fragment = str(resolve_workflow_value(step.prompt_fragment, state))
+        if step.prompt_fragment_mode == "conversation_only" and not run.workflow_initial_prompt_appended:
+            initial_prompt = _apply_runtime_placeholders(run.rendered_prompt, run.placeholder_values).strip()
+            if initial_prompt:
+                run.conversation_messages.append({"role": "user", "content": initial_prompt})
+                run.transcript_entries.append(initial_prompt)
+                _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_initial_prompt")
+            run.workflow_initial_prompt_appended = True
+        prompt_fragment = self._resolve_workflow_phase_prompt(run, step, state)
         phase_fragment = self._render_workflow_phase_fragment(step, prompt_fragment, state)
         state.context_entries.append(phase_fragment)
-        self._append_workflow_context(host, run, phase_fragment, source="workflow_phase_prompt")
+        self._append_workflow_phase_context(host, run, step, phase_fragment, source="workflow_phase_prompt")
 
         with self._workflow_scope(run, step_id=step.step_id, phase_id=step.phase_id):
-            for turn_index in range(1, step.max_turns + 1):
-                self.before_iteration(run)
-                decision = self.resolve_runtime_decision(run=run)
-                if decision is None:
-                    context = self.build_context(host=host, run=run)
-                    decision = self.decide(host=host, run=run, context=context)
-                if (
-                    step.allowed_decision_kinds is not None
-                    and decision.kind not in step.allowed_decision_kinds
-                ):
-                    reminder = (
-                        "<workflow_phase_error>"
-                        f"Decision kind {decision.kind!r} is not allowed in phase {step.phase_id!r}. "
-                        f"Allowed kinds: {sorted(step.allowed_decision_kinds)}."
-                        "</workflow_phase_error>"
-                    )
-                    run.conversation_messages.append({"role": "user", "content": reminder})
-                    _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_phase_error")
-                    self.after_iteration(run)
-                    continue
-                if decision.kind == "final_message":
-                    if step.final_response_schema is not None:
-                        validate_json_schema(
-                            instance=decision.response or {},
-                            schema=step.final_response_schema,
+            previous_context_step = run.workflow_context_step
+            previous_context_state = run.workflow_context_state
+            run.workflow_context_step = step
+            run.workflow_context_state = state
+            try:
+                for turn_index in range(1, step.max_turns + 1):
+                    self.before_iteration(run)
+                    decision = self.resolve_runtime_decision(run=run)
+                    if decision is None:
+                        context = self.build_context(host=host, run=run)
+                        decision = self.decide(host=host, run=run, context=context)
+                    if (
+                        step.allowed_decision_kinds is not None
+                        and decision.kind not in step.allowed_decision_kinds
+                    ):
+                        reminder = (
+                            "<workflow_phase_error>"
+                            f"Decision kind {decision.kind!r} is not allowed in phase {step.phase_id!r}. "
+                            f"Allowed kinds: {sorted(step.allowed_decision_kinds)}."
+                            "</workflow_phase_error>"
                         )
-                    result = AgentResult(
-                        status="completed",
-                        message=decision.message,
-                        response=decision.response,
-                        decision=decision,
-                        prompt=run.rendered_prompt,
-                    )
-                    # Record the final decision in the shared ledger without invoking
-                    # the normal final-message handler, because this is phase-local.
-                    from agent_framework.agent_event_publisher import agent_events
+                        run.conversation_messages.append({"role": "user", "content": reminder})
+                        _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_phase_error")
+                        self.after_iteration(run)
+                        continue
+                    if decision.kind == "final_message":
+                        if step.final_response_schema is not None:
+                            validate_json_schema(
+                                instance=decision.response or {},
+                                schema=step.final_response_schema,
+                            )
+                        result = AgentResult(
+                            status="completed",
+                            message=decision.message,
+                            response=decision.response,
+                            decision=decision,
+                            prompt=run.rendered_prompt,
+                        )
+                        # Record the final decision in the shared ledger without invoking
+                        # the normal final-message handler, because this is phase-local.
+                        from agent_framework.agent_event_publisher import agent_events
 
-                    agent_events.audit_decision(
-                        run_id=run.run_id,
-                        agent_id=self.agent_id,
+                        agent_events.audit_decision(
+                            run_id=run.run_id,
+                            agent_id=self.agent_id,
+                            decision=decision,
+                            workflow_step_id=step.step_id,
+                            workflow_phase_id=step.phase_id,
+                        )
+                        run.transcript_entries.append(
+                            f"<workflow_phase_decision step_id=\"{step.step_id}\" phase_id=\"{step.phase_id}\">"
+                            f"{_stringify_parameter_value(_decision_to_dict(decision))}"
+                            f"</workflow_phase_decision>"
+                        )
+                        if self._workflow_uses_legacy_decision_history(step):
+                            run.conversation_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": _stringify_parameter_value(_decision_to_dict(decision)),
+                                }
+                            )
+                            _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_phase_decision")
+                        else:
+                            self._append_workflow_history_projection(
+                                host,
+                                run,
+                                WorkflowHistoryEvent(
+                                    kind="final_message",
+                                    step_id=step.step_id,
+                                    phase_id=step.phase_id,
+                                    decision=decision,
+                                    result=result,
+                                    message=decision.message,
+                                    response=decision.response,
+                                ),
+                                role="assistant",
+                                source="workflow_phase_result",
+                            )
+                        self.after_iteration(run)
+                        self._emit_workflow_event(
+                            host,
+                            run,
+                            "workflow.phase_completed",
+                            step.step_id,
+                            phase_id=step.phase_id,
+                            result=result,
+                        )
+                        self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=result)
+                        return result
+
+                    outcome = self.dispatch_decision(
+                        host=host,
+                        run=run,
                         decision=decision,
-                        workflow_step_id=step.step_id,
-                        workflow_phase_id=step.phase_id,
+                        caller_id=caller_id,
                     )
-                    run.transcript_entries.append(
-                        f"<workflow_phase_decision step_id=\"{step.step_id}\" phase_id=\"{step.phase_id}\">"
-                        f"{_stringify_parameter_value(_decision_to_dict(decision))}"
-                        f"</workflow_phase_decision>"
-                    )
-                    run.conversation_messages.append(
-                        {
-                            "role": "assistant",
-                            "content": _stringify_parameter_value(_decision_to_dict(decision)),
-                        }
-                    )
-                    _emit_context_updated(self, host, run, run.conversation_messages[-1], "workflow_phase_decision")
                     self.after_iteration(run)
-                    self._emit_workflow_event(
-                        host,
-                        run,
-                        "workflow.phase_completed",
-                        step.step_id,
-                        phase_id=step.phase_id,
-                        result=result,
-                    )
-                    self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=result)
-                    return result
-
-                outcome = self.dispatch_decision(
-                    host=host,
-                    run=run,
-                    decision=decision,
-                    caller_id=caller_id,
-                )
-                self.after_iteration(run)
-                if outcome is not None:
-                    # Non-final terminal outcomes, such as callback failure or
-                    # terminal tools, end the phase and are stored as its result.
-                    self._emit_workflow_event(
-                        host,
-                        run,
-                        "workflow.phase_completed",
-                        step.step_id,
-                        phase_id=step.phase_id,
-                        result=outcome,
-                    )
-                    self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=outcome)
-                    return outcome
+                    if outcome is not None:
+                        # Non-final terminal outcomes, such as callback failure or
+                        # terminal tools, end the phase and are stored as its result.
+                        self._emit_workflow_event(
+                            host,
+                            run,
+                            "workflow.phase_completed",
+                            step.step_id,
+                            phase_id=step.phase_id,
+                            result=outcome,
+                        )
+                        self._emit_workflow_event(host, run, "workflow.step_completed", step.step_id, result=outcome)
+                        return outcome
+            finally:
+                run.workflow_context_step = previous_context_step
+                run.workflow_context_state = previous_context_state
 
         message = (
             f"Workflow phase {step.phase_id!r} in step {step.step_id!r} exceeded "
@@ -1466,22 +1503,45 @@ class Agent:
         prompt_fragment: str,
         state: ProgrammaticWorkflowState,
     ) -> str:
-        state_summary = {
-            "initial_parameters": state.initial_parameters,
-            "step_results": {
-                key: self._workflow_jsonable_summary(value)
-                for key, value in state.step_results.items()
-            },
-            "last_step_id": state.last_step_id,
-        }
-        return (
-            f"<workflow_phase id=\"{step.phase_id}\" step_id=\"{step.step_id}\">\n"
-            f"{prompt_fragment}\n"
+        state_summary = None
+        if step.include_state_summary:
+            state_summary = {
+                "initial_parameters": state.initial_parameters,
+                "step_results": {
+                    key: self._workflow_jsonable_summary(value)
+                    for key, value in state.step_results.items()
+                },
+                "last_step_id": state.last_step_id,
+            }
+        state_block = (
             "<workflow_state_summary>\n"
             f"{json.dumps(state_summary, ensure_ascii=False, sort_keys=True)}\n"
             "</workflow_state_summary>\n"
+            if state_summary is not None
+            else ""
+        )
+        return (
+            f"<workflow_phase id=\"{step.phase_id}\" step_id=\"{step.step_id}\">\n"
+            f"{prompt_fragment}\n"
+            f"{state_block}"
             "</workflow_phase>"
         )
+
+    def _resolve_workflow_phase_prompt(
+        self,
+        run: AgentRun,
+        step: WorkflowModelStep,
+        state: ProgrammaticWorkflowState,
+    ) -> str:
+        if step.prompt_fragment is not None:
+            return str(resolve_workflow_value(step.prompt_fragment, state))
+        sections = getattr(self, "workflow_prompt_sections", {}) or {}
+        if step.phase_id not in sections:
+            raise KeyError(
+                f"Workflow model step {step.step_id!r} has no prompt_fragment and "
+                f"no <{step.phase_id}> section in the workflow agent system prompt."
+            )
+        return _apply_runtime_placeholders(str(sections[step.phase_id]), run.placeholder_values)
 
     def _append_workflow_context(
         self,
@@ -1494,6 +1554,129 @@ class Agent:
         run.prompt_fragments.append(fragment)
         run.transcript_entries.append(fragment)
         run.conversation_messages.append({"role": "user", "content": fragment})
+        _emit_context_updated(self, host, run, run.conversation_messages[-1], source)
+
+    def _append_workflow_phase_context(
+        self,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        step: WorkflowModelStep,
+        fragment: str,
+        *,
+        source: str,
+    ) -> None:
+        if step.prompt_fragment_mode not in {"conversation_only", "prompt_fragment_only", "both"}:
+            raise ValueError(
+                f"Workflow model step {step.step_id!r} prompt_fragment_mode must be "
+                "'conversation_only', 'prompt_fragment_only', or 'both'."
+            )
+        if step.prompt_fragment_mode in {"prompt_fragment_only", "both"}:
+            run.prompt_fragments.append(fragment)
+        run.transcript_entries.append(fragment)
+        if step.prompt_fragment_mode in {"conversation_only", "both"}:
+            run.conversation_messages.append({"role": "user", "content": fragment})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], source)
+
+    def _active_workflow_model_step(self, run: AgentRun) -> WorkflowModelStep | None:
+        step = run.workflow_context_step
+        return step if isinstance(step, WorkflowModelStep) else None
+
+    def _active_workflow_state(self, run: AgentRun) -> ProgrammaticWorkflowState | None:
+        state = run.workflow_context_state
+        return state if isinstance(state, ProgrammaticWorkflowState) else None
+
+    def _workflow_uses_legacy_decision_history(self, step: WorkflowModelStep) -> bool:
+        return (
+            step.include_state_summary
+            and step.prompt_fragment_mode == "both"
+            and step.history_projection is None
+        )
+
+    def _workflow_uses_prompt_fragments(self, run: AgentRun) -> bool:
+        step = self._active_workflow_model_step(run)
+        return step is None or step.prompt_fragment_mode != "conversation_only"
+
+    def _workflow_projection_for_event(
+        self,
+        step: WorkflowModelStep,
+        event: WorkflowHistoryEvent,
+        state: ProgrammaticWorkflowState,
+    ) -> str | None:
+        projection = step.history_projection or WorkflowHistoryProjection()
+        if callable(projection) and not isinstance(projection, WorkflowHistoryProjection):
+            return projection(event, state)
+
+        selector = self._workflow_projection_selector(projection, event.kind)
+        if callable(selector):
+            return selector(event, state)
+        if selector == "none":
+            return None
+        content = self._workflow_projection_content(selector, event)
+        if content is None or content == "":
+            return None
+        if projection.wrapper_tag:
+            return f"<{projection.wrapper_tag}>{content}</{projection.wrapper_tag}>"
+        return content
+
+    @staticmethod
+    def _workflow_projection_selector(
+        projection: WorkflowHistoryProjection,
+        kind: str,
+    ) -> WorkflowProjectionSelector | WorkflowHistoryProjector:
+        mapping = {
+            "final_message": projection.final_message,
+            "callback_request": projection.callback_request,
+            "callback_answer": projection.callback_answer,
+            "tool_result": projection.tool_result,
+            "subagent_result": projection.subagent_result,
+            "subagent_batch_result": projection.subagent_batch_result,
+            "skill_result": projection.skill_result,
+        }
+        return mapping.get(kind, "auto")
+
+    @staticmethod
+    def _workflow_projection_content(
+        selector: WorkflowProjectionSelector | str,
+        event: WorkflowHistoryEvent,
+    ) -> str | None:
+        response = event.response
+        if response is None and isinstance(event.payload, dict):
+            response = event.payload
+        if selector == "auto":
+            selector = "response" if response is not None else "message"
+        if selector == "message":
+            return event.message
+        if selector == "response":
+            if response is None:
+                return None
+            return json.dumps(response, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if selector == "both":
+            parts: list[str] = []
+            if event.message:
+                parts.append(f"<message>{event.message}</message>")
+            if response is not None:
+                payload = json.dumps(response, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                parts.append(f"<response>{payload}</response>")
+            return "\n".join(parts)
+        return None
+
+    def _append_workflow_history_projection(
+        self,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        event: WorkflowHistoryEvent,
+        *,
+        role: str,
+        source: str,
+    ) -> None:
+        step = self._active_workflow_model_step(run)
+        state = self._active_workflow_state(run)
+        if step is None or state is None:
+            return
+        projected = self._workflow_projection_for_event(step, event, state)
+        if not projected:
+            return
+        run.conversation_messages.append({"role": role, "content": projected})
         _emit_context_updated(self, host, run, run.conversation_messages[-1], source)
 
     @contextmanager
@@ -1630,7 +1813,8 @@ class Agent:
                 f"(output_key={output_key!r}). "
                 f"Legal subagent ids: {sorted(self.allowed_child_agents)}."
             )
-        run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
+        if self._workflow_uses_prompt_fragments(run):
+            run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
         run.transcript_entries.append(f"<subagent_error>{error_text}</subagent_error>")
         run.conversation_messages.append({"role": "user", "content": error_text})
         _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_validation_error")
@@ -1718,11 +1902,12 @@ class Agent:
                     **self._workflow_event_metadata(run),
                 },
             )
-            if pre_decision.system_message:
+            if pre_decision.system_message and self._workflow_uses_prompt_fragments(run):
                 run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
-            run.prompt_fragments.append(
-                f"<subagent_error id=\"{effective_subagent_id}\">{type(exc).__name__}: {exc}</subagent_error>"
-            )
+            if self._workflow_uses_prompt_fragments(run):
+                run.prompt_fragments.append(
+                    f"<subagent_error id=\"{effective_subagent_id}\">{type(exc).__name__}: {exc}</subagent_error>"
+                )
             run.transcript_entries.append(
                 f"<subagent_error id=\"{effective_subagent_id}\">{type(exc).__name__}: {exc}</subagent_error>"
             )
@@ -1746,7 +1931,7 @@ class Agent:
                 result=result,
             ),
         )
-        if pre_decision.system_message:
+        if pre_decision.system_message and self._workflow_uses_prompt_fragments(run):
             run.prompt_fragments.append(f"<system_message>{pre_decision.system_message}</system_message>")
         payload = _render_result_for_injection(result)
         agent_events.audit_named_event(
@@ -1763,12 +1948,30 @@ class Agent:
         run.transcript_entries.append(
             f"<subagent_result id=\"{effective_subagent_id}\">{payload}</subagent_result>"
         )
-        run.conversation_messages.append(
-            {"role": "user", "content": f"Subagent result {effective_subagent_id}: {payload}"}
-        )
-        run.prompt_fragments.append(
-            f"<subagent_result id=\"{effective_subagent_id}\">{payload}</subagent_result>"
-        )
+        if self._workflow_uses_prompt_fragments(run):
+            run.conversation_messages.append(
+                {"role": "user", "content": f"Subagent result {effective_subagent_id}: {payload}"}
+            )
+            run.prompt_fragments.append(
+                f"<subagent_result id=\"{effective_subagent_id}\">{payload}</subagent_result>"
+            )
+        else:
+            self._append_workflow_history_projection(
+                host,
+                run,
+                WorkflowHistoryEvent(
+                    kind="subagent_result",
+                    step_id=run.workflow_step_id or "",
+                    phase_id=run.workflow_phase_id or "",
+                    result=result,
+                    message=getattr(result, "message", ""),
+                    response=getattr(result, "response", None),
+                    payload=payload,
+                    metadata={"subagent_id": effective_subagent_id},
+                ),
+                role="user",
+                source="subagent_result",
+            )
         return result
 
     def _execute_subagent_batch_flow(
@@ -1809,7 +2012,8 @@ class Agent:
         call_batch_fn = getattr(host, "call_subagent_batch", None)
         if not callable(call_batch_fn):
             error_text = "Host does not support call_subagent_batch; upgrade AgentHost."
-            run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
+            if self._workflow_uses_prompt_fragments(run):
+                run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
             raise RuntimeError(error_text)
@@ -1841,7 +2045,8 @@ class Agent:
             )
         except Exception as exc:
             error_text = f"call_subagent_batch failed: {type(exc).__name__}: {exc}"
-            run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
+            if self._workflow_uses_prompt_fragments(run):
+                run.prompt_fragments.append(f"<subagent_error>{error_text}</subagent_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_error")
             agent_events.audit_named_event(
@@ -1895,10 +2100,30 @@ class Agent:
         lines.append("</subagent_results>")
         fragment = "\n".join(lines)
 
-        run.prompt_fragments.append(fragment)
         run.transcript_entries.append(fragment)
-        run.conversation_messages.append({"role": "user", "content": fragment})
-        _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_batch_results")
+        if self._workflow_uses_prompt_fragments(run):
+            run.prompt_fragments.append(fragment)
+            run.conversation_messages.append({"role": "user", "content": fragment})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "subagent_batch_results")
+        else:
+            payload = {
+                getattr(r, "output_key", f"result_{index}"): self._workflow_jsonable_summary(r)
+                for index, r in enumerate(results)
+            }
+            self._append_workflow_history_projection(
+                host,
+                run,
+                WorkflowHistoryEvent(
+                    kind="subagent_batch_result",
+                    step_id=run.workflow_step_id or "",
+                    phase_id=run.workflow_phase_id or "",
+                    message=fragment,
+                    response=payload,
+                    payload=results,
+                ),
+                role="user",
+                source="subagent_batch_results",
+            )
 
     def handle_skill_invocation(
         self,
@@ -1998,7 +2223,8 @@ class Agent:
         allowed_tools = self._effective_allowed_tools(host)
         if not decision.tool_name:
             error_text = f"call_tool requires tool_name. Legal tool names: {sorted(allowed_tools)}."
-            run.prompt_fragments.append(f"<tool_error>{error_text}</tool_error>")
+            if self._workflow_uses_prompt_fragments(run):
+                run.prompt_fragments.append(f"<tool_error>{error_text}</tool_error>")
             run.transcript_entries.append(f"<tool_error>{error_text}</tool_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_validation_error")
@@ -2008,7 +2234,8 @@ class Agent:
                 f"{self.agent_id} is not allowed to call tool {decision.tool_name}. "
                 f"Legal tool names: {sorted(allowed_tools)}."
             )
-            run.prompt_fragments.append(f"<tool_error>{error_text}</tool_error>")
+            if self._workflow_uses_prompt_fragments(run):
+                run.prompt_fragments.append(f"<tool_error>{error_text}</tool_error>")
             run.transcript_entries.append(f"<tool_error>{error_text}</tool_error>")
             run.conversation_messages.append({"role": "user", "content": error_text})
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_validation_error")
@@ -2043,11 +2270,12 @@ class Agent:
         _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_call")
         if tc.error_exc is not None:
             exc = tc.error_exc
-            if tc.system_message:
+            if tc.system_message and self._workflow_uses_prompt_fragments(run):
                 run.prompt_fragments.append(f"<system_message>{tc.system_message}</system_message>")
-            run.prompt_fragments.append(
-                f"<tool_error name=\"{decision.tool_name}\">{type(exc).__name__}: {exc}</tool_error>"
-            )
+            if self._workflow_uses_prompt_fragments(run):
+                run.prompt_fragments.append(
+                    f"<tool_error name=\"{decision.tool_name}\">{type(exc).__name__}: {exc}</tool_error>"
+                )
             run.transcript_entries.append(
                 f"<tool_error name=\"{decision.tool_name}\">{type(exc).__name__}: {exc}</tool_error>"
             )
@@ -2056,12 +2284,30 @@ class Agent:
             )
             _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_error")
             return None
-        if tc.system_message:
+        if tc.system_message and self._workflow_uses_prompt_fragments(run):
             run.prompt_fragments.append(f"<system_message>{tc.system_message}</system_message>")
         run.transcript_entries.append(f"<tool_result name=\"{decision.tool_name}\">{tc.result}</tool_result>")
-        run.conversation_messages.append({"role": "user", "content": f"Tool result {decision.tool_name}: {tc.result}"})
-        _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_result")
-        run.prompt_fragments.append(f"<tool_result name=\"{decision.tool_name}\">{tc.result}</tool_result>")
+        if self._workflow_uses_prompt_fragments(run):
+            run.conversation_messages.append({"role": "user", "content": f"Tool result {decision.tool_name}: {tc.result}"})
+            _emit_context_updated(self, host, run, run.conversation_messages[-1], "tool_result")
+            run.prompt_fragments.append(f"<tool_result name=\"{decision.tool_name}\">{tc.result}</tool_result>")
+        else:
+            self._append_workflow_history_projection(
+                host,
+                run,
+                WorkflowHistoryEvent(
+                    kind="tool_result",
+                    step_id=run.workflow_step_id or "",
+                    phase_id=run.workflow_phase_id or "",
+                    decision=decision,
+                    result=tc.result,
+                    message=f"Tool result {decision.tool_name}: {tc.result}",
+                    payload=tc.result,
+                    metadata={"tool_name": decision.tool_name},
+                ),
+                role="user",
+                source="tool_result",
+            )
         return None
 
     def _create_run(

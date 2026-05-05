@@ -54,6 +54,7 @@ AgentBehavior.before_run(agent, host, run, caller_id)
               WorkflowCallSubagentStep → host.call_subagent(subagent_id, resolve(parameters, state))
               WorkflowCallSubagentsStep→ host.call_subagent_batch(calls, mode, timeout)
               WorkflowInvokeSkillStep  → host.invoke_skill(skill_name, resolve(parameters, state))
+              WorkflowModelStep        → same-agent model phase; defaults to chat-history context
               WorkflowBranchStep       → evaluate condition(state) → then_step or else_step
               WorkflowReturnStep       → return coerce_workflow_result(resolve(value, state))
               WorkflowRaiseStep        → raise WorkflowAbortedError
@@ -75,3 +76,10 @@ AgentBehavior.before_run(agent, host, run, caller_id)
 **Runtime metadata belongs in the `.json` sidecar, not `.md` YAML.** The `behavior`, `model`, `temperature`, `planning`, and provider fields are read from `<agent>.json` by `helpers.load_runtime_metadata`. The `.md` frontmatter holds only the agent definition fields (`id`, `role`, `parameters`, `tools`, `subagents`, `terminal_tools`).
 
 **Workflow step parameter values are lambdas, not string tokens.** `ProgrammaticWorkflow` steps accept `dict[str, Any] | WorkflowValueResolver`. Use `lambda s: _ref(s, ...)` to defer resolution to runtime. `resolve_workflow_value` recurses into dicts so per-key lambdas work. Do not introduce `{{token}}` strings at the workflow runtime layer — that is a compiler concern only.
+
+**WorkflowModelStep uses chat history by default.** Do not reintroduce automatic
+`<workflow_state_summary>` injection or duplicate phase prompts/results into
+both `prompt_fragments` and `conversation_messages`. The initial rendered
+prompt is appended once, phase prompts are user messages, final phase results
+are projected semantic assistant messages, and legacy prompt-fragment behavior
+must be explicit.

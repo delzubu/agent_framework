@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,10 @@ class WorkflowAgent(Agent):
     """Agent runtime whose control flow is defined by a ProgrammaticWorkflow."""
 
     workflow: ProgrammaticWorkflow | None = None
+    workflow_prompt_sections: dict[str, str] | None = None
 
     def configure_workflow(self, runtime_metadata: dict[str, Any]) -> None:
+        self._configure_workflow_prompt_sections()
         if self.source_path is None:
             raise ValueError(f"Cannot resolve workflow for {self.agent_id} without source path.")
         raw_workflow = runtime_metadata.get("workflow")
@@ -51,6 +54,23 @@ class WorkflowAgent(Agent):
                 "expected ProgrammaticWorkflow."
             )
         self.workflow = workflow
+
+    def _configure_workflow_prompt_sections(self) -> None:
+        sections = _parse_workflow_prompt_sections(self.system_prompt)
+        if sections is None:
+            self.workflow_prompt_sections = {}
+            return
+        if "workflow_system" not in sections:
+            raise ValueError(
+                f"Workflow agent {self.agent_id!r} uses XML prompt sections but is missing "
+                "<workflow_system> in the markdown system prompt section."
+            )
+        self.system_prompt = sections["workflow_system"]
+        self.workflow_prompt_sections = {
+            key: value
+            for key, value in sections.items()
+            if key != "workflow_system"
+        }
 
     def run(
         self,
@@ -155,3 +175,37 @@ class WorkflowAgent(Agent):
 
 
 __all__ = ["WorkflowAgent"]
+
+
+_TOP_LEVEL_XML_BLOCK_RE = re.compile(
+    r"<(?P<tag>[A-Za-z_][A-Za-z0-9_:-]*)\b[^>]*>(?P<body>.*?)</(?P=tag)>",
+    flags=re.DOTALL,
+)
+
+
+def _parse_workflow_prompt_sections(system_prompt: str) -> dict[str, str] | None:
+    """Parse strict top-level XML prompt sections for workflow agents.
+
+    A legacy prompt with no top-level XML blocks is returned as ``None`` so
+    existing workflow agents keep their full second section as the system
+    prompt. Once XML blocks are used, all non-whitespace content must be inside
+    those blocks.
+    """
+    matches = list(_TOP_LEVEL_XML_BLOCK_RE.finditer(system_prompt))
+    if not matches:
+        return None
+
+    remainder = _TOP_LEVEL_XML_BLOCK_RE.sub("", system_prompt).strip()
+    if remainder:
+        raise ValueError(
+            "Workflow agent markdown system prompt section may contain only top-level XML "
+            "blocks when XML prompt partitioning is used."
+        )
+
+    sections: dict[str, str] = {}
+    for match in matches:
+        tag = match.group("tag")
+        if tag in sections:
+            raise ValueError(f"Duplicate workflow prompt section <{tag}>.")
+        sections[tag] = match.group("body").strip()
+    return sections

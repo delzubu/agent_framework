@@ -552,6 +552,13 @@ If `AgentParameter.schema_path` is set, `_validate_parameter_value(spec, value)`
 
 This augmentations block is appended to the user prompt before passing to the model.
 
+Workflow-local LLM phases use a different default. `WorkflowModelStep` appends
+the initial rendered prompt once, then appends each phase prompt to
+`conversation_messages` as a user turn and projects phase results back into the
+same shared conversation. It does not add phase prompts or results to
+`<augmentations>` unless `prompt_fragment_mode` opts into
+`prompt_fragment_only` or `both`.
+
 ### 9.2 Upsert Semantics
 
 `_upsert_prompt_fragment(run, fragment)` applies replace-by-tag-name semantics:

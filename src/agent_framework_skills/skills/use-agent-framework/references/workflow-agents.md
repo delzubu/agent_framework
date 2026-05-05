@@ -51,6 +51,8 @@ The public workflow surface is:
 - `ProgrammaticWorkflow`
 - `ProgrammaticWorkflowState`
 - `WorkflowModelStep`
+- `WorkflowHistoryProjection`
+- `WorkflowHistoryEvent`
 - `WorkflowTransformStep`
 - `WorkflowCallToolStep`
 - `WorkflowCallSubagentStep`
@@ -213,6 +215,69 @@ When `value` is a plain `str`, it becomes `message` directly — the same prose-
 ### `WorkflowRaiseStep`
 
 Use to abort with a specific exception or error message.
+
+### `WorkflowModelStep`
+
+Use when a workflow phase should make a local LLM call inside the same workflow
+agent context. Model phases default to chat-history semantics:
+
+- the workflow system prompt is stable
+- the initial rendered user prompt is appended to history once
+- phase prompts are appended as `user` messages
+- final phase results are projected as compact `assistant` messages
+- runtime decision JSON stays available for parsing/tracing, but is not the
+  default LLM-visible history artifact
+- `<workflow_state_summary>` is not included unless
+  `include_state_summary=True`
+
+If `prompt_fragment` is omitted, the phase prompt is selected from the
+workflow agent markdown's second section by `phase_id`.
+
+```markdown
+---
+id: controller
+role: controller
+parameters:
+  instruction:
+    description: instruction
+    required: true
+---
+<workflow_system>
+Shared workflow-level system instruction.
+</workflow_system>
+<intake>
+Ask only necessary clarification questions.
+</intake>
+<review>
+Review using the prior chat history.
+</review>
+---
+<instruction>{{instruction}}</instruction>
+```
+
+Then:
+
+```python
+WorkflowModelStep(
+    step_id="run_intake",
+    phase_id="intake",
+    allowed_decision_kinds=frozenset({"final_message", "request_user_input"}),
+)
+```
+
+Use `WorkflowHistoryProjection` when the semantic result should come from
+`response`, both `message` and `response`, or a custom callable:
+
+```python
+WorkflowModelStep(
+    step_id="review_audience",
+    phase_id="audience_review",
+    history_projection=WorkflowHistoryProjection(
+        final_message="response",
+        wrapper_tag="audience_review",
+    ),
+)
+```
 
 ---
 
