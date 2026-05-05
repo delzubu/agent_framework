@@ -27,6 +27,12 @@ from agent_framework.model import (
     runtime_prompt_source_paths as _runtime_prompt_source_paths,
 )
 from agent_framework.model_validation import ModelValidationContext
+from agent_framework.prompt_reference import (
+    PromptRef,
+    PromptResolveContext,
+    is_prompt_reference_text,
+    parse_prompt_reference,
+)
 
 from .agent_behavior import AgentBehavior
 
@@ -1391,7 +1397,7 @@ class Agent:
         self._emit_workflow_event(host, run, "workflow.phase_started", step.step_id, phase_id=step.phase_id)
         if step.prompt_fragment_mode == "conversation_only":
             self._append_workflow_initial_prompt(host, run)
-        prompt_fragment = self._resolve_workflow_phase_prompt(run, step, state)
+        prompt_fragment = self._resolve_workflow_phase_prompt(host, run, step, state)
         phase_fragment = self._render_workflow_phase_fragment(step, prompt_fragment, state)
         state.context_entries.append(phase_fragment)
         self._append_workflow_phase_context(host, run, step, phase_fragment, source="workflow_phase_prompt")
@@ -1560,12 +1566,14 @@ class Agent:
 
     def _resolve_workflow_phase_prompt(
         self,
+        host: "AgentHostProtocol",
         run: AgentRun,
         step: WorkflowModelStep,
         state: ProgrammaticWorkflowState,
     ) -> str:
         if step.prompt_fragment is not None:
-            return str(resolve_workflow_value(step.prompt_fragment, state))
+            resolved = resolve_workflow_value(step.prompt_fragment, state)
+            return self._resolve_prompt_fragment_reference(host, run, step, resolved)
         sections = getattr(self, "workflow_prompt_sections", {}) or {}
         if step.phase_id not in sections:
             raise KeyError(
@@ -1573,6 +1581,53 @@ class Agent:
                 f"no <{step.phase_id}> section in the workflow agent system prompt."
             )
         return _apply_runtime_placeholders(str(sections[step.phase_id]), run.placeholder_values)
+
+    def _resolve_prompt_fragment_reference(
+        self,
+        host: "AgentHostProtocol",
+        run: AgentRun,
+        step: WorkflowModelStep,
+        value: Any,
+    ) -> str:
+        ref_text: str | None = None
+        if isinstance(value, PromptRef):
+            ref_text = value.ref
+        elif isinstance(value, str) and is_prompt_reference_text(value):
+            ref_text = value
+        if ref_text is None:
+            return str(value)
+        resolve_prompt_reference = getattr(host, "resolve_prompt_reference", None)
+        if not callable(resolve_prompt_reference):
+            raise ValueError("Host does not support prompt reference resolution.")
+        ref = parse_prompt_reference(ref_text)
+        result = resolve_prompt_reference(
+            ref,
+            PromptResolveContext(
+                host=host,
+                agent_id=self.agent_id,
+                run_id=run.run_id,
+                workflow_step_id=step.step_id,
+                phase_id=step.phase_id,
+                base_dir=self.source_path.parent if self.source_path is not None else None,
+            ),
+        )
+        from agent_framework.agent_event_publisher import agent_events
+
+        agent_events.audit_named_event(
+            run_id=run.run_id,
+            agent_id=self.agent_id,
+            event={
+                "type": "prompt_reference_resolved",
+                "reference": ref_text,
+                "scheme": ref.scheme,
+                "target": ref.target,
+                "projection": ref.projection,
+                "workflow_step_id": step.step_id,
+                "phase_id": step.phase_id,
+                **dict(result.metadata),
+            },
+        )
+        return result.content
 
     def _append_workflow_context(
         self,

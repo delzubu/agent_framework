@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Union
 
+from agent_framework.prompt_reference import PromptRef
+
 from .agent_decision import SubagentCallSpec
 from .agent_result import AgentResult
 
@@ -159,7 +161,7 @@ class WorkflowModelStep(ProgrammaticWorkflowStep):
     """Run a phase-scoped model loop in the workflow agent's own context."""
 
     phase_id: str
-    prompt_fragment: str | WorkflowValueResolver | None = None
+    prompt_fragment: str | PromptRef | WorkflowValueResolver | None = None
     allowed_decision_kinds: frozenset[str] | None = None
     final_response_schema: dict[str, Any] | None = None
     max_turns: int = 8

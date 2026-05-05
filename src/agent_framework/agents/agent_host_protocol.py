@@ -7,6 +7,7 @@ from typing import Any, Protocol, TYPE_CHECKING
 
 from agent_framework.model import ModelDriver
 from agent_framework.model_validation import ModelValidationContext
+from agent_framework.prompt_reference import PromptReference, PromptResolveContext, ResolvedPromptReference
 
 from .agent_decision import SubagentCallSpec
 from .agent_result import AgentResult
@@ -25,6 +26,13 @@ class AgentHostProtocol(Protocol):
         raise NotImplementedError
 
     def get_agent(self, agent_id: str, *, base_dir: Path | None = None) -> "Agent":
+        raise NotImplementedError
+
+    def resolve_prompt_reference(
+        self,
+        ref: PromptReference,
+        context: PromptResolveContext,
+    ) -> ResolvedPromptReference:
         raise NotImplementedError
 
     def request_user_input(

@@ -113,6 +113,7 @@ An optional `<agent_filename>.json` file next to the `.md` file holds runtime co
 | `callback_policy` | `object` | `{}` | Default routing policy for caller-mediated callbacks. Keys: `passthrough_child_callbacks`, `max_bubble_hops`, `fallback_target`. |
 | `behavior` | `str` | — | Single behavior module name (alternative to `behaviors` list). |
 | `behaviors` | `list[str]` | `[]` | List of behavior module names to load and attach. |
+| `workflow-compose` | `object` | — | Prompt projection metadata used by `PromptRef("agent:<id>#workflow")`. Supports `pre-load-skills`, `include-sections`, `exclude-sections`, and `append`. |
 
 A `model_override` passed to `from_markdown()` (from `HostConfig.model_for(agent_id)`) takes precedence over the sidecar's `model` field.
 
@@ -130,6 +131,17 @@ Example:
   }
 }
 ```
+
+`workflow-compose` lets a workflow phase reuse a projected standalone agent
+prompt through `PromptRef("agent:axis_audience#workflow")`. The default agent
+prompt resolver loads the referenced agent markdown and sidecar, parses
+markdown headings from the standalone agent system prompt, includes configured
+section subtrees in source order, applies excludes afterward, and appends any
+workflow adapter text. Full heading paths such as `/Agent/Rubric` disambiguate
+duplicate titles; shorthand titles fail when ambiguous. Resolution emits
+`prompt_reference_resolved` audit metadata containing the source agent,
+projection, included and excluded sections, preloaded skills, and a token
+estimate.
 
 ---
 

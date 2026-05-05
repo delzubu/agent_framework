@@ -276,6 +276,34 @@ WorkflowModelStep(
 )
 ```
 
+Use `PromptRef("agent:<agent_id>#workflow")` when a phase should reuse a
+workflow projection of a standalone agent prompt instead of copying prompt
+text into the workflow agent:
+
+```python
+WorkflowModelStep(
+    step_id="review_audience",
+    phase_id="audience_review",
+    prompt_fragment=PromptRef("agent:axis_audience#workflow"),
+    prompt_history_policy="ephemeral",
+)
+```
+
+The referenced agent sidecar must define `workflow-compose`. Include/exclude
+sections use normalized markdown heading paths, and shorthand heading titles
+are allowed only when unambiguous:
+
+```json
+{
+  "workflow-compose": {
+    "pre-load-skills": ["presentation-strategist"],
+    "include-sections": ["/Agent/Role", "/Agent/Rubric", "/Agent/Output Contract"],
+    "exclude-sections": ["/Agent/Memory Access"],
+    "append": "Use <deck_json> already present in conversation history."
+  }
+}
+```
+
 Use `WorkflowHistoryProjection` when the semantic result should come from
 `response`, both `message` and `response`, or a custom callable:
 

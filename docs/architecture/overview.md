@@ -117,6 +117,9 @@ Phase prompts are append-only by default, but a step can mark its prompt
 `prompt_history_policy="ephemeral"` so the active prompt is visible for its
 phase call and then removed from later LLM-visible history after the semantic
 projection is appended.
+Phase prompts can also use `PromptRef("agent:<id>#workflow")` to resolve a
+sidecar-controlled workflow projection of a standalone agent prompt, preserving
+that standalone prompt as the source of truth.
 When a workflow uses this chat-history mode, deterministic workflow outputs
 and action-loop results from transforms, tools, subagents, callbacks, and
 skills are also appended as later conversation messages instead of being

@@ -46,6 +46,14 @@ from agent_framework.agents import (
     WorkflowTransformStep,
 )
 from agent_framework.model import CapabilityDefinition, CapabilityParameter
+from agent_framework.prompt_reference import (
+    AgentPromptReferenceResolver,
+    PromptRef,
+    PromptReference,
+    PromptReferenceResolver,
+    PromptResolveContext,
+    ResolvedPromptReference,
+)
 
 __all__ = [
     "Agent",
@@ -90,4 +98,10 @@ __all__ = [
     "WorkflowRaiseStep",
     "WorkflowReturnStep",
     "WorkflowTransformStep",
+    "AgentPromptReferenceResolver",
+    "PromptRef",
+    "PromptReference",
+    "PromptReferenceResolver",
+    "PromptResolveContext",
+    "ResolvedPromptReference",
 ]

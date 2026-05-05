@@ -104,6 +104,14 @@ from agent_framework.model_validation import (
     ModelValidationContext,
     MultipleStructuredJsonDocumentsValidator,
 )
+from agent_framework.prompt_reference import (
+    AgentPromptReferenceResolver,
+    PromptRef,
+    PromptReference,
+    PromptReferenceResolver,
+    PromptResolveContext,
+    ResolvedPromptReference,
+)
 
 __all__ = [
     # Agent runtime
@@ -141,6 +149,12 @@ __all__ = [
     "WorkflowRaiseStep",
     "WorkflowReturnStep",
     "WorkflowTransformStep",
+    "AgentPromptReferenceResolver",
+    "PromptRef",
+    "PromptReference",
+    "PromptReferenceResolver",
+    "PromptResolveContext",
+    "ResolvedPromptReference",
     # Configuration
     "HostConfig",
     "load_host_config",

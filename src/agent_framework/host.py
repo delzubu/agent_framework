@@ -49,6 +49,13 @@ from agent_framework.file_reference import (
     expand_file_refs,
     replace_file_blocks,
 )
+from agent_framework.prompt_reference import (
+    AgentPromptReferenceResolver,
+    PromptReference,
+    PromptReferenceResolver,
+    PromptResolveContext,
+    ResolvedPromptReference,
+)
 from agent_framework.skill import SkillRegistry
 from agent_framework.tool import Tool, ToolDefinition
 from agent_framework.tool_registry import ToolRegistry
@@ -165,6 +172,9 @@ class AgentHost:
     conversation_store: Any | None = None  # ConversationStore | AsyncConversationStore | None
     file_ref_resolver: FileReferenceResolver | None = field(
         default_factory=DefaultFileReferenceResolver, repr=False
+    )
+    prompt_ref_resolvers: tuple[PromptReferenceResolver, ...] = field(
+        default_factory=lambda: (AgentPromptReferenceResolver(),), repr=False
     )
     step_ref_resolver: "StepReferenceResolver | None" = field(default=None, repr=False)
     _executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=8))
@@ -1386,6 +1396,17 @@ class AgentHost:
     def get_agent(self, agent_id: str, *, base_dir: Path | None = None) -> Agent:
         """Resolve an agent by logical id, explicit path, sibling path, or agent directory."""
         return self.agent_registry.get(agent_id, base_dir=base_dir)
+
+    def resolve_prompt_reference(
+        self,
+        ref: PromptReference,
+        context: PromptResolveContext,
+    ) -> ResolvedPromptReference:
+        """Resolve a scheme-aware prompt reference through registered resolvers."""
+        for resolver in self.prompt_ref_resolvers:
+            if resolver.can_resolve(ref, context):
+                return resolver.resolve(ref, context)
+        raise ValueError(f"No prompt reference resolver is registered for scheme {ref.scheme!r}.")
 
     def run_root(
         self,

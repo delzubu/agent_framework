@@ -130,7 +130,7 @@ def build_workflow(agent):
 Runs a phase-scoped mini model loop in the workflow agent's current `AgentRun`.
 
 - `phase_id`: stable phase identifier for tracing and context
-- `prompt_fragment`: optional direct prompt text or callable resolved against state
+- `prompt_fragment`: optional direct prompt text, `PromptRef`, or callable resolved against state
 - `allowed_decision_kinds`: optional set of allowed decisions for the phase
 - `final_response_schema`: optional JSON Schema dict for `final_message.response`
 - `max_turns`: safety cap for the phase loop
@@ -190,6 +190,41 @@ Review the deck for audience alignment.
 
 When XML prompt partitioning is used, `<workflow_system>` is the only shared
 system block. Other top-level tags are phase prompts selected by `phase_id`.
+
+`prompt_fragment` can also reference a workflow projection of another agent's
+prompt without copying the source prompt text:
+
+```python
+from agent_framework import PromptRef, WorkflowModelStep
+
+WorkflowModelStep(
+    step_id="audience",
+    phase_id="audience",
+    prompt_fragment=PromptRef("agent:axis_audience#workflow"),
+    prompt_history_policy="ephemeral",
+)
+```
+
+The referenced agent sidecar controls the projection with `workflow-compose`:
+
+```json
+{
+  "workflow-compose": {
+    "pre-load-skills": ["presentation-strategist"],
+    "include-sections": ["/Agent/Role", "/Agent/Rubric", "/Agent/Output Contract"],
+    "exclude-sections": ["/Agent/Memory Access"],
+    "append": "In workflow mode, use <deck_json> already present in conversation history."
+  }
+}
+```
+
+Markdown headings are matched by normalized heading path. If
+`include-sections` is present, only those section subtrees are included;
+`exclude-sections` is applied afterward. Shorthand titles are allowed only when
+they match exactly one heading; ambiguous shorthand fails with the candidate
+paths. Prompt-reference resolution emits audit metadata with the source agent,
+projection, included and excluded sections, preloaded skills, and a token
+estimate.
 
 ### `WorkflowTransformStep`
 
