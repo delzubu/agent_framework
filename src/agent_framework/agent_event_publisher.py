@@ -279,6 +279,8 @@ class AgentEventPublisher:
         skill_name: str,
         parameters: dict[str, Any],
         inventory: list[str],
+        status: str = "loaded",
+        loaded_resources: list[str] | None = None,
     ) -> None:
         self._publish(
             make_trace_event(
@@ -291,6 +293,8 @@ class AgentEventPublisher:
                     "skill_name": skill_name,
                     "parameters": dict(parameters),
                     "inventory": list(inventory),
+                    "status": status,
+                    "loaded_resources": list(loaded_resources or ()),
                 },
             ),
         )

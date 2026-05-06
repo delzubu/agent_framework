@@ -12,7 +12,7 @@ from .agent_host_protocol import AgentHostProtocol
 from .agent_invocation import AgentInvocation
 from .agent_parameter import AgentParameter
 from .agent_result import AgentResult
-from .agent_run import AgentRun
+from .agent_run import AgentRun, LoadedSkillState
 from .agent_start_event import AgentStartEvent
 from .call_context import CallContext
 from .model_end_event import ModelEndEvent
@@ -60,6 +60,7 @@ __all__ = [
     "AgentParameter",
     "AgentResult",
     "AgentRun",
+    "LoadedSkillState",
     "AgentStartEvent",
     "CallContext",
     "ModelEndEvent",

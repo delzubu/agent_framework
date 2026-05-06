@@ -460,7 +460,7 @@ host.file_ref_resolver = PptxTextResolver()
 
 ## Skills
 
-Skills are `.md` files with YAML frontmatter (`id`, `description`, `priority`). The framework injects a catalog of skill names + descriptions into the conversation at session start. When the model emits `invoke_skill`, the full skill file is injected.
+Skills are `.md` files with YAML frontmatter (`id`, `description`, `priority`). The framework injects a catalog of skill names + descriptions into the conversation at session start. When the model emits `invoke_skill`, the full skill file is injected once per run for each skill name plus invocation-parameter set. Repeated invocations with the same parameters append a compact `status="already_loaded"` marker instead of duplicating the full body; newly discovered resource files can be surfaced with a compact `status="resources_loaded"` marker.
 
 ```
 SKILLS_DIRECTORY=path/to/skills    # single directory

@@ -398,7 +398,7 @@ Every loop iteration ends with exactly one decision. The runtime supports these 
 }
 ```
 
-**`invoke_skill`** — Load and inject a named skill into the conversation.  Skills are instruction bundles stored in `skills/` directories.  When invoked, the skill's full content is injected as a user message and the loop continues.
+**`invoke_skill`** — Load and inject a named skill into the conversation. Skills are instruction bundles stored in `skills/` directories. The first invocation in a run injects the skill's full content as a user message and the loop continues; repeated invocations of the same skill with the same parameters reuse the already-loaded body and add only a compact marker.
 
 ```json
 {
@@ -1128,7 +1128,14 @@ When the model decides it needs the refund policy, it emits:
 }
 ```
 
-The framework loads the full `SKILL.md` content (and lists any additional files in the skill directory as references), injects it as a user message, and the loop continues.  On the next iteration, the model has the full policy in its context and can answer the customer's question.
+The framework loads the full `SKILL.md` content (and lists any additional files in the skill directory as references), injects it as a user message, and the loop continues. On the next iteration, the model has the full policy in its context and can answer the customer's question.
+
+Within a single agent run, skill body loading is idempotent by skill name plus
+invocation parameters. A repeated `invoke_skill` with the same parameters
+appends `<skill_invocation_result name="..." status="already_loaded" />`
+instead of a second full copy. If new resource files appear in the skill
+inventory, the runtime can append a compact `resources_loaded` marker with only
+those files.
 
 The catalog (names + descriptions of all allowed skills) is injected at position 2 in the conversation — after the system prompt and user prompt, before any conversation history.  The model always knows what skills are available without needing to load their full content.
 

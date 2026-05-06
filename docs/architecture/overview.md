@@ -95,7 +95,7 @@ Alongside tools and subagents, **skills** are a first-class agent capability. Sk
 
 **Three-tier loading** keeps context usage proportional to need:
 1. **Catalog** (names + descriptions) — always present as a first-turn conversation message (injected by `build_context()` as a `{"role": "user"}` message at index 2, before run conversation history) inside `<available_skills>` so the model knows what skills exist.
-2. **Body** (full skill content) — loaded on demand when the model emits an `invoke_skill` decision; injected as a user message in `conversation_messages`, not into the system prompt.
+2. **Body** (full skill content) — loaded on demand when the model emits an `invoke_skill` decision; injected as a user message in `conversation_messages`, not into the system prompt. Within one `AgentRun`, repeat invocations of the same skill with the same parameters reuse the loaded body and append only a compact `already_loaded` marker.
 3. **Resources** (individual files) — accessible to the model via the base directory path injected into the skill fragment; no separate tool call is required.
 
 Skills are **model-invoked** via the `invoke_skill` decision kind in the agent decision loop. Context isolation is strict: skill content is injected only as a `conversation_messages` user message and never merged into `system_prompt` or `prompt_fragments`.

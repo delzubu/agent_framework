@@ -439,7 +439,7 @@ Important behavior:
 2. **Validate allowed:** If the agent has a non-empty `allowed_skills` list, `decision.skill_name` must be in it. Raises `ValueError` if not.
 3. **Pre-skill hooks:** Fire `SkillStartEvent(invocation, skill_name, parameters)` via `onPreSkill` callbacks.
 4. **Load content:** `SkillLoader` loads the skill body and builds the file inventory (list of resource paths, not content).
-5. **Inject skill fragment:** `handle_skill_invocation()` injects the skill content into `run.conversation_messages` as a `{"role": "user", "content": ...}` message wrapped in a `<skill_invocation_result>` XML element. This is the **only** injection point — skill content never enters `system_prompt` or `prompt_fragments`. The injected message has the form:
+5. **Inject or reuse skill fragment:** `handle_skill_invocation()` injects the skill content into `run.conversation_messages` as a `{"role": "user", "content": ...}` message wrapped in a `<skill_invocation_result>` XML element. This is the **only** injection point — skill content never enters `system_prompt` or `prompt_fragments`. The first injection for a skill plus parameter set has the form:
 
    ```
    <skill_invocation_result name="<skill-name>">
@@ -451,6 +451,17 @@ Important behavior:
    </skill_files>
    </skill_invocation_result>
    ```
+
+   Later invocations of the same skill with the same parameters in the same
+   `AgentRun` do not duplicate the body. They append a compact marker:
+
+   ```xml
+   <skill_invocation_result name="<skill-name>" status="already_loaded" />
+   ```
+
+   If the skill inventory has gained new files since the first load, the
+   repeated invocation can append a compact `status="resources_loaded"` marker
+   containing only the new file list.
 6. **Audit trace:** Records a `SkillInvocationRecord` on the current `AgentCallAuditRecord`.
 7. **Post-skill hooks:** Fire `SkillEndEvent(invocation, skill_name, parameters, content)` via `onPostSkill` callbacks.
 8. `return None` — loop continues.

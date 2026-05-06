@@ -47,7 +47,7 @@ from .agent_host_protocol import AgentHostProtocol
 from .agent_invocation import AgentInvocation
 from .agent_parameter import AgentParameter
 from .agent_result import AgentResult
-from .agent_run import AgentRun
+from .agent_run import AgentRun, LoadedSkillState
 from .agent_start_event import AgentStartEvent
 from .helpers import (
     PLACEHOLDER_PATTERN as _PLACEHOLDER_PATTERN,
@@ -2320,15 +2320,49 @@ class Agent:
         inventory_block = (
             f"\n\n<skill_files>\n{inventory_lines}\n</skill_files>"
         ) if content.inventory else ""
-        skill_fragment = (
-            f'<skill_invocation_result name="{skill_def.name}">\n'
-            f"{content.body}"
-            f"{base_dir_line}"
-            f"{inventory_block}\n"
-            f"</skill_invocation_result>"
-        )
+        parameter_key = self._skill_invocation_parameter_key(decision.parameters)
+        loaded_key = self._loaded_skill_key(skill_def.name, parameter_key)
+        inventory_paths = frozenset(r.relative_path for r in content.inventory)
+        loaded_state = run.loaded_skills.get(loaded_key)
+        status = "loaded"
+        loaded_resources = sorted(inventory_paths)
+        if loaded_state is None:
+            skill_fragment = (
+                f'<skill_invocation_result name="{skill_def.name}">\n'
+                f"{content.body}"
+                f"{base_dir_line}"
+                f"{inventory_block}\n"
+                f"</skill_invocation_result>"
+            )
+            run.loaded_skills[loaded_key] = LoadedSkillState(
+                name=skill_def.name,
+                parameter_key=parameter_key,
+                inventory=inventory_paths,
+            )
+        else:
+            new_resources = inventory_paths - loaded_state.inventory
+            loaded_resources = sorted(new_resources)
+            if new_resources:
+                status = "resources_loaded"
+                new_inventory_lines = "\n".join(f"- {path}" for path in sorted(new_resources))
+                skill_fragment = (
+                    f'<skill_invocation_result name="{skill_def.name}" status="resources_loaded">'
+                    f"{base_dir_line}\n"
+                    f"<skill_files>\n{new_inventory_lines}\n</skill_files>"
+                    f"</skill_invocation_result>"
+                )
+                run.loaded_skills[loaded_key] = LoadedSkillState(
+                    name=skill_def.name,
+                    parameter_key=parameter_key,
+                    inventory=inventory_paths,
+                )
+            else:
+                status = "already_loaded"
+                skill_fragment = (
+                    f'<skill_invocation_result name="{skill_def.name}" status="already_loaded" />'
+                )
 
-        # 6. Inject skill content as a user message (dispatch already added the assistant message)
+        # 6. Inject skill content or compact reuse marker as a user message.
         run.conversation_messages.append({"role": "user", "content": skill_fragment})
         _emit_context_updated(self, host, run, run.conversation_messages[-1], "skill_injection")
 
@@ -2340,6 +2374,8 @@ class Agent:
             skill_name=skill_def.name,
             parameters=dict(decision.parameters),
             inventory=[r.relative_path for r in content.inventory],
+            status=status,
+            loaded_resources=loaded_resources,
         )
 
         # 7. Post-skill hook
@@ -2354,6 +2390,17 @@ class Agent:
         )
 
         return None  # continue loop — model now has skill instructions in context
+
+    @staticmethod
+    def _skill_invocation_parameter_key(parameters: dict[str, Any]) -> str:
+        try:
+            return json.dumps(parameters, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except TypeError:
+            return repr(sorted((str(key), repr(value)) for key, value in parameters.items()))
+
+    @staticmethod
+    def _loaded_skill_key(skill_name: str, parameter_key: str) -> str:
+        return f"{skill_name}\0{parameter_key}"
 
     def handle_tool_call(
         self,

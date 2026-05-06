@@ -1497,11 +1497,14 @@ def test_audit_tracer_records_skill_invocation(tmp_path: Path) -> None:
         skill_name="my-skill",
         parameters={"key": "val"},
         inventory=["references/guide.md"],
+        status="already_loaded",
+        loaded_resources=[],
     )
     record = tracer.active_records["r1"]
     assert len(record.skill_invocations) == 1
     assert record.skill_invocations[0].skill_name == "my-skill"
     assert "references/guide.md" in record.skill_invocations[0].inventory
+    assert record.skill_invocations[0].status == "already_loaded"
 
 
 def test_skill_invocation_record_serializes(tmp_path: Path) -> None:
@@ -1512,7 +1515,14 @@ def test_skill_invocation_record_serializes(tmp_path: Path) -> None:
         system_prompt="sys", system_prompt_sources=(),
         user_prompt="hello", user_prompt_sources=(),
     )
-    tracer.record_skill_invocation(run_id="r1", skill_name="s", parameters={}, inventory=[])
+    tracer.record_skill_invocation(
+        run_id="r1",
+        skill_name="s",
+        parameters={},
+        inventory=[],
+        status="resources_loaded",
+        loaded_resources=["extra.md"],
+    )
     tracer.finish_agent_call(run_id="r1")
     import json
     jsonl_files = list(tmp_path.glob("*.jsonl"))
@@ -1521,6 +1531,8 @@ def test_skill_invocation_record_serializes(tmp_path: Path) -> None:
     data = json.loads(line)
     assert "skill_invocations" in data
     assert data["skill_invocations"][0]["skill_name"] == "s"
+    assert data["skill_invocations"][0]["status"] == "resources_loaded"
+    assert data["skill_invocations"][0]["loaded_resources"] == ["extra.md"]
 
 
 def test_skill_events_importable_from_top_level_agent_module() -> None:
@@ -1706,6 +1718,108 @@ def test_skill_fragment_includes_base_directory(tmp_path: Path) -> None:
         f"Expected no '<skill_file_inventory>' in fragment, got:\n{fragment}"
     assert "<skill_files>" in fragment, \
         f"Expected '<skill_files>' in fragment, got:\n{fragment}"
+
+
+def test_repeated_skill_invocation_reuses_loaded_body(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "Does useful things")
+    (skills_dir / "my-skill" / "reference.md").write_text(
+        "# Reference\nExtra context for the skill.",
+        encoding="utf-8",
+    )
+    env_path = tmp_path / ".env"
+    _write_env_with_skills(env_path, skills_dir)
+    conversation_snapshot: list[list[dict]] = []
+
+    class CapturingModelDriver:
+        def __init__(self, payloads):
+            self._payloads = list(payloads)
+
+        def set_trace_callbacks(self, *, on_request=None, on_response=None):
+            pass
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            conversation_snapshot.append(list(context.messages))
+            payload = self._payloads.pop(0)
+            return ModelResponse(payload=payload, raw_text=str(payload))
+
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=CapturingModelDriver([
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "invoke_skill", "skill_name": "my-skill"},
+            {"kind": "final_message", "message": "done"},
+        ]),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
+        allowed_skills=(),
+    )
+
+    agent.run(host=host, parameters={}, caller_id="host")
+
+    assert len(conversation_snapshot) == 3
+    final_context = "\n".join(message.get("content", "") for message in conversation_snapshot[-1])
+    assert final_context.count("# Body") == 1
+    assert '<skill_invocation_result name="my-skill" status="already_loaded" />' in final_context
+
+
+def test_repeated_skill_invocation_can_surface_new_resources(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "my-skill", "Does useful things")
+    env_path = tmp_path / ".env"
+    _write_env_with_skills(env_path, skills_dir)
+    conversation_snapshot: list[list[dict]] = []
+
+    class ResourceAddingModelDriver:
+        def __init__(self):
+            self._calls = 0
+
+        def set_trace_callbacks(self, *, on_request=None, on_response=None):
+            pass
+
+        def decide(self, *, agent_id, provider_name, model_names, temperature, context):
+            self._calls += 1
+            conversation_snapshot.append(list(context.messages))
+            if self._calls == 1:
+                return ModelResponse(
+                    payload={"kind": "invoke_skill", "skill_name": "my-skill"},
+                    raw_text="invoke",
+                )
+            if self._calls == 2:
+                (skills_dir / "my-skill" / "extra.md").write_text(
+                    "# Extra resource",
+                    encoding="utf-8",
+                )
+                return ModelResponse(
+                    payload={"kind": "invoke_skill", "skill_name": "my-skill"},
+                    raw_text="invoke",
+                )
+            return ModelResponse(payload={"kind": "final_message", "message": "done"}, raw_text="done")
+
+    host = AgentHost.from_env(
+        env_path,
+        model_driver=ResourceAddingModelDriver(),
+        input_reader=lambda _: "",
+        output_writer=lambda _: None,
+    )
+    agent = Agent(
+        agent_id="tester", role="tester", description="",
+        system_prompt="sys", user_prompt_template="Hello",
+        parameters=(), provider_name="openai", model_names=("gpt-4o-mini",),
+        allowed_skills=(),
+    )
+
+    agent.run(host=host, parameters={}, caller_id="host")
+
+    final_context = "\n".join(message.get("content", "") for message in conversation_snapshot[-1])
+    assert final_context.count("# Body") == 1
+    assert 'status="resources_loaded"' in final_context
+    assert "extra.md" in final_context
 
 
 def test_no_skill_tool_registered_on_invocation(tmp_path: Path) -> None:
