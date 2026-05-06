@@ -562,4 +562,10 @@ AGENT_MODELS=search_agent:gpt-4o,summarizer:claude-opus-4-5
 
 `HostConfig.model_for(agent_id, fallback=None) -> str` returns the per-agent override if present, or falls back to `fallback` or `default_model`. The `AgentHost` calls this when constructing the model parameters passed to `driver.decide()`.
 
+Comma-separated model lists are fallback chains, but the shared driver fallback
+layer only advances for provider communication, rate-limit, or deployment
+availability failures. Structured-output parse errors, response validation
+errors, and unsupported response shapes are classified as model response
+failures and re-raised without trying the next model.
+
 Note: The current `AGENT_MODELS` config only overrides model names, not providers. A multi-provider `AgentHost` would require extending the config and host to dispatch to different drivers per agent — a planned extension.

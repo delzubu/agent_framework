@@ -44,6 +44,7 @@ DIAL-specific:
 Notes:
 
 - `DEFAULT_MODEL` is split on commas
+- fallback advances to another configured model only for provider communication, rate-limit, or deployment availability failures; invalid structured output and response validation errors do not trigger model fallback
 - `AGENT_MODELS` uses `|` between agents and `,` between models
 
 ---

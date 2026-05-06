@@ -53,14 +53,32 @@ def parse_json_object_model_output(
             f"{provider_label} structured response is not valid JSON: {exc}. Preview: {preview!r}",
             status_code=None,
             upstream_body=excerpt,
+            fallback_eligible=False,
+            failure_category="output_parse",
         ) from exc
     if not isinstance(value, dict):
         raise ModelDriverError(
             f"{provider_label} structured response must be a JSON object at the top level.",
             status_code=None,
             upstream_body=excerpt,
+            fallback_eligible=False,
+            failure_category="output_parse",
         )
     return value, normalized
+
+
+def is_model_fallback_eligible(exc: Exception) -> bool:
+    """Return whether a model-list fallback may try another configured model."""
+    if isinstance(exc, ModelDriverError):
+        return bool(exc.fallback_eligible)
+    return True
+
+
+def model_failure_category(exc: Exception) -> str:
+    """Return a broad failure category for logging fallback decisions."""
+    if isinstance(exc, ModelDriverError):
+        return exc.failure_category
+    return "communication"
 
 # ---------------------------------------------------------------------------
 # Shared model fallback base
@@ -120,7 +138,22 @@ class _FallbackMixin:
                 state[model_names] = idx
                 return result
             except Exception as exc:
-                _LOGGER.info("Model %r not available: %s", model, exc)
+                if not is_model_fallback_eligible(exc):
+                    _LOGGER.info(
+                        "Model %r returned invalid structured output: %s",
+                        model,
+                        exc,
+                    )
+                    raise
+                if i < len(model_names) - 1:
+                    next_model = model_names[(idx + 1) % len(model_names)]
+                    _LOGGER.info(
+                        "Model attempt failed; falling back from %s to %s. reason=%s category=%s",
+                        model,
+                        next_model,
+                        exc,
+                        model_failure_category(exc),
+                    )
                 last_exc = exc
         raise last_exc  # type: ignore[misc]
 
@@ -141,7 +174,22 @@ class _FallbackMixin:
                 state[model_names] = idx
                 return result
             except Exception as exc:
-                _LOGGER.info("Model %r not available: %s", model, exc)
+                if not is_model_fallback_eligible(exc):
+                    _LOGGER.info(
+                        "Model %r returned invalid structured output: %s",
+                        model,
+                        exc,
+                    )
+                    raise
+                if i < len(model_names) - 1:
+                    next_model = model_names[(idx + 1) % len(model_names)]
+                    _LOGGER.info(
+                        "Model attempt failed; falling back from %s to %s. reason=%s category=%s",
+                        model,
+                        next_model,
+                        exc,
+                        model_failure_category(exc),
+                    )
                 last_exc = exc
         raise last_exc  # type: ignore[misc]
 
@@ -859,6 +907,8 @@ __all__ = [
     "openai_responses_text_format_field",
     "ModelDriver",
     "ModelResponse",
+    "is_model_fallback_eligible",
+    "model_failure_category",
     "parse_json_object_model_output",
     "resolved_response_format_dict",
     "ProviderRequestTrace",

@@ -853,7 +853,7 @@ The sidecar JSON can set:
 | `can_query_caller` | bool | Whether the agent may send callbacks to its caller (default: true) |
 | `can_use_host_interaction` | bool | Whether the agent may request user input from the host (default: true) |
 
-The `model` field accepts comma-separated fallbacks: `"gpt-4o,gpt-4o-mini"` means "try gpt-4o first, fall back to gpt-4o-mini on failure."
+The `model` field accepts comma-separated fallbacks: `"gpt-4o,gpt-4o-mini"` means "try gpt-4o first, fall back to `gpt-4o-mini` only for provider communication, rate-limit, or deployment availability failures."
 
 ### Behavior resolution
 
@@ -1255,7 +1255,7 @@ AGENT_EVAL_MODEL=gpt-4o-mini
 
 ### Model fallback
 
-When `DEFAULT_MODEL=gpt-4o,gpt-4o-mini`, the framework tries `gpt-4o` first.  If the call fails (rate limit, overload, model unavailable), it falls back to `gpt-4o-mini` for that request.  On subsequent requests it tries `gpt-4o` again — the fallback is per-call, not sticky.
+When `DEFAULT_MODEL=gpt-4o,gpt-4o-mini`, the framework tries `gpt-4o` first. If the provider call fails because of rate limits, overload, network/transport problems, or model/deployment availability, it falls back to `gpt-4o-mini` for that request. Invalid structured output, schema/decision validation errors, unsupported tool-call shapes, and other response-shape problems do not trigger model fallback; they remain errors for the same model so the normal agent repair or validation path can handle them.
 
 Per-agent overrides in `AGENT_MODELS` take precedence over `DEFAULT_MODEL` for those specific agents.  This lets you use a cheap, fast model for high-volume agents and a more capable model for complex reasoning tasks:
 
