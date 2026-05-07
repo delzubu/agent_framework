@@ -38,20 +38,19 @@ Audit logs are written by `JsonlTraceSubscriber` to the path configured in `.env
 
 ### 2. Verify parameter binding from host
 
-Look for `runtime.parameters_bound` — this is the authoritative snapshot after all pre-run hooks. If a parameter you passed from `AgentHost.run()` is missing, compare against the agent's `.md` frontmatter: the parameter must be declared there.
+Look for `runtime.parameters_bound` — this is the authoritative snapshot after all pre-run hooks. If a parameter you passed from `AgentHost.run_agent()` is missing, compare against the agent's `.md` frontmatter: the parameter must be declared there.
 
 ### 3. Inspect callback flow from host
 
-If the agent emits a callback decision (`callback`, `callback_to_caller`, `request_user_input`), the host receives `AgentResult(status="waiting")`. Check:
+If a callback decision bubbles all the way out without being resolved, the host receives `AgentResult(status="blocked")`. Check:
 - `result.callback_intent` — what the agent is asking for
 - `result.message` — human-readable ask
-- `result.parameters` — structured payload
 
-Resume with `host.resume(run_id=result.run_id, response={...})`.
+To handle callbacks programmatically, implement `AgentBehavior.respond_to_callback()` on the parent agent, or supply a custom `UserCommunication` to `AgentHost.create(user_comm=...)`.
 
 ### 4. Inspect sub-agent dispatch
 
-`runtime.agent_finished` events on child runs show each sub-agent's final result. If a sub-agent is not being called, check that `AgentHost.run()` is passing the correct parent run context.
+`runtime.agent_finished` events on child runs show each sub-agent's final result. If a sub-agent is not being called, check that `AgentHost.run_agent()` is being invoked with the correct agent id and that the agent id matches a `.md` file in `AGENT_DIRECTORY`.
 
 ### 5. Inspect memory
 

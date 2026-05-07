@@ -6,10 +6,10 @@ Issues that arise in the host-layer code: AgentHost setup, parameter passing, su
 
 ## Parameter passing from host to agent
 
-### Symptom: Agent behaves as if a parameter is missing, but you passed it to `AgentHost.run()`
+### Symptom: Agent behaves as if a parameter is missing, but you passed it to `AgentHost.run_agent()`
 
 **Cause A — Parameter not declared in agent frontmatter**
-`AgentHost.run(agent_id, prompt, parameters={"key": "value"})` passes the value, but if the agent's `.md` frontmatter does not declare `key` under `parameters:`, the runtime does not bind it. The value is silently dropped.
+`AgentHost.run_agent(agent_id, prompt, parameters={"key": "value"})` passes the value, but if the agent's `.md` frontmatter does not declare `key` under `parameters:`, the runtime does not bind it. The value is silently dropped.
 
 **Fix:** Add the parameter declaration to the agent's `.md` frontmatter with the correct `type` and `required` fields.
 
@@ -29,19 +29,19 @@ An `on_pre_agent` hook may inject a `system_message` fragment that resets the pa
 
 ## Callback handling in host code
 
-### Symptom: `AgentResult.status` is `"waiting"` but host code doesn't resume
+### Symptom: `AgentResult.status` is `"blocked"` and the host doesn't handle it
 
-**Cause:** The host checks `result.status == "completed"` but the agent emitted a callback decision. `"waiting"` is the status for all callback kinds (`callback`, `callback_to_caller`, `request_user_input`, `request_resolution`).
+**Cause:** The host checks only `result.status == "completed"` but the agent emitted a callback decision that could not be resolved internally. `"blocked"` is the status when a callback bubbles all the way out of the agent without being answered.
 
-**Fix:** Add a branch for `result.status == "waiting"`. Inspect `result.callback_intent` and provide the appropriate response via `host.resume(run_id=result.run_id, response={...})`.
+**Fix:** Add a branch for `result.status == "blocked"`. Inspect `result.callback_intent` (e.g. `"information_request"`) and `result.message` to understand what the agent needed. To handle callbacks programmatically, implement `AgentBehavior.respond_to_callback()` on the parent agent — this intercepts child callbacks before they bubble to the host.
 
 ---
 
-### Symptom: Callback response is ignored — agent loops or errors after resume
+### Symptom: Agent emits callbacks in an interactive console session but headless calls get `status="blocked"`
 
-**Cause:** The resume call passed `response` with the wrong key. The agent's callback decision specified `parameters.parameter_name`; the resume must pass a dict with that exact key.
+**Cause:** Interactive console mode wires a `ConsoleUserCommunication` that handles `request_user_input` by prompting the user in the terminal. Headless calls (e.g. `AgentHost.run_agent(...)` without a `user_comm`) use `NullUserCommunication`, which cannot answer prompts — so the callback status propagates as `"blocked"`.
 
-**Fix:** Read `result.parameters` to find the expected key(s), then pass `response={expected_key: value}`.
+**Fix:** For headless programmatic use, implement `AgentBehavior.respond_to_callback()` on the calling agent, or supply a custom `UserCommunication` implementation to `AgentHost.create(user_comm=...)` that answers queries from application logic.
 
 ---
 
@@ -63,6 +63,6 @@ An `on_pre_agent` hook may inject a `system_message` fragment that resets the pa
 The agent reads from `mem://session/key` but the host wrote to `mem://global/key` (or vice versa). Memory scopes are distinct namespaces.
 
 **Cause B — Memory not pre-populated before run**
-The host must populate memory via `MemoryStore.write(...)` before calling `AgentHost.run()`. If the write happens after the run starts, the agent sees stale data.
+The host must populate memory before calling `AgentHost.run_agent(...)`. If the write happens after the run starts, the agent sees stale data.
 
 **Fix:** Check `MEMORY_BACKEND` and `MEMORY_SCOPE` in `.env`. Use `tools/parse_log.py` to find the `call_tool` decision for the memory-read tool and inspect the result in the subsequent `llm.request`.
