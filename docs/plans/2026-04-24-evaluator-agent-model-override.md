@@ -213,7 +213,7 @@ Add/adjust endpoint tests so the UI bootstrap payload contains:
 **Files:**
 - Modify: `docs/guides/using-agent-framework.md`
 - Modify: `docs/pages/reference/developer-documentation.md`
-- Modify: `src/agent_framework_skills/skills/use-agent-framework/references/evaluator-usage.md`
+- Modify: `src/agent_framework_skills/skills/operating-agent-framework/references/evaluator-usage.md`
 - Modify: `tests/test_docs_pages_config.py`
 
 **Step 1: Document the two override scopes**

@@ -38,7 +38,7 @@ pip install "agent_framework[dev]"
 
 ## AI assistant skills
 
-Install the `use-agent-framework` skill into every AI tool directory detected on your machine (`~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, etc.):
+Install the agent framework skills into every AI tool directory detected on your machine (`~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, etc.):
 
 ```bash
 pip install "git+https://github.com/delzubu/agent_framework.git"
@@ -182,7 +182,7 @@ pip install "git+https://github.com/delzubu/agent_framework.git#subdirectory=src
 agent-framework-skills install
 ```
 
-This copies the `use-agent-framework` skill into all detected agentic tool directories (`~/.claude/skills`, `~/.codex/skills`, etc.). Use `--target DIR` to install to a specific location, `--list` to preview detected targets, and `--dry-run` to see what would be installed without writing files.
+This copies the agent framework skills (`authoring-agents`, `embedding-agent-framework`, `operating-agent-framework`, and their debug counterparts) into all detected agentic tool directories (`~/.claude/skills`, `~/.codex/skills`, etc.). Use `--target DIR` to install to a specific location, `--list` to preview detected targets, and `--dry-run` to see what would be installed without writing files.
 
 ---
 

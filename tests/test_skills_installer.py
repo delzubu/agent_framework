@@ -6,9 +6,9 @@ from agent_framework_skills import installer
 
 
 def _write_skill_tree(root: Path) -> None:
-    skill_dir = root / "use-agent-framework"
+    skill_dir = root / "authoring-agents"
     skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("---\nname: use-agent-framework\n---\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("---\nname: authoring-agents\n---\n", encoding="utf-8")
 
 
 def test_list_targets_treats_first_directory_as_installation_marker(tmp_path, monkeypatch) -> None:
@@ -38,7 +38,7 @@ def test_install_creates_missing_skills_subdirectory_when_marker_exists(tmp_path
 
     results = installer.install()
 
-    expected = (home / ".cursor" / "skills" / "use-agent-framework").resolve()
+    expected = (home / ".cursor" / "skills" / "authoring-agents").resolve()
     assert (str(expected), "installed") in results
     assert expected.is_dir()
     assert (expected / "SKILL.md").exists()

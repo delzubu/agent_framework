@@ -75,7 +75,7 @@ myproject/
     lookup.md
     lookup.py
   skills/
-    use-agent-framework/
+    authoring-agents/
       SKILL.md
       references/
         ...
