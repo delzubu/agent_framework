@@ -1,4 +1,6 @@
-# Known issues and symptoms — agent_framework
+# Known issues and symptoms — agent authoring
+
+Issues that arise from agent definition files, prompts, decision envelopes, hooks, tools, planning agents, workflow agents, and evaluator runs.
 
 ---
 
@@ -97,24 +99,6 @@ The planning config's `max_iterations` is too low for the number of steps.
 **Cause:** The `result_field` in the case file (default: `message`) does not match the agent's output. Some agents return structured data only in `response`, not in `message`.
 
 **Fix:** Set `result_field: response` (or a dot-path like `response.summary`) in the case frontmatter to select the right field.
-
----
-
-## Model / provider
-
-### Symptom: `AgentDecision.from_model_response` raises `ValueError: unsupported kind`
-
-**Cause:** The model returned a JSON object with a `kind` field that is not in the known set (`final_message`, `call_tool`, `call_subagent`, `call_subagents`, `invoke_skill`, `callback`, `submit_plan`, `continue_plan`). This can happen if the model hallucinates a decision type or if the system prompt is malformed.
-
-**Fix:** Check `llm.response.raw_text` in the log for the exact model output. Fix the system prompt or add `response_format` enforcement if the provider supports it.
-
----
-
-### Symptom: LLM returns valid JSON but it doesn't parse into a decision
-
-**Cause:** The model wrapped its JSON in a markdown code fence (`` ```json ... ``` ``). `_normalize_json_text` strips these, but only the outermost fence.
-
-**Fix:** Check `llm.response.raw_text`. If nested fences appear, the model needs stronger formatting instructions in the system prompt.
 
 ---
 

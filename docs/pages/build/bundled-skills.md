@@ -11,19 +11,65 @@ Bundled skills are maintained as source-controlled skill directories, but the pu
 
 ## Available Skills
 
-### use-agent-framework
+### authoring-agents
 
-Complete guide for writing agents, tools, evaluations, and tests with the `agent_framework` package.
-
-Use this skill when working with the framework itself: writing or modifying agents, tools, sub-agents, callbacks, evaluations, test cases, or framework integrations.
+Guide for writing agent and tool definition files — prompts, frontmatter, sub-agents, callbacks, tool authoring, and workflow agents.
 
 Source location:
 
 ```text
-src/agent_framework_skills/skills/use-agent-framework/SKILL.md
+src/agent_framework_skills/skills/authoring-agents/SKILL.md
 ```
 
-The skill includes on-demand references for framework usage, evaluator usage, agent prompt patterns, prompt design research, and structured prompt organization.
+### embedding-agent-framework
+
+Guide for embedding the `agent_framework` runtime in a Python application — host setup, configuration, callbacks, memory, and evaluations.
+
+Source location:
+
+```text
+src/agent_framework_skills/skills/embedding-agent-framework/SKILL.md
+```
+
+### operating-agent-framework
+
+Guide for running, deploying, and operating agent applications — CLI usage, environment configuration, evaluator, and project layout.
+
+Source location:
+
+```text
+src/agent_framework_skills/skills/operating-agent-framework/SKILL.md
+```
+
+### debug-authoring-agents
+
+Debugging guide for problems that originate in agent or tool definition files.
+
+Source location:
+
+```text
+src/agent_framework_skills/skills/debug-authoring-agents/SKILL.md
+```
+
+### debug-embedding-agent-framework
+
+Debugging guide for problems that arise when embedding the runtime in a Python application.
+
+Source location:
+
+```text
+src/agent_framework_skills/skills/debug-embedding-agent-framework/SKILL.md
+```
+
+### debug-operating-agent-framework
+
+Debugging guide for operational problems — environment, configuration, evaluator, and trace log analysis.
+
+Source location:
+
+```text
+src/agent_framework_skills/skills/debug-operating-agent-framework/SKILL.md
+```
 
 ## Installation
 
