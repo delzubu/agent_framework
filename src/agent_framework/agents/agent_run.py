@@ -14,6 +14,15 @@ if TYPE_CHECKING:
 
 
 @dataclass(slots=True)
+class LoadedSkillState:
+    """Skill context already made visible in this run."""
+
+    name: str
+    parameter_key: str
+    inventory: frozenset[str] = field(default_factory=frozenset)
+
+
+@dataclass(slots=True)
 class AgentRun:
     """Mutable per-invocation runtime state."""
 
@@ -41,7 +50,8 @@ class AgentRun:
     workflow_context_state: Any | None = None
     workflow_chat_history_enabled: bool = False
     workflow_initial_prompt_appended: bool = False
+    loaded_skills: dict[str, LoadedSkillState] = field(default_factory=dict)
     consecutive_validation_failures: int = 0
     planning_semantic_failures: int = 0
 
-__all__ = ["AgentRun"]
+__all__ = ["AgentRun", "LoadedSkillState"]

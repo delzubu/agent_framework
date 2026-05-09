@@ -180,6 +180,8 @@ payload:
   skill_name      str
   parameters      dict
   inventory       list[str]   — file paths available in the skill
+  status          str         — loaded | already_loaded | resources_loaded
+  loaded_resources list[str]  — resources newly surfaced for this invocation
 ```
 
 ---

@@ -44,6 +44,8 @@ class SkillInvocationRecord:
     skill_name: str
     parameters: dict[str, Any]
     inventory: tuple[str, ...]  # file paths listed in inventory (no file contents)
+    status: str = "loaded"
+    loaded_resources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +230,8 @@ class InMemoryAuditTracer:
         skill_name: str,
         parameters: dict[str, Any],
         inventory: list[str],
+        status: str = "loaded",
+        loaded_resources: list[str] | None = None,
     ) -> None:
         record = self.active_records.get(run_id)
         if record is None:
@@ -239,6 +243,8 @@ class InMemoryAuditTracer:
                 skill_name=skill_name,
                 parameters=dict(parameters),
                 inventory=tuple(inventory),
+                status=status,
+                loaded_resources=tuple(loaded_resources or ()),
             )
         )
         self.active_records[run_id] = replace(record, skill_invocations=tuple(invocations))
@@ -414,6 +420,8 @@ class AuditTraceSubscriber:
                 skill_name=str(payload["skill_name"]),
                 parameters=dict(payload.get("parameters") or {}),
                 inventory=list(payload.get("inventory") or []),
+                status=str(payload.get("status") or "loaded"),
+                loaded_resources=list(payload.get("loaded_resources") or []),
             )
             return
         if kind == "llm.request":

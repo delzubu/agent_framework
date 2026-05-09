@@ -185,4 +185,8 @@ Use when the host/user must not be asked. If unresolved, fail or choose another 
 }
 ```
 
-The skill's full file content is injected as a user message. Loop continues.
+The first invocation in an `AgentRun` injects the skill's full file content as
+a user message. Loop continues. Repeating the same skill with the same
+parameters reuses the loaded body and appends only a compact
+`status="already_loaded"` marker. If the skill inventory gains new files, the
+runtime can surface only those files with `status="resources_loaded"`.

@@ -398,7 +398,7 @@ Every loop iteration ends with exactly one decision. The runtime supports these 
 }
 ```
 
-**`invoke_skill`** — Load and inject a named skill into the conversation.  Skills are instruction bundles stored in `skills/` directories.  When invoked, the skill's full content is injected as a user message and the loop continues.
+**`invoke_skill`** — Load and inject a named skill into the conversation. Skills are instruction bundles stored in `skills/` directories. The first invocation in a run injects the skill's full content as a user message and the loop continues; repeated invocations of the same skill with the same parameters reuse the already-loaded body and add only a compact marker.
 
 ```json
 {
@@ -853,7 +853,7 @@ The sidecar JSON can set:
 | `can_query_caller` | bool | Whether the agent may send callbacks to its caller (default: true) |
 | `can_use_host_interaction` | bool | Whether the agent may request user input from the host (default: true) |
 
-The `model` field accepts comma-separated fallbacks: `"gpt-4o,gpt-4o-mini"` means "try gpt-4o first, fall back to gpt-4o-mini on failure."
+The `model` field accepts comma-separated fallbacks: `"gpt-4o,gpt-4o-mini"` means "try gpt-4o first, fall back to `gpt-4o-mini` only for provider communication, rate-limit, or deployment availability failures."
 
 ### Behavior resolution
 
@@ -1128,7 +1128,14 @@ When the model decides it needs the refund policy, it emits:
 }
 ```
 
-The framework loads the full `SKILL.md` content (and lists any additional files in the skill directory as references), injects it as a user message, and the loop continues.  On the next iteration, the model has the full policy in its context and can answer the customer's question.
+The framework loads the full `SKILL.md` content (and lists any additional files in the skill directory as references), injects it as a user message, and the loop continues. On the next iteration, the model has the full policy in its context and can answer the customer's question.
+
+Within a single agent run, skill body loading is idempotent by skill name plus
+invocation parameters. A repeated `invoke_skill` with the same parameters
+appends `<skill_invocation_result name="..." status="already_loaded" />`
+instead of a second full copy. If new resource files appear in the skill
+inventory, the runtime can append a compact `resources_loaded` marker with only
+those files.
 
 The catalog (names + descriptions of all allowed skills) is injected at position 2 in the conversation — after the system prompt and user prompt, before any conversation history.  The model always knows what skills are available without needing to load their full content.
 
@@ -1255,7 +1262,7 @@ AGENT_EVAL_MODEL=gpt-4o-mini
 
 ### Model fallback
 
-When `DEFAULT_MODEL=gpt-4o,gpt-4o-mini`, the framework tries `gpt-4o` first.  If the call fails (rate limit, overload, model unavailable), it falls back to `gpt-4o-mini` for that request.  On subsequent requests it tries `gpt-4o` again — the fallback is per-call, not sticky.
+When `DEFAULT_MODEL=gpt-4o,gpt-4o-mini`, the framework tries `gpt-4o` first. If the provider call fails because of rate limits, overload, network/transport problems, or model/deployment availability, it falls back to `gpt-4o-mini` for that request. Invalid structured output, schema/decision validation errors, unsupported tool-call shapes, and other response-shape problems do not trigger model fallback; they remain errors for the same model so the normal agent repair or validation path can handle them.
 
 Per-agent overrides in `AGENT_MODELS` take precedence over `DEFAULT_MODEL` for those specific agents.  This lets you use a cheap, fast model for high-volume agents and a more capable model for complex reasoning tasks:
 
